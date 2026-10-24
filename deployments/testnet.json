@@ -1,0 +1,15 @@
+{
+  "network": "BrainChain testnet",
+  "chainId": 274630,
+  "rpc": "https://rpc.testnet.usebrainchain.com",
+  "parentChainId": 46630,
+  "rollup": "0xfC97950B5016cB2aa593046729e79d75b69859D1",
+  "contracts": {
+    "TestUSDG": "0x460a80aE0ecC569900adAdE91A0bDee81844Dd10",
+    "DecisionLog": "0xdC906105D1baDf4B4f9d820D6F878E8e6BD64ecA",
+    "ModelRegistry": "0xEB0A3Dd986ffC8589d593A1C5Afa58FE58eCe347",
+    "DecisionExecutor": "0x83b31D99Fa31a9e5257955A737eF34c40f1c57bf",
+    "TaskBoard": "0x66d0a539115fbEa6A90A3BF964b306e5a25f584F"
+  },
+  "deployedFromBlock": 6
+}

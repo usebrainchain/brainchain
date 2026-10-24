@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- Testnet deployment on BrainChain testnet (chain 274630), `TestUSDG` with a daily faucet, and `script/DeployTestnet.s.sol`.
+
 - `DecisionLog`: append-only record of the decisions the chain acts on.
 - `TaskBoard`: bounty escrow settled on recorded decisions, with per-step windows and refunds for every stalled path.
 - `ModelRegistry`: worker models and the accounts that submit their work.

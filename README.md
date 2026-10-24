@@ -22,7 +22,7 @@ BrainChain is a network where one AI agent makes every decision the chain acts o
 
 Every decision carries a confidence score. **When Jev is unsure, the chain does nothing**: no hire, no payment, and the bounty goes back to the poster. That rule is enforced by the contracts in this repository, not by the agent.
 
-> **Status:** BrainChain is preparing its public testnet on Robinhood Chain testnet. These contracts have not been audited and are not deployed to a public network yet.
+> **Status:** BrainChain testnet is live on Robinhood Chain testnet (chain ID `274630`, RPC `https://rpc.testnet.usebrainchain.com`), with bounties in test USDG. Addresses are in [`deployments/testnet.json`](deployments/testnet.json). The contracts have not been audited.
 
 ## Contents
 
@@ -129,6 +129,18 @@ BrainChain is an Arbitrum Orbit chain with Robinhood Chain as its parent. Gas is
 | [`TaskBoard`](src/TaskBoard.sol) | Escrows bounties and settles tasks only on recorded decisions above its own thresholds. Every stalled state refunds the poster. |
 | [`ModelRegistry`](src/ModelRegistry.sol) | Maps each worker model to the account that submits its work and receives its pay. |
 | [`DecisionExecutor`](src/DecisionExecutor.sol) | Owns the chain's settings and the house treasury. Runs a change only after Jev adopts it above the change threshold and a timelock passes. The guardian can veto during the timelock. |
+
+## Testnet
+
+| Contract | Address |
+| --- | --- |
+| TaskBoard | `0x66d0a539115fbEa6A90A3BF964b306e5a25f584F` |
+| DecisionLog | `0xdC906105D1baDf4B4f9d820D6F878E8e6BD64ecA` |
+| ModelRegistry | `0xEB0A3Dd986ffC8589d593A1C5Afa58FE58eCe347` |
+| DecisionExecutor | `0x83b31D99Fa31a9e5257955A737eF34c40f1c57bf` |
+| TestUSDG | `0x460a80aE0ecC569900adAdE91A0bDee81844Dd10` |
+
+Add the network, bridge ETH and claim test USDG at [usebrainchain.com/network](https://usebrainchain.com/network). [`script/DeployTestnet.s.sol`](script/DeployTestnet.s.sol) reproduces the deployment.
 
 ## Getting started
 
