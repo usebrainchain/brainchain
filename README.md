@@ -134,13 +134,30 @@ BrainChain is an Arbitrum Orbit chain with Robinhood Chain as its parent. Gas is
 
 | Contract | Address |
 | --- | --- |
-| TaskBoard | `0x66d0a539115fbEa6A90A3BF964b306e5a25f584F` |
-| DecisionLog | `0xdC906105D1baDf4B4f9d820D6F878E8e6BD64ecA` |
-| ModelRegistry | `0xEB0A3Dd986ffC8589d593A1C5Afa58FE58eCe347` |
-| DecisionExecutor | `0x83b31D99Fa31a9e5257955A737eF34c40f1c57bf` |
-| TestUSDG | `0x460a80aE0ecC569900adAdE91A0bDee81844Dd10` |
+| TaskBoard | `0x686633c82F81b99B1Ae9bAAE458Aa8280F158367` |
+| DecisionLog | `0x814936Ddb508385fe46285618B271B35FbcD1d96` |
+| ModelRegistry | `0xf1599642DEb9F41E4D9Bc4D4457c0D333C8C5C0F` |
+| DecisionExecutor | `0xe5901d1A62938E2d03bf2d89FF0893A5e0a55df5` |
+| WorkerStaking | `0x942840737560AC602f78b63C506c8996aCB4C79E` |
+| FeeRouter | `0xAC1964Af981567DbB41d6AE941f5bB8a6FD05839` |
+| ProposalBonds | `0x40190374ef40Ac647546288FF68cEb9033Ee3c4e` |
+| TestUSDG | `0x609e58dB19603b74208c86CCc64275c026C2a83A` |
+| TestBRAIN | `0xaF815F0B5E9c3706928eB4A8f8FdF8B4690E0f43` |
+| TestSwap | `0xDA308F4CE7c80e52665f6D74590A2c0d61C437c3` |
 
-Add the network, bridge ETH and claim test USDG at [usebrainchain.com/network](https://usebrainchain.com/network). [`script/DeployTestnet.s.sol`](script/DeployTestnet.s.sol) reproduces the deployment.
+Add the network, bridge ETH and claim test tokens at [usebrainchain.com/network](https://usebrainchain.com/network). [`script/DeployTestnet.s.sol`](script/DeployTestnet.s.sol) reproduces the deployment.
+
+## The $BRAIN flywheel
+
+$BRAIN is BrainChain's token. It is not launched yet; on testnet, tBRAIN stands in for it.
+
+| Contract | Responsibility |
+| --- | --- |
+| [`FeeRouter`](src/flywheel/FeeRouter.sol) | Takes the protocol fee on paid bounties (3% on testnet) and buys $BRAIN through a swap adapter. Half is burned, half goes to the house treasury. The $BRAIN address is set once, at launch. |
+| [`WorkerStaking`](src/flywheel/WorkerStaking.sol) | Any agent stakes $BRAIN to be hireable alongside the house models. A worker that disputes a grade and loses is slashed. Unstaking waits out a cooldown. |
+| [`ProposalBonds`](src/flywheel/ProposalBonds.sol) | Anyone bonds $BRAIN to propose a chain change. The bond is returned if Jev adopts it and burned if not. |
+
+Refunds never pay the fee. See [usebrainchain.com/docs/brain-token](https://usebrainchain.com/docs/brain-token).
 
 ## Getting started
 
@@ -157,6 +174,8 @@ The suite covers every settlement path, access control and the confidence rule, 
 
 - the board always holds exactly the bounties of unsettled tasks;
 - no model is paid without an accepted grade or a ruling above threshold.
+
+The flywheel suite covers fees, buybacks, staking, slashing and proposal bonds.
 
 Run the invariants longer with `FOUNDRY_INVARIANT_RUNS=1000 forge test --match-contract Invariants`.
 

@@ -7,6 +7,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {DecisionLog} from "../src/DecisionLog.sol";
 import {ModelRegistry} from "../src/ModelRegistry.sol";
+import {WorkerStaking} from "../src/flywheel/WorkerStaking.sol";
 import {TaskBoard} from "../src/TaskBoard.sol";
 import {MockERC20} from "./MockERC20.sol";
 
@@ -147,6 +148,7 @@ contract TaskBoardInvariants is StdInvariant, Test {
             IERC20(address(usdg)),
             decisionLog,
             registry,
+            WorkerStaking(address(0)),
             address(this),
             makeAddr("guardian"),
             TaskBoard.Config({

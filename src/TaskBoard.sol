@@ -7,6 +7,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 
 import {DecisionLog} from "./DecisionLog.sol";
 import {ModelRegistry} from "./ModelRegistry.sol";
+import {WorkerStaking} from "./flywheel/WorkerStaking.sol";
 
 /// @notice Tasks with a bounty in escrow, settled only by Jev's recorded
 /// decisions. The board applies its own confidence thresholds: a decision below
@@ -33,6 +34,7 @@ contract TaskBoard is ReentrancyGuard {
         Status status;
         bool accepted;
         bool disputed;
+        bool disputedByModel;
         bytes32 model;
         bytes32 briefHash;
         bytes32 resultHash;
@@ -70,6 +72,7 @@ contract TaskBoard is ReentrancyGuard {
     error TooLate();
     error TooEarly();
     error TransferMismatch();
+    error BadFee();
 
     event Posted(
         uint256 indexed id, address indexed poster, uint128 bounty, uint64 deadline, bytes32 briefHash, string briefURI
@@ -83,6 +86,8 @@ contract TaskBoard is ReentrancyGuard {
     event BountyPaid(uint256 indexed id, bytes32 indexed model, address indexed account, uint128 amount);
     event BountyRefunded(uint256 indexed id, address indexed poster, uint128 amount);
     event ConfigSet(Config config);
+    event FeeSet(uint16 feeBps, address feeRouter);
+    event FeeTaken(uint256 indexed id, uint128 fee);
     event PausedSet(bool paused);
     event OwnerSet(address indexed owner);
     event GuardianSet(address indexed guardian);
@@ -92,6 +97,13 @@ contract TaskBoard is ReentrancyGuard {
     IERC20 public immutable token;
     DecisionLog public immutable decisions;
     ModelRegistry public immutable models;
+    /// @notice Open worker staking; zero when only house models can be hired.
+    WorkerStaking public immutable staking;
+
+    /// @notice Share of each paid bounty sent to the fee router, in basis points.
+    uint16 public feeBps;
+    address public feeRouter;
+    uint16 public constant MAX_FEE_BPS = 1_000;
 
     address public owner;
     address public guardian;
@@ -106,6 +118,7 @@ contract TaskBoard is ReentrancyGuard {
         IERC20 token_,
         DecisionLog decisions_,
         ModelRegistry models_,
+        WorkerStaking staking_,
         address owner_,
         address guardian_,
         Config memory config_
@@ -117,6 +130,7 @@ contract TaskBoard is ReentrancyGuard {
         token = token_;
         decisions = decisions_;
         models = models_;
+        staking = staking_;
         owner = owner_;
         guardian = guardian_;
         _setConfig(config_);
@@ -168,7 +182,8 @@ contract TaskBoard is ReentrancyGuard {
             emit HireHeld(id, decisionId);
             return;
         }
-        if (!models.get(d.answer).active) revert ModelInactive();
+        (, bool active) = _worker(d.answer);
+        if (!active) revert ModelInactive();
 
         task.model = d.answer;
         task.status = Status.Hired;
@@ -178,7 +193,8 @@ contract TaskBoard is ReentrancyGuard {
     function submit(uint256 id, bytes32 resultHash, string calldata resultURI) external {
         Task storage task = _tasks[id];
         if (task.status != Status.Hired) revert BadStatus();
-        if (msg.sender != models.get(task.model).account) revert NotWorker();
+        (address account,) = _worker(task.model);
+        if (msg.sender != account) revert NotWorker();
         if (block.timestamp > task.deadline) revert TooLate();
 
         task.resultHash = resultHash;
@@ -206,10 +222,12 @@ contract TaskBoard is ReentrancyGuard {
     function dispute(uint256 id) external {
         Task storage task = _tasks[id];
         if (task.status != Status.Graded || task.disputed) revert BadStatus();
-        if (msg.sender != task.poster && msg.sender != models.get(task.model).account) revert NotDisputant();
+        (address workerAccount,) = _worker(task.model);
+        if (msg.sender != task.poster && msg.sender != workerAccount) revert NotDisputant();
         if (block.timestamp > uint256(task.gradedAt) + config.disputeWindow) revert TooLate();
 
         task.disputed = true;
+        task.disputedByModel = msg.sender == workerAccount;
         task.disputedAt = uint64(block.timestamp);
         task.status = Status.Disputed;
         emit GradeDisputed(id, msg.sender);
@@ -225,6 +243,10 @@ contract TaskBoard is ReentrancyGuard {
         bool pay = d.answer == YES && d.confidenceBps >= config.ruleThresholdBps;
         emit Ruled(id, decisionId, pay);
         _settle(id, task, pay);
+        // A staked worker that disputes and loses forfeits part of its stake.
+        if (!pay && task.disputedByModel && address(staking) != address(0) && staking.isWorkerId(task.model)) {
+            staking.slash(address(uint160(uint256(task.model))));
+        }
     }
 
     // ------------------------------------------------------------- settlement
@@ -257,15 +279,32 @@ contract TaskBoard is ReentrancyGuard {
     function _settle(uint256 id, Task storage task, bool pay) private {
         uint128 amount = task.bounty;
         if (pay) {
-            address account = models.get(task.model).account;
+            (address account,) = _worker(task.model);
             task.status = Status.Paid;
-            token.safeTransfer(account, amount);
-            emit BountyPaid(id, task.model, account, amount);
+            uint128 fee = feeRouter == address(0) ? 0 : uint128((uint256(amount) * feeBps) / 10_000);
+            if (fee > 0) {
+                token.safeTransfer(feeRouter, fee);
+                emit FeeTaken(id, fee);
+            }
+            token.safeTransfer(account, amount - fee);
+            emit BountyPaid(id, task.model, account, amount - fee);
         } else {
             task.status = Status.Refunded;
             token.safeTransfer(task.poster, amount);
             emit BountyRefunded(id, task.poster, amount);
         }
+    }
+
+    /// @dev House models live in the registry; staked workers are found by
+    /// their account-shaped id. A model that is no longer active can still be
+    /// paid for work it was already hired for.
+    function _worker(bytes32 id) private view returns (address account, bool active) {
+        if (address(staking) != address(0) && staking.isWorkerId(id)) {
+            (account, active,) = staking.worker(id);
+            return (account, active);
+        }
+        ModelRegistry.Model memory model = models.get(id);
+        return (model.account, model.active);
     }
 
     function _consume(uint256 decisionId, DecisionLog.Kind kind, uint256 id)
@@ -303,6 +342,15 @@ contract TaskBoard is ReentrancyGuard {
         if (owner_ == address(0)) revert ZeroAddress();
         owner = owner_;
         emit OwnerSet(owner_);
+    }
+
+    /// @notice Sets the protocol fee on paid bounties, capped at 10%.
+    function setFee(uint16 feeBps_, address feeRouter_) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (feeBps_ > MAX_FEE_BPS || (feeBps_ > 0 && feeRouter_ == address(0))) revert BadFee();
+        feeBps = feeBps_;
+        feeRouter = feeRouter_;
+        emit FeeSet(feeBps_, feeRouter_);
     }
 
     function setGuardian(address guardian_) external {

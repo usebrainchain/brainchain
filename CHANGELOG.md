@@ -6,6 +6,9 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- The $BRAIN flywheel: `FeeRouter` (protocol fee and buyback), `WorkerStaking` (open, staked workers with slashing) and `ProposalBonds`, with `TaskBoard` taking the fee and hiring staked workers.
+- `TestBRAIN` and `TestSwap` for running the flywheel on testnet.
+
 - Testnet deployment on BrainChain testnet (chain 274630), `TestUSDG` with a daily faucet, and `script/DeployTestnet.s.sol`.
 
 - `DecisionLog`: append-only record of the decisions the chain acts on.

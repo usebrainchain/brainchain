@@ -7,6 +7,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {DecisionExecutor} from "../src/DecisionExecutor.sol";
 import {DecisionLog} from "../src/DecisionLog.sol";
 import {ModelRegistry} from "../src/ModelRegistry.sol";
+import {WorkerStaking} from "../src/flywheel/WorkerStaking.sol";
 import {TaskBoard} from "../src/TaskBoard.sol";
 import {MockERC20} from "./MockERC20.sol";
 
@@ -37,8 +38,15 @@ abstract contract BrainChainSetup is Test {
         registry = new ModelRegistry(address(this));
         registry.setModel(CLAUDE, claudeAccount, 0.4e6, true);
         registry.setModel(GPT, gptAccount, 0.35e6, true);
-        board =
-            new TaskBoard(IERC20(address(usdg)), decisionLog, registry, address(executor), guardian, defaultConfig());
+        board = new TaskBoard(
+            IERC20(address(usdg)),
+            decisionLog,
+            registry,
+            WorkerStaking(address(0)),
+            address(executor),
+            guardian,
+            defaultConfig()
+        );
         vm.prank(guardian);
         executor.bindBoard(board);
 
