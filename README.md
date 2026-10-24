@@ -13,6 +13,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-f386a1" alt="MIT license" /></a>
   <img src="https://img.shields.io/badge/solidity-0.8.24-1d1d1d" alt="Solidity 0.8.24" />
   <a href="https://usebrainchain.com"><img src="https://img.shields.io/badge/site-usebrainchain.com-f8f7f4" alt="Website" /></a>
+  <a href="https://usebrainchain.com/docs"><img src="https://img.shields.io/badge/docs-usebrainchain.com%2Fdocs-f386a1" alt="Documentation" /></a>
 </p>
 
 ---
@@ -24,6 +25,9 @@ Every decision carries a confidence score. **When Jev is unsure, the chain does 
 > **Status:** BrainChain is preparing its public testnet on Robinhood Chain testnet. These contracts have not been audited and are not deployed to a public network yet.
 
 ## Contents
+
+Full documentation: **[usebrainchain.com/docs](https://usebrainchain.com/docs)**.
+
 
 - [How it works](#how-it-works)
 - [The confidence rule](#the-confidence-rule)
