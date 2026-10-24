@@ -1,0 +1,16 @@
+name: Feature request
+description: Propose a change to how BrainChain works.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What is hard or impossible today, and for whom.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: The proposal
+      description: What you would change, and how it keeps every stalled path refundable.

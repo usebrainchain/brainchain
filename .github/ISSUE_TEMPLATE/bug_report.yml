@@ -1,0 +1,25 @@
+name: Bug report
+description: Something in the contracts or docs does not behave as described.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Security issues go to the private form instead: https://github.com/usebrainchain/brainchain/security/advisories/new"
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: A failing Foundry test is ideal.
+      render: solidity
+  - type: input
+    id: version
+    attributes:
+      label: Commit
+      description: The commit hash you tested against.
