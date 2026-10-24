@@ -175,7 +175,7 @@ The suite covers every settlement path, access control and the confidence rule, 
 - the board always holds exactly the bounties of unsettled tasks;
 - no model is paid without an accepted grade or a ruling above threshold.
 
-The flywheel suite covers fees, buybacks, staking, slashing and proposal bonds.
+The flywheel suite covers fees, buybacks, staking, slashing and proposal bonds, and a coverage suite asserts every event, access rule and time-window boundary.
 
 Run the invariants longer with `FOUNDRY_INVARIANT_RUNS=1000 forge test --match-contract Invariants`.
 
