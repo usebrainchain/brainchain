@@ -467,3 +467,37 @@ contract ModelRegistryCoverage is BrainChainSetup {
         assertEq(registry.owner(), poster);
     }
 }
+
+/// Window arithmetic at a realistic timestamp: at timestamp 1, `t + w` and `t * w` agree.
+contract RealisticTimeRegressions is BrainChainSetup {
+    function setUp() public override {
+        super.setUp();
+        vm.warp(1_800_000_000);
+    }
+
+    function test_deadlineCannotExceedTheMaximumDuration() public {
+        vm.prank(poster);
+        vm.expectRevert(TaskBoard.BadDeadline.selector);
+        board.post(BOUNTY, uint64(block.timestamp + 7 days + 1), 0, "");
+        vm.prank(poster);
+        board.post(BOUNTY, uint64(block.timestamp + 7 days), 0, "");
+    }
+
+    function test_disputeClosesWithItsWindow() public {
+        uint256 id = postTask();
+        hireClaude(id);
+        deliver(id);
+        gradeAs(id, YES, 9_000);
+        vm.warp(block.timestamp + 1 hours + 1);
+        vm.prank(poster);
+        vm.expectRevert(TaskBoard.TooLate.selector);
+        board.dispute(id);
+    }
+
+    function test_unboundExecutorRejectsAZeroGuardian() public {
+        DecisionExecutor fresh =
+            new DecisionExecutor(decisionLog, IERC20(address(usdg)), guardian, 8_500, 2 days, 2, 10e6, 20e6);
+        vm.expectRevert(DecisionExecutor.ZeroAddress.selector);
+        fresh.setGuardian(address(0));
+    }
+}

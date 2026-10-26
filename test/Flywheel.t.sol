@@ -192,6 +192,13 @@ contract FlywheelTest is Test {
         router.buyback(0.3e6, 0.3e18);
     }
 
+    function test_burnShareIsCapped() public {
+        vm.expectRevert(FeeRouter.BadShare.selector);
+        router.setBurnShare(10_001);
+        router.setBurnShare(10_000);
+        assertEq(router.burnBps(), 10_000);
+    }
+
     function test_buybackWaitsForAFloor() public {
         _runToPaid(CLAUDE, claude);
         router.setBrain(IERC20(address(brainToken)));

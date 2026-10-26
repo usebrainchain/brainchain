@@ -115,6 +115,7 @@ contract FeeSplitterTest is Test {
     FeeSplitter splitter;
 
     function setUp() public {
+        vm.warp(1_800_000_000);
         splitter = new FeeSplitter(escrow, rewards, treasury, owner);
     }
 
@@ -257,6 +258,44 @@ contract FeeSplitterTest is Test {
         assertEq(factory.recipient(), next);
         assertEq(factory.lastToken(), launchToken);
         assertEq(splitter.pendingRecipient(), address(0));
+        assertEq(splitter.recipientEta(), 0);
+    }
+
+    function test_enablingBuybackWaitsThreeDays() public {
+        _bound();
+        vm.startPrank(owner);
+        splitter.proposeBuyback(true);
+        assertTrue(splitter.pendingBuyback());
+        assertEq(splitter.buybackEta(), block.timestamp + 3 days);
+        vm.warp(block.timestamp + 3 days - 1);
+        vm.expectRevert(FeeSplitter.NotReady.selector);
+        splitter.executeBuyback();
+        vm.warp(block.timestamp + 1);
+        splitter.executeBuyback();
+        vm.stopPrank();
+        assertTrue(factory.buyback());
+        assertFalse(splitter.pendingBuyback());
+        assertEq(splitter.buybackEta(), 0);
+    }
+
+    function test_cancelClearsEveryPendingChange() public {
+        _bound();
+        vm.startPrank(owner);
+        splitter.proposeRecipient(makeAddr("next"));
+        splitter.proposeBuyback(true);
+        splitter.cancelPending();
+        vm.stopPrank();
+        assertEq(splitter.pendingRecipient(), address(0));
+        assertEq(splitter.recipientEta(), 0);
+        assertFalse(splitter.pendingBuyback());
+        assertEq(splitter.buybackEta(), 0);
+    }
+
+    function test_recipientChangeIsReadyExactlyThreeDaysLater() public {
+        _bound();
+        vm.prank(owner);
+        splitter.proposeRecipient(makeAddr("next"));
+        assertEq(splitter.recipientEta(), block.timestamp + 3 days);
     }
 
     function test_buybackChangeWaitsThreeDaysAndCanBeCancelled() public {
