@@ -53,7 +53,7 @@ contract TaskBoardHandler is Test {
 
     function _decide(DecisionLog.Kind kind, uint256 id, bytes32 answer, uint16 confidence) private returns (uint256) {
         vm.prank(brain);
-        return decisionLog.record(kind, bytes32(id), 0, answer, confidence, 0, "");
+        return decisionLog.record(kind, board.subjectOf(id), 0, answer, confidence, 0, "");
     }
 
     function post(uint128 bounty, uint64 duration) external {
