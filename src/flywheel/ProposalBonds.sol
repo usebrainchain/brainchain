@@ -57,7 +57,7 @@ contract ProposalBonds is ReentrancyGuard {
     IERC20 public immutable token;
     DecisionLog public immutable decisions;
     IChangeThreshold public immutable executor;
-    address public owner;
+    address public immutable owner;
     uint128 public bond;
     uint64 public decideWithin;
 

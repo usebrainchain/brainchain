@@ -23,7 +23,7 @@ Every decision the chain acts on exists in two places:
 | Field | Meaning |
 | --- | --- |
 | `kind` | `hire`, `grade`, `ruling` or `change` |
-| `subject` | The task id, or for a change the hash of the target and calldata |
+| `subject` | The task id. On chain the subject is `TaskBoard.subjectOf(taskId)`, binding the decision to that task, board and chain; for a change it is `DecisionExecutor.changeSubject(target, data)` |
 | `request` | Exactly what was sent to Jev |
 | `answer` | The model name, `accept` or `reject`, `pay` or `refund`, `adopt` or `keep` |
 | `confidence` | Jev's confidence, from 0 to 1 |

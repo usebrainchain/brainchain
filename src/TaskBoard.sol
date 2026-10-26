@@ -329,9 +329,9 @@ contract TaskBoard is ReentrancyGuard {
 
     function _settle(uint256 id, Task storage task, bool pay, RefundReason reason) private {
         uint128 bounty = task.bounty;
+        task.status = pay ? Status.Paid : Status.Refunded;
         if (_isStaked(task.model)) staking.release(address(uint160(uint256(task.model))));
         if (pay) {
-            task.status = Status.Paid;
             uint128 fee = uint128((uint256(bounty) * task.feeBps) / 10_000);
             if (fee > 0) {
                 token.safeTransfer(task.feeRecipient, fee);
@@ -340,7 +340,6 @@ contract TaskBoard is ReentrancyGuard {
             token.safeTransfer(task.payee, bounty - fee);
             emit BountyPaid(id, task.model, task.payee, bounty, fee);
         } else {
-            task.status = Status.Refunded;
             token.safeTransfer(task.poster, bounty);
             emit BountyRefunded(id, task.poster, bounty, reason);
         }
