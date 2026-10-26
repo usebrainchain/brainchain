@@ -328,7 +328,7 @@ contract PonsLifecycleForkTest is Test {
     function _sweptCreator(Vm.Log[] memory logs) internal pure returns (uint256 creatorAmount) {
         for (uint256 i; i < logs.length; ++i) {
             if (logs[i].topics[0] == keccak256("PoolFeesSwept(bytes32,uint256,uint256,uint256,uint256)")) {
-                (, , uint256 c,) = abi.decode(logs[i].data, (uint256, uint256, uint256, uint256));
+                (,, uint256 c,) = abi.decode(logs[i].data, (uint256, uint256, uint256, uint256));
                 creatorAmount = c;
                 _log("operator sweep: creator", c);
             }
@@ -369,7 +369,9 @@ contract PonsLifecycleForkTest is Test {
         Vm.Log[] memory logs = vm.getRecordedLogs();
         bool reported;
         for (uint256 i; i < logs.length; ++i) {
-            if (logs[i].emitter == address(s) && logs[i].topics[0] == FeeSplitter.SweepFailed.selector) reported = true;
+            if (logs[i].emitter == address(s) && logs[i].topics[0] == FeeSplitter.SweepFailed.selector) {
+                reported = true;
+            }
         }
         assertTrue(reported, "the operator-only sweep is reported, not hidden");
 

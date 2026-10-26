@@ -49,11 +49,23 @@ contract AdminHandover is Script {
         _print("4. revoke the deployer's EXECUTOR_ROLE", l3Executor, l3Calls(l3Executor, l3Admin, deployer)[3]);
 
         console2.log("On Robinhood Chain (4663), from", deployer);
-        _print("5. give the rollup timelock EXECUTOR_ROLE", rollupExecutor, rollupCalls(rollupExecutor, rollupAdmin, deployer)[0]);
-        _print("6. revoke the deployer's EXECUTOR_ROLE", rollupExecutor, rollupCalls(rollupExecutor, rollupAdmin, deployer)[1]);
+        _print(
+            "5. give the rollup timelock EXECUTOR_ROLE",
+            rollupExecutor,
+            rollupCalls(rollupExecutor, rollupAdmin, deployer)[0]
+        );
+        _print(
+            "6. revoke the deployer's EXECUTOR_ROLE",
+            rollupExecutor,
+            rollupCalls(rollupExecutor, rollupAdmin, deployer)[1]
+        );
     }
 
-    function l3Calls(address l3Executor, address l3Admin, address deployer) public pure returns (bytes[4] memory calls) {
+    function l3Calls(address l3Executor, address l3Admin, address deployer)
+        public
+        pure
+        returns (bytes[4] memory calls)
+    {
         calls[0] = abi.encodeCall(IArbOwner.addChainOwner, (l3Executor));
         calls[1] = _selfCall(l3Executor, abi.encodeCall(IAccessControl.grantRole, (EXECUTOR_ROLE, l3Admin)));
         calls[2] = abi.encodeCall(

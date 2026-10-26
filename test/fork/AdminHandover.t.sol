@@ -42,8 +42,7 @@ contract AdminHandoverForkTest is Test {
         assertEq(
             calls[2],
             abi.encodeCall(
-                IUpgradeExecutor.executeCall,
-                (address(0x70), abi.encodeCall(IArbOwner.removeChainOwner, (DEPLOYER)))
+                IUpgradeExecutor.executeCall, (address(0x70), abi.encodeCall(IArbOwner.removeChainOwner, (DEPLOYER)))
             )
         );
         assertTrue(IRoles(L3_EXECUTOR).hasRole(EXECUTOR_ROLE, DEPLOYER));
