@@ -11,6 +11,9 @@ remappings = [
   "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
   "forge-std/=lib/forge-std/src/",
 ]
+# Dynamic test linking rewrites `new` into deployCode, which ends a test at its first
+# expected constructor revert. Keep it off so every case in a test runs.
+dynamic_test_linking = false
 
 [fuzz]
 runs = 256
