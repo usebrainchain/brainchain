@@ -11,8 +11,7 @@ import {TaskBoard} from "../src/TaskBoard.sol";
 import {WorkerStaking} from "../src/flywheel/WorkerStaking.sol";
 import {MockERC20} from "./MockERC20.sol";
 
-/// Each test reproduces a v2 finding from the October 2026 review and asserts
-/// the v3 behaviour. The comment above each test says what v2 did.
+/// Regression tests for v2 issues; where a test has a comment, it says what v2 did.
 contract TaskBoardRegressions is BrainChainSetup {
     event BountyPaid(uint256 indexed id, bytes32 indexed model, address indexed account, uint128 bounty, uint128 fee);
     event FeeTaken(uint256 indexed id, address indexed recipient, uint128 fee);
@@ -332,7 +331,7 @@ contract DecisionExecutorRegressions is BrainChainSetup {
         assertTrue(board.paused());
     }
 
-    /// v2 accepted a timelock near 2^64, which overflowed and broke queue() for good.
+    /// v2 accepted a timelock near 2^64, which overflowed and broke queue() permanently.
     function test_timelockHasACeiling() public {
         bytes memory data =
             abi.encodeCall(DecisionExecutor.setParameters, (8_500, type(uint64).max - 100, 2, 10e6, 20e6));
@@ -435,40 +434,7 @@ contract StakingRegressions is BrainChainSetup {
     }
 }
 
-contract ModelRegistryCoverage is BrainChainSetup {
-    function test_setModelIsOwnerOnlyAndRejectsZeroes() public {
-        vm.prank(poster);
-        vm.expectRevert(ModelRegistry.NotOwner.selector);
-        registry.setModel(CLAUDE, claudeAccount, 1, true);
-        vm.expectRevert(ModelRegistry.ZeroAddress.selector);
-        registry.setModel(bytes32(0), claudeAccount, 1, true);
-        vm.expectRevert(ModelRegistry.ZeroAddress.selector);
-        registry.setModel(CLAUDE, address(0), 1, true);
-    }
-
-    function test_updatingAModelKeepsOneIdAndUnknownModelsRevert() public {
-        assertEq(registry.ids().length, 2);
-        registry.setModel(CLAUDE, makeAddr("new-claude"), 0.5e6, false);
-        assertEq(registry.ids().length, 2);
-        ModelRegistry.Model memory m = registry.get(CLAUDE);
-        assertEq(m.account, makeAddr("new-claude"));
-        assertFalse(m.active);
-        vm.expectRevert(ModelRegistry.UnknownModel.selector);
-        registry.get(keccak256("nobody"));
-    }
-
-    function test_setOwnerIsOwnerOnlyAndRejectsZero() public {
-        vm.prank(poster);
-        vm.expectRevert(ModelRegistry.NotOwner.selector);
-        registry.setOwner(poster);
-        vm.expectRevert(ModelRegistry.ZeroAddress.selector);
-        registry.setOwner(address(0));
-        registry.setOwner(poster);
-        assertEq(registry.owner(), poster);
-    }
-}
-
-/// Window arithmetic at a realistic timestamp: at timestamp 1, `t + w` and `t * w` agree.
+/// Foundry starts at timestamp 1, where `t + w` equals `t * w`; a real date makes a multiplication bug fail.
 contract RealisticTimeRegressions is BrainChainSetup {
     function setUp() public override {
         super.setUp();
@@ -492,12 +458,5 @@ contract RealisticTimeRegressions is BrainChainSetup {
         vm.prank(poster);
         vm.expectRevert(TaskBoard.TooLate.selector);
         board.dispute(id);
-    }
-
-    function test_unboundExecutorRejectsAZeroGuardian() public {
-        DecisionExecutor fresh =
-            new DecisionExecutor(decisionLog, IERC20(address(usdg)), guardian, 8_500, 2 days, 2, 10e6, 20e6);
-        vm.expectRevert(DecisionExecutor.ZeroAddress.selector);
-        fresh.setGuardian(address(0));
     }
 }

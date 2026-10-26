@@ -44,6 +44,7 @@ contract WorkerStaking is ReentrancyGuard {
 
     IERC20 public immutable token;
     address public owner;
+    /// @notice The task board: it slashes stakes, and holds them while a worker has a task in flight.
     address public slasher;
     uint128 public minStake;
     uint64 public cooldown;

@@ -6,7 +6,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {DecisionLog} from "../src/DecisionLog.sol";
 import {FeeRouter} from "../src/flywheel/FeeRouter.sol";
 import {ISwapAdapter} from "../src/interfaces/ISwapAdapter.sol";
-import {IChangeThreshold, ProposalBonds} from "../src/flywheel/ProposalBonds.sol";
+import {IDecisionExecutor, ProposalBonds} from "../src/flywheel/ProposalBonds.sol";
 import {WorkerStaking} from "../src/flywheel/WorkerStaking.sol";
 import {FlywheelTest} from "./Flywheel.t.sol";
 
@@ -312,13 +312,13 @@ contract ProposalBondsCoverage is FlywheelTest {
 
     function test_constructorRejectsZeroAndBadConfig() public {
         IERC20 t = IERC20(address(brainToken));
-        IChangeThreshold e = IChangeThreshold(address(executor));
+        IDecisionExecutor e = IDecisionExecutor(address(executor));
         vm.expectRevert(ProposalBonds.ZeroAddress.selector);
         new ProposalBonds(IERC20(address(0)), decisionLog, e, address(this), 1, 1);
         vm.expectRevert(ProposalBonds.ZeroAddress.selector);
         new ProposalBonds(t, DecisionLog(address(0)), e, address(this), 1, 1);
         vm.expectRevert(ProposalBonds.ZeroAddress.selector);
-        new ProposalBonds(t, decisionLog, IChangeThreshold(address(0)), address(this), 1, 1);
+        new ProposalBonds(t, decisionLog, IDecisionExecutor(address(0)), address(this), 1, 1);
         vm.expectRevert(ProposalBonds.ZeroAddress.selector);
         new ProposalBonds(t, decisionLog, e, address(0), 1, 1);
         vm.expectRevert(ProposalBonds.BadConfig.selector);
@@ -410,7 +410,7 @@ contract ProposalBondsCoverage is FlywheelTest {
 
     function test_setConfigIsOwnerOnlyValidatedAndAnnounced() public {
         ProposalBonds own = new ProposalBonds(
-            IERC20(address(brainToken)), decisionLog, IChangeThreshold(address(executor)), address(this), 1, 1
+            IERC20(address(brainToken)), decisionLog, IDecisionExecutor(address(executor)), address(this), 1, 1
         );
         vm.prank(agent);
         vm.expectRevert(ProposalBonds.NotOwner.selector);

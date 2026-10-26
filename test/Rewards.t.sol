@@ -123,7 +123,7 @@ contract FeeSplitterTest is Test {
         return new MockCurve(address(splitter), address(escrow), launchToken, address(factory));
     }
 
-    function _bound() internal returns (MockCurve curve) {
+    function _bindCurve() internal returns (MockCurve curve) {
         curve = _curve();
         splitter.bindCurve(curve);
     }
@@ -189,7 +189,7 @@ contract FeeSplitterTest is Test {
     }
 
     function test_graduatedCurveIsNotSwept() public {
-        MockCurve curve = _bound();
+        MockCurve curve = _bindCurve();
         curve.setGraduated(true);
         escrow.fund{value: 1 ether}(address(splitter));
         splitter.claimAndSplit();
@@ -198,7 +198,7 @@ contract FeeSplitterTest is Test {
     }
 
     function test_failedSweepIsReportedAndTheClaimStillRuns() public {
-        MockCurve curve = _bound();
+        MockCurve curve = _bindCurve();
         curve.setFailSweeps(true);
         escrow.fund{value: 1 ether}(address(splitter));
         vm.expectEmit(address(splitter));
@@ -237,7 +237,7 @@ contract FeeSplitterTest is Test {
         vm.expectRevert(FeeSplitter.NoCurve.selector);
         splitter.proposeRecipient(next);
 
-        _bound();
+        _bindCurve();
         vm.expectRevert(FeeSplitter.NotOwner.selector);
         splitter.proposeRecipient(next);
 
@@ -262,7 +262,7 @@ contract FeeSplitterTest is Test {
     }
 
     function test_enablingBuybackWaitsThreeDays() public {
-        _bound();
+        _bindCurve();
         vm.startPrank(owner);
         splitter.proposeBuyback(true);
         assertTrue(splitter.pendingBuyback());
@@ -279,7 +279,7 @@ contract FeeSplitterTest is Test {
     }
 
     function test_cancelClearsEveryPendingChange() public {
-        _bound();
+        _bindCurve();
         vm.startPrank(owner);
         splitter.proposeRecipient(makeAddr("next"));
         splitter.proposeBuyback(true);
@@ -292,14 +292,14 @@ contract FeeSplitterTest is Test {
     }
 
     function test_recipientChangeIsReadyExactlyThreeDaysLater() public {
-        _bound();
+        _bindCurve();
         vm.prank(owner);
         splitter.proposeRecipient(makeAddr("next"));
         assertEq(splitter.recipientEta(), block.timestamp + 3 days);
     }
 
     function test_buybackChangeWaitsThreeDaysAndCanBeCancelled() public {
-        _bound();
+        _bindCurve();
         vm.startPrank(owner);
         vm.expectRevert(FeeSplitter.NothingPending.selector);
         splitter.executeBuyback();
@@ -328,7 +328,7 @@ contract FeeSplitterTest is Test {
         vm.prank(owner);
         vm.expectRevert(FeeSplitter.NoCurve.selector);
         splitter.proposeBuyback(true);
-        _bound();
+        _bindCurve();
         vm.expectRevert(FeeSplitter.NotOwner.selector);
         splitter.proposeBuyback(true);
         vm.expectRevert(FeeSplitter.NotOwner.selector);

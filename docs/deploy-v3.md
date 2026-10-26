@@ -5,7 +5,7 @@ v3 replaces every contract of the v2 deployment. Nothing in v2 is upgradeable, s
 ## What the owners provide
 
 - **A second signer** for each 2-of-2 Safe: one Safe on Robinhood Chain and one on BrainChain. The deployer key can be the first signer at the start; the goal is that no single key holds admin powers.
-- A Safe on BrainChain needs the Safe contracts deployed there first (the Safe singleton factory, or the Safe contracts at addresses of our own with the Safe CLI).
+- A Safe on BrainChain needs the Safe contracts deployed there first (through the Safe singleton factory, or deployed at our own addresses with the Safe CLI).
 
 ## Order
 

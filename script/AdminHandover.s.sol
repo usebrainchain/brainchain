@@ -21,7 +21,7 @@ interface IAccessControl {
 /// chain-level powers from the deployer key to the admin timelocks. Review the
 /// output, then send each transaction from the deployer in the order printed.
 ///
-/// Today the deployer is BrainChain's only chain owner and holds EXECUTOR_ROLE
+/// Before the handover, the deployer is BrainChain's only chain owner and holds EXECUTOR_ROLE
 /// on both UpgradeExecutors: BrainChain's (which owns the bridged-token beacon
 /// and proxy admin) and the rollup's on Robinhood Chain (which owns the rollup
 /// contracts). After the handover only the timelocks, proposed to by the Safe,
@@ -42,23 +42,18 @@ contract AdminHandover is Script {
         address rollupExecutor =
             vm.envOr("ROLLUP_UPGRADE_EXECUTOR", address(0x12c59492BB508EFDb6c5D43F2aA907d8B55524D6));
 
+        bytes[4] memory l3 = l3Calls(l3Executor, l3Admin, deployer);
+        bytes[2] memory rollup = rollupCalls(rollupExecutor, rollupAdmin, deployer);
+
         console2.log("On BrainChain (274663), from", deployer);
-        _print("1. make the UpgradeExecutor a chain owner", ARB_OWNER, l3Calls(l3Executor, l3Admin, deployer)[0]);
-        _print("2. give the admin timelock EXECUTOR_ROLE", l3Executor, l3Calls(l3Executor, l3Admin, deployer)[1]);
-        _print("3. remove the deployer as chain owner", l3Executor, l3Calls(l3Executor, l3Admin, deployer)[2]);
-        _print("4. revoke the deployer's EXECUTOR_ROLE", l3Executor, l3Calls(l3Executor, l3Admin, deployer)[3]);
+        _print("1. make the UpgradeExecutor a chain owner", ARB_OWNER, l3[0]);
+        _print("2. give the admin timelock EXECUTOR_ROLE", l3Executor, l3[1]);
+        _print("3. remove the deployer as chain owner", l3Executor, l3[2]);
+        _print("4. revoke the deployer's EXECUTOR_ROLE", l3Executor, l3[3]);
 
         console2.log("On Robinhood Chain (4663), from", deployer);
-        _print(
-            "5. give the rollup timelock EXECUTOR_ROLE",
-            rollupExecutor,
-            rollupCalls(rollupExecutor, rollupAdmin, deployer)[0]
-        );
-        _print(
-            "6. revoke the deployer's EXECUTOR_ROLE",
-            rollupExecutor,
-            rollupCalls(rollupExecutor, rollupAdmin, deployer)[1]
-        );
+        _print("5. give the rollup timelock EXECUTOR_ROLE", rollupExecutor, rollup[0]);
+        _print("6. revoke the deployer's EXECUTOR_ROLE", rollupExecutor, rollup[1]);
     }
 
     function l3Calls(address l3Executor, address l3Admin, address deployer)

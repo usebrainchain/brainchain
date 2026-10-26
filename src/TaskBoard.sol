@@ -142,8 +142,8 @@ contract TaskBoard is ReentrancyGuard {
     mapping(uint256 => Task) private _tasks;
     mapping(uint256 => bool) public decisionUsed;
     /// @notice Staked workers governance has approved for hire. Staking alone
-    /// is not enough: anyone can stake, and the brain key plus a self-staked
-    /// address could otherwise hire itself and take a bounty.
+    /// is not enough: anyone can stake, and without it a compromised brain key
+    /// could hire an address it staked itself and take a bounty.
     mapping(address => bool) public workerAllowed;
 
     constructor(

@@ -7,7 +7,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 
 import {DecisionLog} from "../DecisionLog.sol";
 
-interface IChangeThreshold {
+interface IDecisionExecutor {
     function changeThresholdBps() external view returns (uint16);
     function changeSubject(address target, bytes calldata data) external view returns (bytes32);
 }
@@ -56,7 +56,7 @@ contract ProposalBonds is ReentrancyGuard {
 
     IERC20 public immutable token;
     DecisionLog public immutable decisions;
-    IChangeThreshold public immutable executor;
+    IDecisionExecutor public immutable executor;
     address public immutable owner;
     uint128 public bond;
     uint64 public decideWithin;
@@ -68,7 +68,7 @@ contract ProposalBonds is ReentrancyGuard {
     constructor(
         IERC20 token_,
         DecisionLog decisions_,
-        IChangeThreshold executor_,
+        IDecisionExecutor executor_,
         address owner_,
         uint128 bond_,
         uint64 decideWithin_

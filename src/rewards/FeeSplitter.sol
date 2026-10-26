@@ -27,8 +27,8 @@ interface IPonsFactory {
 
 /// @notice Creator fee recipient for $BRAIN on Pons. Claims the accrued ETH
 /// from the Pons fee escrow and splits it in half: one half to the reward
-/// distributor, the other to the treasury. The split and both recipients are
-/// fixed at deployment. Any ERC-20 that reaches this contract or its escrow
+/// distributor, the other to the treasury. The 50/50 split, the distributor and
+/// the treasury are fixed at deployment. Any ERC-20 that reaches this contract or its escrow
 /// balance (an ERC-20 pair, buyback releases, rescued pool fees) goes to the
 /// treasury. Pons only lets the fee recipient sweep a curve's fees into the
 /// escrow, so this contract does that too, for the one curve the deployer
@@ -117,8 +117,8 @@ contract FeeSplitter {
 
     /// @notice Anyone may call this. Sweeps the curve's fees into the escrow
     /// while the curve trades, claims what the escrow holds for this contract,
-    /// and splits it. A failed sweep is reported, not hidden; a failed claim
-    /// reverts so a keeper with too little gas cannot skip it silently.
+    /// and splits it. A failed sweep emits `SweepFailed`; a failed claim reverts so
+    /// a keeper with too little gas cannot skip it silently.
     function claimAndSplit() external {
         if (address(curve) != address(0) && !curve.graduated()) {
             try curve.sweepFees(0) {}

@@ -189,11 +189,20 @@ contract PonsLifecycleForkTest is Test {
     address constant TREASURY = 0x57BF4f61e27d6C2bD7938d49308104f15736Fdf5;
     address constant USDG = 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168;
 
+    /// Pons keeps 30% of its 1% base fee; the creator gets the rest plus the creator tax.
+    uint256 constant PROTOCOL_SHARE_BPS = 3_000;
+
     address launcher = makeAddr("launcher");
     address owner = makeAddr("owner");
     Trader trader;
     Trader trader2;
     uint256 nonce;
+
+    FeeSplitter splitter;
+    address launchedToken;
+    address launchedCurve;
+    uint256 distributorStart;
+    uint256 treasuryStart;
 
     function setUp() public {
         if (block.chainid != 4663) vm.skip(true);
@@ -205,12 +214,10 @@ contract PonsLifecycleForkTest is Test {
         vm.deal(launcher, 10 ether);
     }
 
-    // ------------------------------------------------------------ helpers
-
     function _launch(address recipient, bool buyback, address pair) internal returns (address token, address curve) {
         TokenParams memory p = TokenParams({
-            name: "Review Fork",
-            symbol: "RVW",
+            name: "Fork Test",
+            symbol: "FORK",
             logo: "",
             description: "",
             socials: Socials("", "", "", "", ""),
@@ -218,7 +225,7 @@ contract PonsLifecycleForkTest is Test {
             creatorTaxBps: 200,
             buybackEnabled: buyback,
             expectedEconomics: bytes32(0),
-            salt: keccak256(abi.encode("review", ++nonce))
+            salt: keccak256(abi.encode("fork", ++nonce))
         });
         uint256 fee = FACTORY.launchFee();
         vm.prank(launcher);
@@ -229,7 +236,7 @@ contract PonsLifecycleForkTest is Test {
     function _expectedCreator(address curve) internal view returns (uint256) {
         uint256 pending = ICurve(curve).quoteFeeBalance();
         uint256 tax = ICurve(curve).creatorTaxBalance();
-        return pending - (pending * 3000) / 10_000 + tax;
+        return pending - (pending * PROTOCOL_SHARE_BPS) / 10_000 + tax;
     }
 
     function _key(address token) internal pure returns (PoolKey memory) {
@@ -251,77 +258,67 @@ contract PonsLifecycleForkTest is Test {
         trader2.v4Swap(key, true, int256(1_000_000 ether)); // exact-out buy: fee in ETH
     }
 
-    function _log(string memory what, uint256 v) internal pure {
-        console2.log(what, v);
-    }
-
-    uint256 d0;
-    uint256 t0;
-    FeeSplitter sp;
-    address tok;
-    address crv;
-
     function _splitter() internal returns (FeeSplitter) {
         return new FeeSplitter(IFeeEscrow(address(ESCROW)), DISTRIBUTOR, TREASURY, owner);
     }
 
     function _split() internal view returns (uint256) {
-        return (DISTRIBUTOR.balance - d0) + (TREASURY.balance - t0);
+        return (DISTRIBUTOR.balance - distributorStart) + (TREASURY.balance - treasuryStart);
     }
 
-    function _phase0(FeeSplitter splitter) internal {
-        sp = splitter;
-        d0 = DISTRIBUTOR.balance;
-        t0 = TREASURY.balance;
-        (tok, crv) = _launch(address(splitter), false, address(0));
-        LaunchedToken memory lt = FACTORY.getLaunchedToken(tok);
-        assertEq(lt.curve, crv);
+    function _launchAndBind(FeeSplitter candidate) internal {
+        splitter = candidate;
+        distributorStart = DISTRIBUTOR.balance;
+        treasuryStart = TREASURY.balance;
+        (launchedToken, launchedCurve) = _launch(address(splitter), false, address(0));
+        LaunchedToken memory lt = FACTORY.getLaunchedToken(launchedToken);
+        assertEq(lt.curve, launchedCurve);
         assertEq(lt.creatorFeeRecipient, address(splitter));
         assertEq(lt.pairToken, address(0));
-        splitter.bindCurve(IPonsCurve(crv));
-        assertEq(splitter.launchToken(), tok);
+        splitter.bindCurve(IPonsCurve(launchedCurve));
+        assertEq(splitter.launchToken(), launchedToken);
         assertEq(address(splitter.factory()), address(FACTORY));
     }
 
-    function _phase1() internal {
-        trader.curveBuy(crv, 0.5 ether);
-        trader2.curveBuy(crv, 0.8 ether);
-        trader.curveSell(crv, tok, IERC20Min(tok).balanceOf(address(trader)) / 2);
-        uint256 expected = _expectedCreator(crv);
-        sp.claimAndSplit();
-        _log("curve: creator fees expected (wei)", expected);
-        _log("curve: split by one claimAndSplit (wei)", _split());
+    function _tradeOnCurve() internal {
+        trader.curveBuy(launchedCurve, 0.5 ether);
+        trader2.curveBuy(launchedCurve, 0.8 ether);
+        trader.curveSell(launchedCurve, launchedToken, IERC20Min(launchedToken).balanceOf(address(trader)) / 2);
+        uint256 expected = _expectedCreator(launchedCurve);
+        splitter.claimAndSplit();
+        console2.log("curve: creator fees expected (wei)", expected);
+        console2.log("curve: split by one claimAndSplit (wei)", _split());
         assertEq(_split(), expected, "one call sweeps, claims and splits");
-        assertEq(ICurve(crv).quoteFeeBalance() + ICurve(crv).creatorTaxBalance(), 0);
+        assertEq(ICurve(launchedCurve).quoteFeeBalance() + ICurve(launchedCurve).creatorTaxBalance(), 0);
     }
 
-    function _phase2() internal {
-        trader.curveBuy(crv, 0.3 ether);
-        uint256 pendingBeforeCross = _expectedCreator(crv);
-        _graduate(tok, crv);
-        uint256 credited = ESCROW.balanceOf(address(sp));
-        _log("graduation: escrow credit for the splitter (wei)", credited);
+    function _graduateAndClaim() internal {
+        trader.curveBuy(launchedCurve, 0.3 ether);
+        uint256 pendingBeforeCross = _expectedCreator(launchedCurve);
+        _graduate(launchedToken, launchedCurve);
+        uint256 credited = ESCROW.balanceOf(address(splitter));
+        console2.log("graduation: escrow credit for the splitter (wei)", credited);
         assertGt(credited, pendingBeforeCross, "graduation swept the curve's last fees");
         uint256 before = _split();
-        sp.claimAndSplit(); // graduated: no sweep attempted
+        splitter.claimAndSplit(); // graduated: no sweep attempted
         assertEq(_split() - before, credited);
-        assertEq(ESCROW.balanceOf(address(sp)), 0);
+        assertEq(ESCROW.balanceOf(address(splitter)), 0);
     }
 
-    function _phase3() internal {
-        _v4Trades(tok);
-        bytes32 poolId = keccak256(abi.encode(_key(tok)));
+    function _tradeInPoolAndSweep() internal {
+        _v4Trades(launchedToken);
+        bytes32 poolId = keccak256(abi.encode(_key(launchedToken)));
         uint256 before = _split();
-        sp.claimAndSplit();
+        splitter.claimAndSplit();
         assertEq(_split(), before, "nothing reaches the splitter before the operator sweep");
 
         vm.recordLogs();
         vm.prank(HOOK.feeSweepOperator());
         HOOK.sweepPoolFees(poolId, 1, 1);
         uint256 creatorAmount = _sweptCreator(vm.getRecordedLogs());
-        assertEq(ESCROW.balanceOf(address(sp)), creatorAmount, "creator share credited in ETH");
+        assertEq(ESCROW.balanceOf(address(splitter)), creatorAmount, "creator share credited in ETH");
         before = _split();
-        sp.claimAndSplit();
+        splitter.claimAndSplit();
         assertEq(_split() - before, creatorAmount);
     }
 
@@ -330,30 +327,30 @@ contract PonsLifecycleForkTest is Test {
             if (logs[i].topics[0] == keccak256("PoolFeesSwept(bytes32,uint256,uint256,uint256,uint256)")) {
                 (,, uint256 c,) = abi.decode(logs[i].data, (uint256, uint256, uint256, uint256));
                 creatorAmount = c;
-                _log("operator sweep: creator", c);
+                console2.log("operator sweep: creator", c);
             }
         }
     }
 
     function _assertNothingStuck() internal view {
-        bytes32 poolId = keccak256(abi.encode(_key(tok)));
-        assertEq(address(sp).balance, 0, "splitter ETH");
-        assertEq(ESCROW.balanceOf(address(sp)), 0, "escrow ETH credit");
-        assertEq(ESCROW.balanceOfToken(address(sp), tok), 0, "escrow token credit");
-        assertEq(IERC20Min(tok).balanceOf(address(sp)), 0, "token held by the splitter");
+        bytes32 poolId = keccak256(abi.encode(_key(launchedToken)));
+        assertEq(address(splitter).balance, 0, "splitter ETH");
+        assertEq(ESCROW.balanceOf(address(splitter)), 0, "escrow ETH credit");
+        assertEq(ESCROW.balanceOfToken(address(splitter), launchedToken), 0, "escrow token credit");
+        assertEq(IERC20Min(launchedToken).balanceOf(address(splitter)), 0, "token held by the splitter");
         assertEq(HOOK.pendingFees(poolId, address(0)) + HOOK.pendingCreatorTax(poolId, address(0)), 0);
-        assertEq(HOOK.pendingFees(poolId, tok) + HOOK.pendingCreatorTax(poolId, tok), 0);
-        assertEq(DISTRIBUTOR.balance - d0 + (TREASURY.balance - t0), _split());
-        _log("total to the RewardDistributor (wei)", DISTRIBUTOR.balance - d0);
-        _log("total to the treasury (wei)", TREASURY.balance - t0);
+        assertEq(HOOK.pendingFees(poolId, launchedToken) + HOOK.pendingCreatorTax(poolId, launchedToken), 0);
+        assertEq(DISTRIBUTOR.balance - distributorStart + (TREASURY.balance - treasuryStart), _split());
+        console2.log("total to the RewardDistributor (wei)", DISTRIBUTOR.balance - distributorStart);
+        console2.log("total to the treasury (wei)", TREASURY.balance - treasuryStart);
     }
 
     /// ETH pair, buyback off: every wei from curve trades, graduation and V4 trades is split.
     function test_lifecycleSplitsEveryWei() public {
-        _phase0(_splitter());
-        _phase1();
-        _phase2();
-        _phase3();
+        _launchAndBind(_splitter());
+        _tradeOnCurve();
+        _graduateAndClaim();
+        _tradeInPoolAndSweep();
         _assertNothingStuck();
     }
 
@@ -373,7 +370,7 @@ contract PonsLifecycleForkTest is Test {
                 reported = true;
             }
         }
-        assertTrue(reported, "the operator-only sweep is reported, not hidden");
+        assertTrue(reported, "the operator-only sweep emits SweepFailed");
 
         vm.prank(HOOK.feeSweepOperator());
         ICurve(curve).sweepFees(1);
@@ -437,7 +434,7 @@ contract PonsLifecycleForkTest is Test {
         assertEq(FACTORY.getLaunchedToken(token).creatorFeeRecipient, next);
     }
 
-    /// v2 accepted the token pasted instead of the curve, for good.
+    /// v2 accepted the token pasted instead of the curve, and the bind could not be undone.
     function test_wrongBindIsRejected() public {
         FeeSplitter s = _splitter();
         (address token, address curve) = _launch(address(s), false, address(0));
