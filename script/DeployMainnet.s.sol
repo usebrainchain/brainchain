@@ -19,9 +19,15 @@ import {WorkerStaking} from "../src/flywheel/WorkerStaking.sol";
 /// handover (see AdminHandover.s.sol). The deployer is the guardian at first
 /// and binds the board; the admin moves the guardian to the Safe afterwards.
 ///
+/// A chain change needs Jev to adopt it with at least 60% confidence in its
+/// answer. Measured that way, Jev's adopt decisions on well-supported changes
+/// land at 59 to 69%, so a higher bar blocks every change.
+///
 /// Env: ADMIN_SAFE, BRAIN, USDG (bridged USDG on BrainChain), FEE_RECIPIENT,
 /// WORKER_CLAUDE, WORKER_GPT, WORKER_GEMINI, WORKER_GROK, WORKER_DEEPSEEK,
-/// optional ADMIN_DELAY (seconds, default 48 hours).
+/// optional ADMIN_DELAY (seconds, default 48 hours), optional ADMIN_TIMELOCK
+/// (reuse a timelock the Safe already proposes to, such as the one that holds
+/// the chain-ownership powers, instead of deploying a new one).
 contract DeployMainnet is Script {
     function run() external {
         address safe = vm.envAddress("ADMIN_SAFE");
@@ -34,11 +40,9 @@ contract DeployMainnet is Script {
         vm.startBroadcast();
         address deployer = msg.sender;
 
-        address[] memory safes = new address[](1);
-        safes[0] = safe;
-        TimelockController admin = new TimelockController(adminDelay, safes, safes, address(0));
+        TimelockController admin = _admin(safe, adminDelay);
         DecisionLog decisionLog = new DecisionLog(address(admin), brainKey);
-        DecisionExecutor executor = new DecisionExecutor(decisionLog, usdg, deployer, 8_500, 48 hours, 5, 2e6, 10e6);
+        DecisionExecutor executor = new DecisionExecutor(decisionLog, usdg, deployer, 6_000, 48 hours, 5, 2e6, 10e6);
         ModelRegistry registry = new ModelRegistry(deployer);
         TaskBoard board = new TaskBoard(
             usdg,
@@ -76,5 +80,17 @@ contract DeployMainnet is Script {
         console2.log("ModelRegistry", address(registry));
         console2.log("DecisionExecutor", address(executor));
         console2.log("TaskBoard", address(board));
+    }
+
+    function _admin(address safe, uint256 delay) private returns (TimelockController admin) {
+        address existing = vm.envOr("ADMIN_TIMELOCK", address(0));
+        if (existing == address(0)) {
+            address[] memory safes = new address[](1);
+            safes[0] = safe;
+            return new TimelockController(delay, safes, safes, address(0));
+        }
+        admin = TimelockController(payable(existing));
+        require(admin.hasRole(admin.PROPOSER_ROLE(), safe), "the Safe cannot propose to ADMIN_TIMELOCK");
+        require(admin.getMinDelay() == delay, "ADMIN_TIMELOCK has a different delay");
     }
 }
