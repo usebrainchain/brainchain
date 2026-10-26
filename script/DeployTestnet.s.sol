@@ -39,7 +39,7 @@ contract DeployTestnet is Script {
         address predictedExecutor = vm.computeCreateAddress(deployer, vm.getNonce(deployer) + 1);
         TestUSDG usdg = new TestUSDG(predictedExecutor, 100e6);
         DecisionExecutor executor =
-            new DecisionExecutor(decisionLog, IERC20(address(usdg)), deployer, 8_500, 2 hours, 20, 5e6, 40e6);
+            new DecisionExecutor(decisionLog, IERC20(address(usdg)), deployer, 6_000, 2 hours, 20, 5e6, 40e6);
         require(address(executor) == predictedExecutor, "executor address mismatch");
 
         WorkerStaking staking = new WorkerStaking(IERC20(address(brainToken)), deployer, 500e18, 3 days, 2_000);
