@@ -81,7 +81,12 @@ contract FlywheelTest is Test {
         swap = new TestSwap(IERC20(address(usdg)), IERC20(address(brainToken)), 1e12);
         brainToken.transfer(address(swap), 500_000e18);
         bonds = new ProposalBonds(
-            IERC20(address(brainToken)), decisionLog, IDecisionExecutor(address(executor)), address(this), 100e18, 7 days
+            IERC20(address(brainToken)),
+            decisionLog,
+            IDecisionExecutor(address(executor)),
+            address(this),
+            100e18,
+            7 days
         );
 
         usdg.mint(poster, 1_000e6);
