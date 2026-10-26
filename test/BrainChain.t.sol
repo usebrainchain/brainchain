@@ -34,7 +34,7 @@ abstract contract BrainChainSetup is Test {
     function setUp() public virtual {
         usdg = new MockERC20();
         decisionLog = new DecisionLog(address(this), brain);
-        executor = new DecisionExecutor(decisionLog, IERC20(address(usdg)), guardian, 8_500, 2 days, 2);
+        executor = new DecisionExecutor(decisionLog, IERC20(address(usdg)), guardian, 8_500, 2 days, 2, 10e6, 20e6);
         registry = new ModelRegistry(address(this));
         registry.setModel(CLAUDE, claudeAccount, 0.4e6, true);
         registry.setModel(GPT, gptAccount, 0.35e6, true);
@@ -86,7 +86,7 @@ abstract contract BrainChainSetup is Test {
     }
 
     function hireClaude(uint256 id) internal {
-        uint256 d = decide(DecisionLog.Kind.Hire, bytes32(id), CLAUDE, 8_000);
+        uint256 d = decide(DecisionLog.Kind.Hire, board.subjectOf(id), CLAUDE, 8_000);
         vm.prank(brain);
         board.hire(id, d);
     }
@@ -97,7 +97,7 @@ abstract contract BrainChainSetup is Test {
     }
 
     function gradeAs(uint256 id, bytes32 answer, uint16 confidenceBps) internal {
-        uint256 d = decide(DecisionLog.Kind.Grade, bytes32(id), answer, confidenceBps);
+        uint256 d = decide(DecisionLog.Kind.Grade, board.subjectOf(id), answer, confidenceBps);
         vm.prank(brain);
         board.grade(id, d);
     }
@@ -187,7 +187,7 @@ contract TaskBoardTest is BrainChainSetup {
 
     function test_lowConfidenceHireLeavesTaskOpen() public {
         uint256 id = postTask();
-        uint256 d = decide(DecisionLog.Kind.Hire, bytes32(id), CLAUDE, 6_500);
+        uint256 d = decide(DecisionLog.Kind.Hire, board.subjectOf(id), CLAUDE, 6_500);
         vm.prank(brain);
         board.hire(id, d);
         assertEq(uint8(board.get(id).status), uint8(TaskBoard.Status.Open));
@@ -221,7 +221,7 @@ contract TaskBoardTest is BrainChainSetup {
         hireClaude(id);
         deliver(id);
         vm.warp(block.timestamp + 6 hours + 1);
-        uint256 d = decide(DecisionLog.Kind.Grade, bytes32(id), YES, 9_900);
+        uint256 d = decide(DecisionLog.Kind.Grade, board.subjectOf(id), YES, 9_900);
         vm.prank(brain);
         vm.expectRevert(TaskBoard.TooLate.selector);
         board.grade(id, d);
@@ -237,27 +237,43 @@ contract TaskBoardTest is BrainChainSetup {
 
         vm.prank(claudeAccount);
         board.dispute(id);
-        uint256 d = decide(DecisionLog.Kind.Ruling, bytes32(id), YES, 8_000);
+        uint256 d = decide(DecisionLog.Kind.Ruling, board.subjectOf(id), YES, 8_000);
         vm.prank(brain);
         board.rule(id, d);
         assertEq(usdg.balanceOf(claudeAccount), BOUNTY);
     }
 
-    function test_lowConfidenceRulingRefunds() public {
+    /// v2 refunded here: a free poster dispute turned accepted work into a refund.
+    function test_lowConfidenceRulingLeavesTheGrade() public {
         uint256 id = postTask();
         hireClaude(id);
         deliver(id);
         gradeAs(id, YES, 9_000);
         vm.prank(poster);
         board.dispute(id);
-        uint256 d = decide(DecisionLog.Kind.Ruling, bytes32(id), YES, 5_000);
+        uint256 d = decide(DecisionLog.Kind.Ruling, board.subjectOf(id), NO, 5_000);
+        vm.prank(brain);
+        board.rule(id, d);
+        assertEq(usdg.balanceOf(claudeAccount), BOUNTY);
+        assertEq(usdg.balanceOf(poster), 1_000e6 - BOUNTY);
+    }
+
+    function test_confidentRulingForThePosterRefunds() public {
+        uint256 id = postTask();
+        hireClaude(id);
+        deliver(id);
+        gradeAs(id, YES, 9_000);
+        vm.prank(poster);
+        board.dispute(id);
+        uint256 d = decide(DecisionLog.Kind.Ruling, board.subjectOf(id), NO, 9_000);
         vm.prank(brain);
         board.rule(id, d);
         assertEq(usdg.balanceOf(poster), 1_000e6);
         assertEq(usdg.balanceOf(claudeAccount), 0);
     }
 
-    function test_unruledDisputeRefundsAfterTheRuleWindow() public {
+    /// v2 refunded here too, after the rule window, even though Jev had accepted the work.
+    function test_unruledDisputeKeepsTheGradeAfterTheRuleWindow() public {
         uint256 id = postTask();
         hireClaude(id);
         deliver(id);
@@ -266,7 +282,20 @@ contract TaskBoardTest is BrainChainSetup {
         board.dispute(id);
         vm.warp(block.timestamp + 6 hours + 1);
         board.finalize(id);
+        assertEq(usdg.balanceOf(claudeAccount), BOUNTY);
+    }
+
+    function test_unruledModelDisputeKeepsTheRejection() public {
+        uint256 id = postTask();
+        hireClaude(id);
+        deliver(id);
+        gradeAs(id, NO, 9_000);
+        vm.prank(claudeAccount);
+        board.dispute(id);
+        vm.warp(block.timestamp + 6 hours + 1);
+        board.finalize(id);
         assertEq(usdg.balanceOf(poster), 1_000e6);
+        assertEq(usdg.balanceOf(claudeAccount), 0);
     }
 
     function test_disputeOnlyOnceAndOnlyByParties() public {
@@ -300,7 +329,7 @@ contract TaskBoardTest is BrainChainSetup {
     function test_decisionsAreSingleUse() public {
         uint256 first = postTask();
         // A held hire leaves the task open, so only the single-use rule stops a replay.
-        uint256 d = decide(DecisionLog.Kind.Hire, bytes32(first), CLAUDE, 5_000);
+        uint256 d = decide(DecisionLog.Kind.Hire, board.subjectOf(first), CLAUDE, 5_000);
         vm.startPrank(brain);
         board.hire(first, d);
         vm.expectRevert(TaskBoard.DecisionUsed.selector);
@@ -311,8 +340,8 @@ contract TaskBoardTest is BrainChainSetup {
     function test_decisionMustMatchKindAndTask() public {
         uint256 a = postTask();
         uint256 b = postTask();
-        uint256 forA = decide(DecisionLog.Kind.Hire, bytes32(a), CLAUDE, 9_000);
-        uint256 wrongKind = decide(DecisionLog.Kind.Grade, bytes32(b), YES, 9_000);
+        uint256 forA = decide(DecisionLog.Kind.Hire, board.subjectOf(a), CLAUDE, 9_000);
+        uint256 wrongKind = decide(DecisionLog.Kind.Grade, board.subjectOf(b), YES, 9_000);
         vm.startPrank(brain);
         vm.expectRevert(TaskBoard.BadDecision.selector);
         board.hire(b, forA);
@@ -323,7 +352,7 @@ contract TaskBoardTest is BrainChainSetup {
 
     function test_onlyBrainAppliesDecisions() public {
         uint256 id = postTask();
-        uint256 d = decide(DecisionLog.Kind.Hire, bytes32(id), CLAUDE, 9_000);
+        uint256 d = decide(DecisionLog.Kind.Hire, board.subjectOf(id), CLAUDE, 9_000);
         vm.expectRevert(TaskBoard.NotBrain.selector);
         board.hire(id, d);
     }
@@ -339,7 +368,7 @@ contract TaskBoardTest is BrainChainSetup {
     function test_inactiveModelCannotBeHired() public {
         registry.setModel(GPT, gptAccount, 0.35e6, false);
         uint256 id = postTask();
-        uint256 d = decide(DecisionLog.Kind.Hire, bytes32(id), GPT, 9_000);
+        uint256 d = decide(DecisionLog.Kind.Hire, board.subjectOf(id), GPT, 9_000);
         vm.prank(brain);
         vm.expectRevert(TaskBoard.ModelInactive.selector);
         board.hire(id, d);
@@ -365,7 +394,7 @@ contract TaskBoardTest is BrainChainSetup {
         vm.expectRevert(TaskBoard.IsPaused.selector);
         board.post(BOUNTY, uint64(block.timestamp + DAY), 0, "");
 
-        uint256 d = decide(DecisionLog.Kind.Hire, bytes32(id), CLAUDE, 9_000);
+        uint256 d = decide(DecisionLog.Kind.Hire, board.subjectOf(id), CLAUDE, 9_000);
         vm.prank(brain);
         vm.expectRevert(TaskBoard.IsPaused.selector);
         board.hire(id, d);
@@ -402,7 +431,7 @@ contract DecisionExecutorTest is BrainChainSetup {
         internal
         returns (uint256)
     {
-        return decide(DecisionLog.Kind.Change, keccak256(abi.encode(target, data)), answer, confidenceBps);
+        return decide(DecisionLog.Kind.Change, executor.changeSubject(target, data), answer, confidenceBps);
     }
 
     function test_adoptedChangeRunsAfterTheTimelock() public {
@@ -471,9 +500,9 @@ contract DecisionExecutorTest is BrainChainSetup {
 
     function test_selfParametersOnlyThroughAChange() public {
         vm.expectRevert(DecisionExecutor.NotSelf.selector);
-        executor.setParameters(9_000, 3 days, 5);
+        executor.setParameters(9_000, 3 days, 5, 10e6, 20e6);
 
-        bytes memory data = abi.encodeCall(DecisionExecutor.setParameters, (9_000, 3 days, 5));
+        bytes memory data = abi.encodeCall(DecisionExecutor.setParameters, (9_000, 3 days, 5, 10e6, 20e6));
         uint256 d = changeDecision(address(executor), data, YES, 9_000);
         vm.prank(brain);
         uint256 changeId = executor.queue(d, address(executor), data);
@@ -484,7 +513,7 @@ contract DecisionExecutorTest is BrainChainSetup {
     }
 
     function test_parametersCannotDisableTheSafeguards() public {
-        bytes memory data = abi.encodeCall(DecisionExecutor.setParameters, (4_000, 0, 5));
+        bytes memory data = abi.encodeCall(DecisionExecutor.setParameters, (4_000, 0, 5, 10e6, 20e6));
         uint256 d = changeDecision(address(executor), data, YES, 9_000);
         vm.prank(brain);
         uint256 changeId = executor.queue(d, address(executor), data);

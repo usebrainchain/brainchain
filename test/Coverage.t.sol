@@ -87,17 +87,35 @@ contract DecisionLogCoverage is BrainChainSetup {
         decisionLog.setBrain(address(0));
     }
 
-    function test_setOwnerIsOwnerOnlyAndRejectsZero() public {
+    function test_ownershipIsTwoStepAndOwnerOnly() public {
         vm.prank(brain);
         vm.expectRevert(DecisionLog.NotOwner.selector);
-        decisionLog.setOwner(brain);
+        decisionLog.transferOwnership(brain);
         vm.expectRevert(DecisionLog.ZeroAddress.selector);
-        decisionLog.setOwner(address(0));
+        decisionLog.transferOwnership(address(0));
         address next = makeAddr("next-owner");
+        decisionLog.transferOwnership(next);
+        assertEq(decisionLog.owner(), address(this));
+        vm.prank(brain);
+        vm.expectRevert(DecisionLog.NotPendingOwner.selector);
+        decisionLog.acceptOwnership();
         vm.expectEmit(true, false, false, false, address(decisionLog));
         emit OwnerSet(next);
-        decisionLog.setOwner(next);
+        vm.prank(next);
+        decisionLog.acceptOwnership();
         assertEq(decisionLog.owner(), next);
+        assertEq(decisionLog.pendingOwner(), address(0));
+    }
+
+    function test_latestTracksTheNewestDecisionPerSubjectAndKind() public {
+        bytes32 subject = bytes32(uint256(5));
+        assertEq(decisionLog.latestOf(subject, DecisionLog.Kind.Grade), 0);
+        uint256 first = decide(DecisionLog.Kind.Grade, subject, YES, 9_000);
+        uint256 hire = decide(DecisionLog.Kind.Hire, subject, CLAUDE, 9_000);
+        uint256 second = decide(DecisionLog.Kind.Grade, subject, NO, 9_000);
+        assertEq(decisionLog.latestOf(subject, DecisionLog.Kind.Grade), second);
+        assertEq(decisionLog.latestOf(subject, DecisionLog.Kind.Hire), hire);
+        assertTrue(first != second);
     }
 }
 
@@ -106,11 +124,17 @@ contract DecisionExecutorCoverage is BrainChainSetup {
     event Executed(uint256 indexed changeId);
     event Vetoed(uint256 indexed changeId);
     event HouseTaskPosted(uint256 indexed taskId, uint128 bounty);
-    event ParametersSet(uint16 changeThresholdBps, uint64 timelock, uint32 houseTasksPerDay);
+    event ParametersSet(
+        uint16 changeThresholdBps,
+        uint64 timelock,
+        uint32 houseTasksPerDay,
+        uint128 maxHouseBounty,
+        uint128 houseSpendPerDay
+    );
     event GuardianSet(address indexed guardian);
 
     function _adopt(address target, bytes memory data, uint16 confidence) internal returns (uint256 changeId) {
-        uint256 d = decide(DecisionLog.Kind.Change, keccak256(abi.encode(target, data)), YES, confidence);
+        uint256 d = decide(DecisionLog.Kind.Change, executor.changeSubject(target, data), YES, confidence);
         vm.prank(brain);
         changeId = executor.queue(d, target, data);
     }
@@ -122,15 +146,16 @@ contract DecisionExecutorCoverage is BrainChainSetup {
 
     function test_constructorRejectsZeroAddresses() public {
         vm.expectRevert(DecisionExecutor.ZeroAddress.selector);
-        new DecisionExecutor(DecisionLog(address(0)), IERC20(address(usdg)), guardian, 8_500, 2 days, 2);
+        new DecisionExecutor(DecisionLog(address(0)), IERC20(address(usdg)), guardian, 8_500, 2 days, 2, 10e6, 20e6);
         vm.expectRevert(DecisionExecutor.ZeroAddress.selector);
-        new DecisionExecutor(decisionLog, IERC20(address(0)), guardian, 8_500, 2 days, 2);
+        new DecisionExecutor(decisionLog, IERC20(address(0)), guardian, 8_500, 2 days, 2, 10e6, 20e6);
         vm.expectRevert(DecisionExecutor.ZeroAddress.selector);
-        new DecisionExecutor(decisionLog, IERC20(address(usdg)), address(0), 8_500, 2 days, 2);
+        new DecisionExecutor(decisionLog, IERC20(address(usdg)), address(0), 8_500, 2 days, 2, 10e6, 20e6);
     }
 
     function test_bindBoardIsGuardianOnlyAndRejectsZero() public {
-        DecisionExecutor fresh = new DecisionExecutor(decisionLog, IERC20(address(usdg)), guardian, 8_500, 2 days, 2);
+        DecisionExecutor fresh =
+            new DecisionExecutor(decisionLog, IERC20(address(usdg)), guardian, 8_500, 2 days, 2, 10e6, 20e6);
         vm.expectRevert(DecisionExecutor.NotGuardian.selector);
         fresh.bindBoard(board);
         vm.prank(guardian);
@@ -140,7 +165,7 @@ contract DecisionExecutorCoverage is BrainChainSetup {
 
     function test_queueAnnouncesAndNumbersChanges() public {
         bytes memory data = abi.encodeCall(TaskBoard.setPaused, (true));
-        uint256 d = decide(DecisionLog.Kind.Change, keccak256(abi.encode(address(board), data)), YES, 9_000);
+        uint256 d = decide(DecisionLog.Kind.Change, executor.changeSubject(address(board), data), YES, 9_000);
         vm.expectEmit(true, true, true, true, address(executor));
         emit Queued(1, d, address(board), data, uint64(block.timestamp + 2 days));
         vm.prank(brain);
@@ -156,7 +181,7 @@ contract DecisionExecutorCoverage is BrainChainSetup {
 
     function test_aDecisionQueuesOnlyOnce() public {
         bytes memory data = abi.encodeCall(TaskBoard.setPaused, (true));
-        uint256 d = decide(DecisionLog.Kind.Change, keccak256(abi.encode(address(board), data)), YES, 9_000);
+        uint256 d = decide(DecisionLog.Kind.Change, executor.changeSubject(address(board), data), YES, 9_000);
         vm.startPrank(brain);
         executor.queue(d, address(board), data);
         vm.expectRevert(DecisionExecutor.DecisionUsed.selector);
@@ -204,8 +229,15 @@ contract DecisionExecutorCoverage is BrainChainSetup {
         vm.prank(guardian);
         vm.expectRevert(DecisionExecutor.Closed.selector);
         executor.veto(vetoed);
+        assertTrue(executor.vetoedCall(keccak256(abi.encode(address(board), data))));
 
-        uint256 executed = _adopt(address(board), data, 9_000);
+        // v2 let the brain record a fresh decision and queue the vetoed call again.
+        uint256 again = decide(DecisionLog.Kind.Change, executor.changeSubject(address(board), data), YES, 9_000);
+        vm.prank(brain);
+        vm.expectRevert(DecisionExecutor.VetoedCall.selector);
+        executor.queue(again, address(board), data);
+
+        uint256 executed = _adopt(address(board), abi.encodeCall(TaskBoard.setPaused, (false)), 9_000);
         vm.warp(block.timestamp + 2 days);
         executor.execute(executed);
         vm.prank(guardian);
@@ -244,21 +276,32 @@ contract DecisionExecutorCoverage is BrainChainSetup {
         assertEq(executor.houseTasksOnDay(11), 1);
     }
 
-    function test_guardianChangesOnlyThroughAChange() public {
-        vm.expectRevert(DecisionExecutor.NotSelf.selector);
+    /// v2 let a change replace the guardian, so the brain could remove the key that vetoes it.
+    function test_guardianChangesOnlyThroughTheAdmin() public {
+        vm.prank(brain);
+        vm.expectRevert(DecisionExecutor.NotAdmin.selector);
         executor.setGuardian(poster);
 
         address next = makeAddr("next-guardian");
-        uint256 guardianChange = _ready(address(executor), abi.encodeCall(DecisionExecutor.setGuardian, (next)));
+        bytes memory data = abi.encodeCall(DecisionExecutor.setGuardian, (next));
+        uint256 d = decide(DecisionLog.Kind.Change, executor.changeSubject(address(executor), data), YES, 9_900);
+        vm.prank(brain);
+        vm.expectRevert(DecisionExecutor.ForbiddenCall.selector);
+        executor.queue(d, address(executor), data);
+        bytes memory boardData = abi.encodeCall(TaskBoard.setGuardian, (next));
+        d = decide(DecisionLog.Kind.Change, executor.changeSubject(address(board), boardData), YES, 9_900);
+        vm.prank(brain);
+        vm.expectRevert(DecisionExecutor.ForbiddenCall.selector);
+        executor.queue(d, address(board), boardData);
+
+        // The admin is the DecisionLog's owner (this test contract in the setup).
         vm.expectEmit(true, false, false, false, address(executor));
         emit GuardianSet(next);
-        executor.execute(guardianChange);
+        executor.setGuardian(next);
         assertEq(executor.guardian(), next);
-
-        uint256 changeId = _adopt(address(executor), abi.encodeCall(DecisionExecutor.setGuardian, (address(0))), 9_000);
-        vm.warp(block.timestamp + executor.timelock());
-        vm.expectRevert();
-        executor.execute(changeId);
+        assertEq(board.guardian(), next);
+        vm.expectRevert(DecisionExecutor.ZeroAddress.selector);
+        executor.setGuardian(address(0));
     }
 
     function test_treasuryTransferRunsThroughAChange() public {
@@ -274,19 +317,27 @@ contract DecisionExecutorCoverage is BrainChainSetup {
 
     function test_parameterBoundsAreExact() public {
         uint256 paramsChange =
-            _ready(address(executor), abi.encodeCall(DecisionExecutor.setParameters, (10_000, 1 hours, 3)));
+            _ready(address(executor), abi.encodeCall(DecisionExecutor.setParameters, (10_000, 1 hours, 3, 10e6, 20e6)));
         vm.expectEmit(false, false, false, true, address(executor));
-        emit ParametersSet(10_000, 1 hours, 3);
+        emit ParametersSet(10_000, 1 hours, 3, 10e6, 20e6);
         executor.execute(paramsChange);
         assertEq(executor.timelock(), 1 hours);
+        assertEq(executor.maxHouseBounty(), 10e6);
+        assertEq(executor.houseSpendPerDay(), 20e6);
 
         vm.expectRevert(DecisionExecutor.BadConfig.selector);
-        new DecisionExecutor(decisionLog, IERC20(address(usdg)), guardian, 10_001, 2 days, 2);
+        new DecisionExecutor(decisionLog, IERC20(address(usdg)), guardian, 8_500, 30 days + 1, 2, 10e6, 20e6);
+        new DecisionExecutor(decisionLog, IERC20(address(usdg)), guardian, 8_500, 30 days, 2, 10e6, 20e6);
         vm.expectRevert(DecisionExecutor.BadConfig.selector);
-        new DecisionExecutor(decisionLog, IERC20(address(usdg)), guardian, 4_999, 2 days, 2);
+        new DecisionExecutor(decisionLog, IERC20(address(usdg)), guardian, 8_500, 2 days, 2, 20e6 + 1, 20e6);
+
         vm.expectRevert(DecisionExecutor.BadConfig.selector);
-        new DecisionExecutor(decisionLog, IERC20(address(usdg)), guardian, 8_500, 1 hours - 1, 2);
-        new DecisionExecutor(decisionLog, IERC20(address(usdg)), guardian, 5_000, 1 hours, 2);
+        new DecisionExecutor(decisionLog, IERC20(address(usdg)), guardian, 10_001, 2 days, 2, 10e6, 20e6);
+        vm.expectRevert(DecisionExecutor.BadConfig.selector);
+        new DecisionExecutor(decisionLog, IERC20(address(usdg)), guardian, 4_999, 2 days, 2, 10e6, 20e6);
+        vm.expectRevert(DecisionExecutor.BadConfig.selector);
+        new DecisionExecutor(decisionLog, IERC20(address(usdg)), guardian, 8_500, 1 hours - 1, 2, 10e6, 20e6);
+        new DecisionExecutor(decisionLog, IERC20(address(usdg)), guardian, 5_000, 1 hours, 2, 10e6, 20e6);
     }
 }
 
@@ -299,9 +350,9 @@ contract TaskBoardCoverage is BrainChainSetup {
     event WorkSubmitted(uint256 indexed id, bytes32 indexed model, bytes32 resultHash, string resultURI);
     event WorkGraded(uint256 indexed id, uint256 indexed decisionId, bool accepted);
     event GradeDisputed(uint256 indexed id, address indexed opener);
-    event Ruled(uint256 indexed id, uint256 indexed decisionId, bool paid);
-    event BountyPaid(uint256 indexed id, bytes32 indexed model, address indexed account, uint128 amount);
-    event BountyRefunded(uint256 indexed id, address indexed poster, uint128 amount);
+    event Ruled(uint256 indexed id, uint256 indexed decisionId, bool paid, bool confident);
+    event BountyPaid(uint256 indexed id, bytes32 indexed model, address indexed account, uint128 bounty, uint128 fee);
+    event BountyRefunded(uint256 indexed id, address indexed poster, uint128 amount, TaskBoard.RefundReason reason);
     event PausedSet(bool paused);
     event ConfigSet(TaskBoard.Config config);
     event OwnerSet(address indexed owner);
@@ -373,13 +424,13 @@ contract TaskBoardCoverage is BrainChainSetup {
     function test_everyStepAnnouncesAndRecordsItsTime() public {
         uint256 id = postTask();
 
-        uint256 held = decide(DecisionLog.Kind.Hire, bytes32(id), CLAUDE, 1_000);
+        uint256 held = decide(DecisionLog.Kind.Hire, board.subjectOf(id), CLAUDE, 1_000);
         vm.expectEmit(true, true, false, false, address(board));
         emit HireHeld(id, held);
         vm.prank(brain);
         board.hire(id, held);
 
-        uint256 hire = decide(DecisionLog.Kind.Hire, bytes32(id), CLAUDE, 9_000);
+        uint256 hire = decide(DecisionLog.Kind.Hire, board.subjectOf(id), CLAUDE, 9_000);
         vm.expectEmit(true, true, true, false, address(board));
         emit WorkerHired(id, CLAUDE, hire);
         vm.prank(brain);
@@ -393,7 +444,7 @@ contract TaskBoardCoverage is BrainChainSetup {
         assertEq(board.get(id).submittedAt, block.timestamp);
 
         vm.warp(block.timestamp + 10);
-        uint256 grade = decide(DecisionLog.Kind.Grade, bytes32(id), NO, 9_000);
+        uint256 grade = decide(DecisionLog.Kind.Grade, board.subjectOf(id), NO, 9_000);
         vm.expectEmit(true, true, false, true, address(board));
         emit WorkGraded(id, grade, false);
         vm.prank(brain);
@@ -408,11 +459,11 @@ contract TaskBoardCoverage is BrainChainSetup {
         assertTrue(board.get(id).disputed);
         assertEq(board.get(id).disputedAt, block.timestamp);
 
-        uint256 ruling = decide(DecisionLog.Kind.Ruling, bytes32(id), YES, 9_000);
+        uint256 ruling = decide(DecisionLog.Kind.Ruling, board.subjectOf(id), YES, 9_000);
         vm.expectEmit(true, true, false, true, address(board));
-        emit Ruled(id, ruling, true);
+        emit Ruled(id, ruling, true, true);
         vm.expectEmit(true, true, true, true, address(board));
-        emit BountyPaid(id, CLAUDE, claudeAccount, BOUNTY);
+        emit BountyPaid(id, CLAUDE, claudeAccount, BOUNTY, 0);
         vm.prank(brain);
         board.rule(id, ruling);
     }
@@ -421,7 +472,7 @@ contract TaskBoardCoverage is BrainChainSetup {
         uint256 id = postTask();
         vm.warp(block.timestamp + DAY + 1);
         vm.expectEmit(true, true, false, true, address(board));
-        emit BountyRefunded(id, poster, BOUNTY);
+        emit BountyRefunded(id, poster, BOUNTY, TaskBoard.RefundReason.NotHired);
         board.finalize(id);
     }
 
@@ -431,12 +482,12 @@ contract TaskBoardCoverage is BrainChainSetup {
         vm.expectRevert(TaskBoard.BadStatus.selector);
         board.submit(id, 0, "");
 
-        uint256 g = decide(DecisionLog.Kind.Grade, bytes32(id), YES, 9_000);
+        uint256 g = decide(DecisionLog.Kind.Grade, board.subjectOf(id), YES, 9_000);
         vm.prank(brain);
         vm.expectRevert(TaskBoard.BadStatus.selector);
         board.grade(id, g);
 
-        uint256 r = decide(DecisionLog.Kind.Ruling, bytes32(id), YES, 9_000);
+        uint256 r = decide(DecisionLog.Kind.Ruling, board.subjectOf(id), YES, 9_000);
         vm.prank(brain);
         vm.expectRevert(TaskBoard.BadStatus.selector);
         board.rule(id, r);
@@ -446,7 +497,7 @@ contract TaskBoardCoverage is BrainChainSetup {
         board.dispute(id);
 
         hireClaude(id);
-        uint256 h = decide(DecisionLog.Kind.Hire, bytes32(id), CLAUDE, 9_000);
+        uint256 h = decide(DecisionLog.Kind.Hire, board.subjectOf(id), CLAUDE, 9_000);
         vm.prank(brain);
         vm.expectRevert(TaskBoard.BadStatus.selector);
         board.hire(id, h);
@@ -455,7 +506,7 @@ contract TaskBoardCoverage is BrainChainSetup {
     function test_hireClosesAtTheDeadline() public {
         uint256 id = postTask();
         vm.warp(board.get(id).deadline);
-        uint256 d = decide(DecisionLog.Kind.Hire, bytes32(id), CLAUDE, 9_000);
+        uint256 d = decide(DecisionLog.Kind.Hire, board.subjectOf(id), CLAUDE, 9_000);
         vm.prank(brain);
         vm.expectRevert(TaskBoard.TooLate.selector);
         board.hire(id, d);
@@ -511,7 +562,7 @@ contract TaskBoardCoverage is BrainChainSetup {
         vm.warp(t4 + 1 hours + 6 hours);
         vm.expectRevert(TaskBoard.TooEarly.selector);
         board.finalize(id);
-        uint256 r = decide(DecisionLog.Kind.Ruling, bytes32(id), NO, 9_000);
+        uint256 r = decide(DecisionLog.Kind.Ruling, board.subjectOf(id), NO, 9_000);
         vm.prank(brain);
         board.rule(id, r);
         assertEq(uint8(board.get(id).status), uint8(TaskBoard.Status.Refunded));
@@ -525,7 +576,7 @@ contract TaskBoardCoverage is BrainChainSetup {
         vm.prank(poster);
         board.dispute(id);
         vm.warp(block.timestamp + 6 hours + 1);
-        uint256 r = decide(DecisionLog.Kind.Ruling, bytes32(id), YES, 9_000);
+        uint256 r = decide(DecisionLog.Kind.Ruling, board.subjectOf(id), YES, 9_000);
         vm.prank(brain);
         vm.expectRevert(TaskBoard.TooLate.selector);
         board.rule(id, r);

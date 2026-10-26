@@ -2,8 +2,11 @@
 pragma solidity ^0.8.24;
 
 /// @notice Append-only record of every Jev decision the chain acts on. Only the
-/// brain (the harness that calls Jev) can record; contracts that act on a
-/// decision read it from here and apply their own confidence thresholds.
+/// brain (the harness that calls Jev) can record. The chain does not verify
+/// that a recorded answer came from Jev: the brain key is trusted to record
+/// Jev's answers faithfully, and contracts that act on a decision apply their
+/// own confidence thresholds to what was recorded. The owner, an admin
+/// timelock, replaces the brain; the brain cannot replace itself.
 contract DecisionLog {
     enum Kind {
         None,
@@ -15,8 +18,8 @@ contract DecisionLog {
 
     struct Decision {
         Kind kind;
-        /// What the decision is about: a task id for Hire, Grade and Ruling, the
-        /// hash of the proposed call for Change.
+        /// What the decision is about. Task decisions name the board's
+        /// `subjectOf(taskId)`; a Change names the hash of the proposed call.
         bytes32 subject;
         /// Hash of the full question and inputs sent to Jev.
         bytes32 inputHash;
@@ -29,6 +32,7 @@ contract DecisionLog {
     }
 
     error NotOwner();
+    error NotPendingOwner();
     error NotBrain();
     error ZeroAddress();
     error BadKind();
@@ -46,12 +50,15 @@ contract DecisionLog {
         string payloadURI
     );
     event BrainSet(address indexed brain);
+    event OwnershipTransferStarted(address indexed owner, address indexed pendingOwner);
     event OwnerSet(address indexed owner);
 
     address public owner;
+    address public pendingOwner;
     address public brain;
     uint256 public count;
     mapping(uint256 => Decision) private _decisions;
+    mapping(bytes32 => mapping(Kind => uint256)) private _latest;
 
     constructor(address owner_, address brain_) {
         if (owner_ == address(0) || brain_ == address(0)) revert ZeroAddress();
@@ -78,12 +85,20 @@ contract DecisionLog {
 
         id = ++count;
         _decisions[id] = Decision(kind, subject, inputHash, answer, confidenceBps, uint64(block.timestamp));
+        _latest[subject][kind] = id;
         emit Recorded(id, kind, subject, inputHash, answer, confidenceBps, payloadHash, payloadURI);
     }
 
     function get(uint256 id) external view returns (Decision memory decision) {
         decision = _decisions[id];
         if (decision.kind == Kind.None) revert UnknownDecision();
+    }
+
+    /// @notice The most recent decision of `kind` about `subject`, or zero.
+    /// Contracts act only on the latest, so an older answer cannot be applied
+    /// once a newer one exists.
+    function latestOf(bytes32 subject, Kind kind) external view returns (uint256) {
+        return _latest[subject][kind];
     }
 
     function setBrain(address brain_) external {
@@ -93,10 +108,17 @@ contract DecisionLog {
         emit BrainSet(brain_);
     }
 
-    function setOwner(address owner_) external {
+    function transferOwnership(address pendingOwner_) external {
         if (msg.sender != owner) revert NotOwner();
-        if (owner_ == address(0)) revert ZeroAddress();
-        owner = owner_;
-        emit OwnerSet(owner_);
+        if (pendingOwner_ == address(0)) revert ZeroAddress();
+        pendingOwner = pendingOwner_;
+        emit OwnershipTransferStarted(owner, pendingOwner_);
+    }
+
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert NotPendingOwner();
+        owner = msg.sender;
+        pendingOwner = address(0);
+        emit OwnerSet(msg.sender);
     }
 }
