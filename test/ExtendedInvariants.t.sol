@@ -246,7 +246,9 @@ contract ExtendedInvariants is StdInvariant, Test {
         address[4] memory payees = [makeAddr("a0"), makeAddr("a1"), makeAddr("a2"), makeAddr("a3")];
         registry.setModel(keccak256("claude"), payees[0], 1, true);
         registry.setModel(keccak256("gpt"), payees[1], 1, true);
-        executor = new DecisionExecutor(decisionLog, IERC20(address(usdg)), guardian, 8_500, 2 days, type(uint32).max, 1e10, 1e15);
+        executor = new DecisionExecutor(
+            decisionLog, IERC20(address(usdg)), guardian, 8_500, 2 days, type(uint32).max, 1e10, 1e15
+        );
         staking = new WorkerStaking(IERC20(address(brainToken)), address(this), 500e18, 3 days, 2_000);
         board = new TaskBoard(
             IERC20(address(usdg)),
@@ -269,7 +271,9 @@ contract ExtendedInvariants is StdInvariant, Test {
         staking.stake(1e24, 0);
         vm.stopPrank();
 
-        h = new ExtendedHandler(board, decisionLog, usdg, registry, executor, staking, brain, feeTo, payees, staking.idOf(stakedWorker));
+        h = new ExtendedHandler(
+            board, decisionLog, usdg, registry, executor, staking, brain, feeTo, payees, staking.idOf(stakedWorker)
+        );
         targetContract(address(h));
     }
 
