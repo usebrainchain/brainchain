@@ -434,3 +434,36 @@ contract StakingRegressions is BrainChainSetup {
         tb.hire(id, d);
     }
 }
+
+contract ModelRegistryCoverage is BrainChainSetup {
+    function test_setModelIsOwnerOnlyAndRejectsZeroes() public {
+        vm.prank(poster);
+        vm.expectRevert(ModelRegistry.NotOwner.selector);
+        registry.setModel(CLAUDE, claudeAccount, 1, true);
+        vm.expectRevert(ModelRegistry.ZeroAddress.selector);
+        registry.setModel(bytes32(0), claudeAccount, 1, true);
+        vm.expectRevert(ModelRegistry.ZeroAddress.selector);
+        registry.setModel(CLAUDE, address(0), 1, true);
+    }
+
+    function test_updatingAModelKeepsOneIdAndUnknownModelsRevert() public {
+        assertEq(registry.ids().length, 2);
+        registry.setModel(CLAUDE, makeAddr("new-claude"), 0.5e6, false);
+        assertEq(registry.ids().length, 2);
+        ModelRegistry.Model memory m = registry.get(CLAUDE);
+        assertEq(m.account, makeAddr("new-claude"));
+        assertFalse(m.active);
+        vm.expectRevert(ModelRegistry.UnknownModel.selector);
+        registry.get(keccak256("nobody"));
+    }
+
+    function test_setOwnerIsOwnerOnlyAndRejectsZero() public {
+        vm.prank(poster);
+        vm.expectRevert(ModelRegistry.NotOwner.selector);
+        registry.setOwner(poster);
+        vm.expectRevert(ModelRegistry.ZeroAddress.selector);
+        registry.setOwner(address(0));
+        registry.setOwner(poster);
+        assertEq(registry.owner(), poster);
+    }
+}
