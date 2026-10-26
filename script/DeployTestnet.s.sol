@@ -51,7 +51,7 @@ contract DeployTestnet is Script {
             deployer,
             deployer,
             TaskBoard.Config({
-                hireThresholdBps: 7_000,
+                hireThresholdBps: 1_500,
                 gradeThresholdBps: 7_000,
                 ruleThresholdBps: 7_000,
                 minDuration: 30 minutes,
