@@ -9,12 +9,14 @@ import {DecisionLog} from "../DecisionLog.sol";
 
 interface IChangeThreshold {
     function changeThresholdBps() external view returns (uint16);
+    function changeSubject(address target, bytes calldata data) external view returns (bytes32);
 }
 
 /// @notice Anyone can propose a chain change by bonding $BRAIN. When Jev
 /// decides, the bond is returned if the change was adopted above the change
-/// threshold and burned otherwise. A proposal Jev never decides on is returned
-/// after the decision window.
+/// threshold and burned otherwise. Only Jev's latest decision on the call
+/// settles a proposal, and each decision settles one proposal. A proposal Jev
+/// never decides on is returned after the decision window.
 contract ProposalBonds is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -37,6 +39,8 @@ contract ProposalBonds is ReentrancyGuard {
     error ZeroAddress();
     error BadState();
     error BadDecision();
+    error StaleDecision();
+    error DecisionUsed();
     error TooEarly();
     error BadConfig();
 
@@ -59,6 +63,7 @@ contract ProposalBonds is ReentrancyGuard {
 
     uint256 public count;
     mapping(uint256 => Proposal) private _proposals;
+    mapping(uint256 => bool) public decisionUsed;
 
     constructor(
         IERC20 token_,
@@ -91,7 +96,7 @@ contract ProposalBonds is ReentrancyGuard {
         id = ++count;
         uint128 amount = bond;
         _proposals[id] =
-            Proposal(msg.sender, amount, uint64(block.timestamp), State.Open, keccak256(abi.encode(target, data)));
+            Proposal(msg.sender, amount, uint64(block.timestamp), State.Open, executor.changeSubject(target, data));
         token.safeTransferFrom(msg.sender, address(this), amount);
         emit Proposed(id, msg.sender, target, data, amount, uri);
     }
@@ -100,10 +105,13 @@ contract ProposalBonds is ReentrancyGuard {
     function settle(uint256 id, uint256 decisionId) external nonReentrant {
         Proposal storage p = _proposals[id];
         if (p.state != State.Open) revert BadState();
+        if (decisionUsed[decisionId]) revert DecisionUsed();
         DecisionLog.Decision memory d = decisions.get(decisionId);
         if (d.kind != DecisionLog.Kind.Change || d.subject != p.subject || d.recordedAt < p.createdAt) {
             revert BadDecision();
         }
+        if (decisions.latestOf(p.subject, DecisionLog.Kind.Change) != decisionId) revert StaleDecision();
+        decisionUsed[decisionId] = true;
 
         bool adopted = d.answer == YES && d.confidenceBps >= executor.changeThresholdBps();
         p.state = adopted ? State.Returned : State.Burned;

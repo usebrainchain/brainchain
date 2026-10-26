@@ -42,7 +42,7 @@ contract FlywheelTest is Test {
         usdg = new MockERC20();
         brainToken = new TestBRAIN(address(this), 1_000_000e18);
         decisionLog = new DecisionLog(address(this), brain);
-        executor = new DecisionExecutor(decisionLog, IERC20(address(usdg)), guardian, 8_500, 2 hours, 5);
+        executor = new DecisionExecutor(decisionLog, IERC20(address(usdg)), guardian, 8_500, 2 hours, 5, 10e6, 20e6);
         registry = new ModelRegistry(address(this));
         registry.setModel(CLAUDE, claude, 0.4e6, true);
         staking = new WorkerStaking(IERC20(address(brainToken)), address(this), 500e18, 3 days, 2_000);
@@ -58,6 +58,7 @@ contract FlywheelTest is Test {
         staking.setSlasher(address(board));
         router = new FeeRouter(IERC20(address(usdg)), address(executor), address(this), brain, 5_000);
         board.setFee(300, address(router));
+        router.setFloorRate((1e12 * 1e18 * 95) / 100);
         swap = new TestSwap(IERC20(address(usdg)), IERC20(address(brainToken)), 1e12);
         brainToken.transfer(address(swap), 500_000e18);
         bonds = new ProposalBonds(
@@ -84,12 +85,12 @@ contract FlywheelTest is Test {
 
     function _runToPaid(bytes32 model, address account) internal returns (uint256 id) {
         id = _post();
-        uint256 d = _decide(DecisionLog.Kind.Hire, bytes32(id), model, 9_000);
+        uint256 d = _decide(DecisionLog.Kind.Hire, board.subjectOf(id), model, 9_000);
         vm.prank(brain);
         board.hire(id, d);
         vm.prank(account);
         board.submit(id, 0, "");
-        d = _decide(DecisionLog.Kind.Grade, bytes32(id), YES, 9_000);
+        d = _decide(DecisionLog.Kind.Grade, board.subjectOf(id), YES, 9_000);
         vm.prank(brain);
         board.grade(id, d);
         vm.warp(block.timestamp + 1 hours + 1);
@@ -147,6 +148,30 @@ contract FlywheelTest is Test {
         router.buyback(0.3e6, 1e18);
     }
 
+    function test_buybackRefusesAMinimumBelowTheFloor() public {
+        _runToPaid(CLAUDE, claude);
+        router.setBrain(IERC20(address(brainToken)));
+        router.setAdapter(swap);
+        vm.prank(brain);
+        vm.expectRevert(FeeRouter.BelowFloor.selector);
+        router.buyback(0.3e6, 0);
+        vm.prank(brain);
+        vm.expectRevert(FeeRouter.BelowFloor.selector);
+        router.buyback(0.3e6, 0.28e18);
+        vm.prank(brain);
+        router.buyback(0.3e6, 0.285e18);
+    }
+
+    function test_buybackWaitsForAFloor() public {
+        _runToPaid(CLAUDE, claude);
+        router.setBrain(IERC20(address(brainToken)));
+        router.setAdapter(swap);
+        router.setFloorRate(0);
+        vm.prank(brain);
+        vm.expectRevert(FeeRouter.NotReady.selector);
+        router.buyback(0.3e6, 0.3e18);
+    }
+
     function test_tokenAddressIsSetOnce() public {
         router.setBrain(IERC20(address(brainToken)));
         vm.expectRevert(FeeRouter.AlreadySet.selector);
@@ -167,6 +192,59 @@ contract FlywheelTest is Test {
         brainToken.approve(address(staking), amount);
         staking.stake(amount, 0.2e6);
         vm.stopPrank();
+        board.setWorkerAllowed(agent, true);
+    }
+
+    /// v2: the brain key plus any address that staked faucet tBRAIN could take any escrow.
+    function test_stakedButNotAllowListedWorkerCannotBeHired() public {
+        _stake(500e18);
+        board.setWorkerAllowed(agent, false);
+        uint256 id = _post();
+        uint256 d = _decide(DecisionLog.Kind.Hire, board.subjectOf(id), staking.idOf(agent), 10_000);
+        vm.prank(brain);
+        vm.expectRevert(TaskBoard.ModelInactive.selector);
+        board.hire(id, d);
+    }
+
+    function test_onlyTheOwnerAllowListsWorkers() public {
+        vm.prank(poster);
+        vm.expectRevert(TaskBoard.NotOwner.selector);
+        board.setWorkerAllowed(agent, true);
+        vm.expectRevert(TaskBoard.ZeroAddress.selector);
+        board.setWorkerAllowed(address(0), true);
+    }
+
+    /// v2: a worker could unstake and withdraw before disputing, leaving nothing to slash.
+    function test_stakeIsHeldWhileATaskIsInFlight() public {
+        _stake(600e18);
+        uint256 id = _post();
+        uint256 d = _decide(DecisionLog.Kind.Hire, board.subjectOf(id), staking.idOf(agent), 9_000);
+        vm.prank(brain);
+        board.hire(id, d);
+        assertEq(staking.held(agent), 1);
+
+        vm.startPrank(agent);
+        staking.requestUnstake(600e18);
+        vm.warp(block.timestamp + 3 days);
+        vm.expectRevert(WorkerStaking.Locked.selector);
+        staking.withdraw();
+        vm.stopPrank();
+
+        board.finalize(id); // the deadline passed: refunded, and the hold is released
+        assertEq(staking.held(agent), 0);
+        vm.prank(agent);
+        staking.withdraw();
+        assertEq(brainToken.balanceOf(agent), 600e18);
+    }
+
+    function test_onlyTheBoardHoldsAndReleases() public {
+        vm.expectRevert(WorkerStaking.NotSlasher.selector);
+        staking.hold(agent);
+        vm.expectRevert(WorkerStaking.NotSlasher.selector);
+        staking.release(agent);
+        vm.prank(address(board));
+        vm.expectRevert(WorkerStaking.NotHeld.selector);
+        staking.release(agent);
     }
 
     function test_stakedWorkerCanBeHiredAndPaid() public {
@@ -178,7 +256,7 @@ contract FlywheelTest is Test {
     function test_understakedWorkerCannotBeHired() public {
         _stake(499e18);
         uint256 id = _post();
-        uint256 d = _decide(DecisionLog.Kind.Hire, bytes32(id), staking.idOf(agent), 9_000);
+        uint256 d = _decide(DecisionLog.Kind.Hire, board.subjectOf(id), staking.idOf(agent), 9_000);
         vm.prank(brain);
         vm.expectRevert(TaskBoard.ModelInactive.selector);
         board.hire(id, d);
@@ -187,23 +265,24 @@ contract FlywheelTest is Test {
     function test_workerThatDisputesAndLosesIsSlashed() public {
         _stake(1_000e18);
         uint256 id = _post();
-        uint256 d = _decide(DecisionLog.Kind.Hire, bytes32(id), staking.idOf(agent), 9_000);
+        uint256 d = _decide(DecisionLog.Kind.Hire, board.subjectOf(id), staking.idOf(agent), 9_000);
         vm.prank(brain);
         board.hire(id, d);
         vm.prank(agent);
         board.submit(id, 0, "");
-        d = _decide(DecisionLog.Kind.Grade, bytes32(id), bytes32(0), 9_000);
+        d = _decide(DecisionLog.Kind.Grade, board.subjectOf(id), bytes32(0), 9_000);
         vm.prank(brain);
         board.grade(id, d);
         vm.prank(agent);
         board.dispute(id);
-        d = _decide(DecisionLog.Kind.Ruling, bytes32(id), bytes32(0), 9_000);
+        d = _decide(DecisionLog.Kind.Ruling, board.subjectOf(id), bytes32(0), 9_000);
         vm.prank(brain);
         board.rule(id, d);
 
         assertEq(staking.get(agent).staked, 800e18);
         assertEq(brainToken.balanceOf(BURN), 200e18);
         assertEq(usdg.balanceOf(poster), 1_000e6);
+        assertEq(staking.held(agent), 0);
     }
 
     function test_unstakeWaitsForTheCooldown() public {
@@ -241,23 +320,44 @@ contract FlywheelTest is Test {
 
     function test_adoptedProposalReturnsTheBond() public {
         (uint256 id, bytes memory data) = _propose();
-        uint256 d = _decide(DecisionLog.Kind.Change, keccak256(abi.encode(address(board), data)), YES, 9_000);
+        uint256 d = _decide(DecisionLog.Kind.Change, executor.changeSubject(address(board), data), YES, 9_000);
         bonds.settle(id, d);
         assertEq(brainToken.balanceOf(agent), 100e18);
     }
 
     function test_rejectedProposalBurnsTheBond() public {
         (uint256 id, bytes memory data) = _propose();
-        uint256 d = _decide(DecisionLog.Kind.Change, keccak256(abi.encode(address(board), data)), bytes32(0), 9_000);
+        uint256 d = _decide(DecisionLog.Kind.Change, executor.changeSubject(address(board), data), bytes32(0), 9_000);
         bonds.settle(id, d);
         assertEq(brainToken.balanceOf(BURN), 100e18);
     }
 
     function test_lowConfidenceAdoptStillBurns() public {
         (uint256 id, bytes memory data) = _propose();
-        uint256 d = _decide(DecisionLog.Kind.Change, keccak256(abi.encode(address(board), data)), YES, 8_000);
+        uint256 d = _decide(DecisionLog.Kind.Change, executor.changeSubject(address(board), data), YES, 8_000);
         bonds.settle(id, d);
         assertEq(brainToken.balanceOf(BURN), 100e18);
+    }
+
+    /// v2 let anyone settle with an older decision after Jev had decided again.
+    function test_onlyTheLatestDecisionSettles() public {
+        (uint256 id, bytes memory data) = _propose();
+        bytes32 subject = executor.changeSubject(address(board), data);
+        uint256 keep = _decide(DecisionLog.Kind.Change, subject, bytes32(0), 9_000);
+        uint256 adopt = _decide(DecisionLog.Kind.Change, subject, YES, 9_000);
+        vm.expectRevert(ProposalBonds.StaleDecision.selector);
+        bonds.settle(id, keep);
+        bonds.settle(id, adopt);
+        assertEq(brainToken.balanceOf(agent), 100e18);
+    }
+
+    function test_aDecisionSettlesOneProposal() public {
+        (uint256 first, bytes memory data) = _propose();
+        (uint256 second,) = _propose();
+        uint256 d = _decide(DecisionLog.Kind.Change, executor.changeSubject(address(board), data), bytes32(0), 9_000);
+        bonds.settle(first, d);
+        vm.expectRevert(ProposalBonds.DecisionUsed.selector);
+        bonds.settle(second, d);
     }
 
     function test_decisionMustBeAboutTheProposal() public {

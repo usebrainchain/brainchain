@@ -5,11 +5,12 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-/// @notice Open worker registration: any agent stakes $BRAIN to be hireable.
-/// A worker's id is its account, left-padded to 32 bytes, so it can never
-/// collide with a house model id (a keccak256 hash). Losing a dispute burns part of
-/// the stake; unstaking waits out a cooldown so a worker cannot leave just
-/// before a dispute is decided.
+/// @notice Open worker registration: any agent stakes $BRAIN to be hireable
+/// (the task board also requires governance to allow-list it). A worker's id is
+/// its account, left-padded to 32 bytes, so it can never collide with a house
+/// model id (a keccak256 hash). Losing a dispute burns part of the stake.
+/// Unstaking waits out a cooldown, and nothing can be withdrawn while the
+/// worker has a task in flight, so there is always stake left to slash.
 contract WorkerStaking is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -27,6 +28,7 @@ contract WorkerStaking is ReentrancyGuard {
     error BadAmount();
     error BadConfig();
     error Locked();
+    error NotHeld();
 
     event Staked(address indexed account, uint256 amount, uint128 price);
     event UnstakeRequested(address indexed account, uint256 amount, uint64 unlocksAt);
@@ -35,6 +37,7 @@ contract WorkerStaking is ReentrancyGuard {
     event PriceSet(address indexed account, uint128 price);
     event ConfigSet(uint128 minStake, uint64 cooldown, uint16 slashBps);
     event SlasherSet(address indexed slasher);
+    event Held(address indexed account, uint32 tasks);
 
     address public constant BURN = 0x000000000000000000000000000000000000dEaD;
 
@@ -46,6 +49,8 @@ contract WorkerStaking is ReentrancyGuard {
     uint16 public slashBps;
 
     mapping(address => Worker) private _workers;
+    /// @notice Tasks the worker is hired for and that have not settled yet.
+    mapping(address => uint32) public held;
 
     constructor(IERC20 token_, address owner_, uint128 minStake_, uint64 cooldown_, uint16 slashBps_) {
         if (address(token_) == address(0) || owner_ == address(0)) revert ZeroAddress();
@@ -90,7 +95,7 @@ contract WorkerStaking is ReentrancyGuard {
 
     function withdraw() external nonReentrant {
         Worker storage w = _workers[msg.sender];
-        if (block.timestamp < w.unlocksAt) revert Locked();
+        if (block.timestamp < w.unlocksAt || held[msg.sender] > 0) revert Locked();
         uint256 amount = w.unstaking;
         if (amount == 0) revert BadAmount();
         w.unstaking = 0;
@@ -111,6 +116,23 @@ contract WorkerStaking is ReentrancyGuard {
         amount = fromStaked + fromUnstaking;
         if (amount > 0) token.safeTransfer(BURN, amount);
         emit Slashed(account, amount);
+    }
+
+    /// @notice Called by the task board when it hires the worker.
+    function hold(address account) external {
+        if (msg.sender != slasher) revert NotSlasher();
+        uint32 tasks = held[account] + 1;
+        held[account] = tasks;
+        emit Held(account, tasks);
+    }
+
+    /// @notice Called by the task board when a task the worker was hired for settles.
+    function release(address account) external {
+        if (msg.sender != slasher) revert NotSlasher();
+        uint32 tasks = held[account];
+        if (tasks == 0) revert NotHeld();
+        held[account] = tasks - 1;
+        emit Held(account, tasks - 1);
     }
 
     /// @notice How the task board sees a staked worker.
