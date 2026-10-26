@@ -273,7 +273,7 @@ contract FeeRouterCoverage is FlywheelTest {
         vm.expectEmit(false, false, false, true, address(router));
         emit BoughtBack(0.3e6, 0.3e18, 0.15e18, 0.15e18);
         vm.prank(brain);
-        assertEq(router.buyback(1_000e6, 0), 0.3e18);
+        assertEq(router.buyback(1_000e6, 0.3e18), 0.3e18);
         assertEq(usdg.allowance(address(router), address(swap)), 0);
         assertEq(brainToken.balanceOf(address(router)), 1e18);
     }
@@ -282,7 +282,7 @@ contract FeeRouterCoverage is FlywheelTest {
         _runToPaid(CLAUDE, claude);
         router.setBrain(IERC20(address(brainToken)));
         router.setAdapter(swap);
-        router.buyback(0.3e6, 0);
+        router.buyback(0.3e6, 0.3e18);
         assertEq(brainToken.balanceOf(address(executor)), 0.15e18);
     }
 }
@@ -307,7 +307,7 @@ contract ProposalBondsCoverage is FlywheelTest {
     }
 
     function _changeDecision(bytes32 answer, uint16 confidence) internal returns (uint256) {
-        return _decide(DecisionLog.Kind.Change, keccak256(abi.encode(address(board), data)), answer, confidence);
+        return _decide(DecisionLog.Kind.Change, executor.changeSubject(address(board), data), answer, confidence);
     }
 
     function test_constructorRejectsZeroAndBadConfig() public {
@@ -346,7 +346,7 @@ contract ProposalBondsCoverage is FlywheelTest {
         assertEq(p.bond, 100e18);
         assertEq(p.createdAt, 5_000_000);
         assertEq(uint8(p.state), uint8(ProposalBonds.State.Open));
-        assertEq(p.subject, keccak256(abi.encode(address(board), data)));
+        assertEq(p.subject, executor.changeSubject(address(board), data));
         assertEq(bonds.count(), 2);
     }
 
@@ -375,7 +375,7 @@ contract ProposalBondsCoverage is FlywheelTest {
 
     function test_settleAcceptsTheExactThresholdAndRejectsOtherKinds() public {
         uint256 id = _proposeAt(6_200_000);
-        uint256 hire = _decide(DecisionLog.Kind.Hire, keccak256(abi.encode(address(board), data)), YES, 9_000);
+        uint256 hire = _decide(DecisionLog.Kind.Hire, executor.changeSubject(address(board), data), YES, 9_000);
         vm.expectRevert(ProposalBonds.BadDecision.selector);
         bonds.settle(id, hire);
         bonds.settle(id, _changeDecision(YES, 8_500));
