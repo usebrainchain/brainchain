@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Script, console2} from "forge-std/Script.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
 
 import {DecisionExecutor} from "../src/DecisionExecutor.sol";
 import {DecisionLog} from "../src/DecisionLog.sol";
@@ -17,7 +18,9 @@ import {TestUSDG} from "../src/testnet/TestUSDG.sol";
 
 /// @notice Deploys BrainChain testnet with the $BRAIN flywheel, using test
 /// tokens. The deployer is the guardian on testnet and configures every
-/// contract before handing ownership to the DecisionExecutor.
+/// contract before handing ownership to the DecisionExecutor. The DecisionLog
+/// is owned by an admin timelock (2 hours on testnet) that the deployer
+/// proposes to, so the brain can never replace itself.
 /// Env: BRAIN, WORKER_CLAUDE, WORKER_GPT, WORKER_GEMINI, WORKER_GROK, WORKER_DEEPSEEK.
 contract DeployTestnet is Script {
     function run() external {
@@ -25,7 +28,10 @@ contract DeployTestnet is Script {
         vm.startBroadcast();
         address deployer = msg.sender;
 
-        DecisionLog decisionLog = new DecisionLog(deployer, brainKey);
+        address[] memory admins = new address[](1);
+        admins[0] = deployer;
+        TimelockController admin = new TimelockController(2 hours, admins, admins, address(0));
+        DecisionLog decisionLog = new DecisionLog(address(admin), brainKey);
         ModelRegistry registry = new ModelRegistry(deployer);
         TestBRAIN brainToken = new TestBRAIN(deployer, 10_000_000e18);
 
@@ -33,7 +39,7 @@ contract DeployTestnet is Script {
         address predictedExecutor = vm.computeCreateAddress(deployer, vm.getNonce(deployer) + 1);
         TestUSDG usdg = new TestUSDG(predictedExecutor, 100e6);
         DecisionExecutor executor =
-            new DecisionExecutor(decisionLog, IERC20(address(usdg)), deployer, 8_500, 2 hours, 20);
+            new DecisionExecutor(decisionLog, IERC20(address(usdg)), deployer, 8_500, 2 hours, 20, 5e6, 40e6);
         require(address(executor) == predictedExecutor, "executor address mismatch");
 
         WorkerStaking staking = new WorkerStaking(IERC20(address(brainToken)), deployer, 500e18, 3 days, 2_000);
@@ -68,11 +74,12 @@ contract DeployTestnet is Script {
             7 days
         );
 
-        executor.bindBoard(board);
         staking.setSlasher(address(board));
         board.setFee(300, address(router));
         router.setBrain(IERC20(address(brainToken)));
         router.setAdapter(swap);
+        // 5% under the swap's fixed rate, scaled by 1e18.
+        router.setFloorRate((1e14 * 1e18 * 95) / 100);
 
         registry.setModel(keccak256("claude"), vm.envAddress("WORKER_CLAUDE"), 0.4e6, true);
         registry.setModel(keccak256("gpt"), vm.envAddress("WORKER_GPT"), 0.35e6, true);
@@ -81,12 +88,13 @@ contract DeployTestnet is Script {
         registry.setModel(keccak256("deepseek"), vm.envAddress("WORKER_DEEPSEEK"), 0.1e6, true);
 
         registry.setOwner(address(executor));
-        decisionLog.setOwner(address(executor));
         board.setOwner(address(executor));
+        executor.bindBoard(board);
         staking.setOwner(address(executor));
         router.setOwner(address(executor));
         vm.stopBroadcast();
 
+        console2.log("AdminTimelock", address(admin));
         console2.log("TestUSDG", address(usdg));
         console2.log("TestBRAIN", address(brainToken));
         console2.log("DecisionLog", address(decisionLog));
