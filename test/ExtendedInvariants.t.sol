@@ -14,15 +14,15 @@ import {MockERC20} from "./MockERC20.sol";
 
 /// Fees on and changing mid-flight, live config changes, payee rotation, two
 /// posters, house tasks through the executor, and a staked worker that disputes
-/// and gets slashed. Ported from the October 2026 review and extended for v3.
+/// and gets slashed.
 contract ExtendedHandler is Test {
     bytes32 constant YES = bytes32(uint256(1));
 
     TaskBoard public board;
-    DecisionLog public log_;
+    DecisionLog public decisionLog;
     MockERC20 public usdg;
-    ModelRegistry public reg;
-    DecisionExecutor public de;
+    ModelRegistry public registry;
+    DecisionExecutor public executor;
     WorkerStaking public staking;
     address public brain;
     address public feeTo;
@@ -34,7 +34,6 @@ contract ExtendedHandler is Test {
     uint256 public openSum;
     uint256 public posted;
     uint256 public settledGross;
-    uint256 public settleCount;
     uint256 public doubleSettle;
     uint256 public expectedFees;
     uint256 public payeeMismatch;
@@ -43,10 +42,10 @@ contract ExtendedHandler is Test {
 
     constructor(
         TaskBoard board_,
-        DecisionLog log__,
+        DecisionLog decisionLog_,
         MockERC20 usdg_,
-        ModelRegistry reg_,
-        DecisionExecutor de_,
+        ModelRegistry registry_,
+        DecisionExecutor executor_,
         WorkerStaking staking_,
         address brain_,
         address feeTo_,
@@ -54,10 +53,10 @@ contract ExtendedHandler is Test {
         bytes32 stakedId
     ) {
         board = board_;
-        log_ = log__;
+        decisionLog = decisionLog_;
         usdg = usdg_;
-        reg = reg_;
-        de = de_;
+        registry = registry_;
+        executor = executor_;
         staking = staking_;
         brain = brain_;
         feeTo = feeTo_;
@@ -82,13 +81,13 @@ contract ExtendedHandler is Test {
 
     function _decide(DecisionLog.Kind kind, uint256 id, bytes32 answer, uint16 confidence) internal returns (uint256) {
         vm.prank(brain);
-        return log_.record(kind, board.subjectOf(id), 0, answer, uint16(bound(confidence, 0, 10_000)), 0, "");
+        return decisionLog.record(kind, board.subjectOf(id), 0, answer, uint16(bound(confidence, 0, 10_000)), 0, "");
     }
 
     function _account(bytes32 model) internal view returns (address) {
         if (model == bytes32(0)) return address(0);
         if (staking.isWorkerId(model)) return address(uint160(uint256(model)));
-        return reg.get(model).account;
+        return registry.get(model).account;
     }
 
     function post(uint128 bounty, uint64 duration, bool second) external {
@@ -105,10 +104,10 @@ contract ExtendedHandler is Test {
 
     function houseTask(uint128 bounty) external {
         bounty = uint128(bound(bounty, 1e6, 1e10));
-        usdg.mint(address(de), bounty);
+        usdg.mint(address(executor), bounty);
         (,,, uint64 minD,,,,,) = board.config();
         vm.prank(brain);
-        try de.postHouseTask(bounty, uint64(block.timestamp) + minD + 1, 0, "") returns (uint256 id) {
+        try executor.postHouseTask(bounty, uint64(block.timestamp) + minD + 1, 0, "") returns (uint256 id) {
             ids.push(id);
             openSum += bounty;
             posted += bounty;
@@ -171,7 +170,7 @@ contract ExtendedHandler is Test {
     }
 
     function setFee(uint16 bps) external {
-        vm.prank(address(de));
+        vm.prank(address(executor));
         board.setFee(uint16(bound(bps, 0, 1_000)), feeTo);
     }
 
@@ -187,17 +186,17 @@ contract ExtendedHandler is Test {
             uint64(bound(r, 1, 2 days)),
             1e6
         );
-        vm.prank(address(de));
+        vm.prank(address(executor));
         board.setConfig(c);
     }
 
     function rotate(uint256 model, uint256 payee) external {
-        vm.prank(address(de));
-        reg.setModel(workerIds[model % 2], payees[payee % 4], 1, true);
+        vm.prank(address(executor));
+        registry.setModel(workerIds[model % 2], payees[payee % 4], 1, true);
     }
 
     function pause(bool paused) external {
-        vm.prank(address(de));
+        vm.prank(address(executor));
         board.setPaused(paused);
     }
 
@@ -209,7 +208,6 @@ contract ExtendedHandler is Test {
         TaskBoard.Task memory t = board.get(id);
         openSum -= t.bounty;
         settledGross += t.bounty;
-        settleCount++;
         if (++settledTimes[id] > 1) doubleSettle++;
         if (t.status == TaskBoard.Status.Paid) {
             expectedFees += (uint256(t.bounty) * t.feeBps) / 10_000;
@@ -233,7 +231,7 @@ contract ExtendedInvariants is StdInvariant, Test {
     ExtendedHandler internal h;
     MockERC20 internal usdg;
     TaskBoard internal board;
-    DecisionExecutor internal de;
+    DecisionExecutor internal executor;
     WorkerStaking internal staking;
     address internal feeTo = makeAddr("fee-to");
     address internal stakedWorker = makeAddr("staked");
@@ -243,27 +241,27 @@ contract ExtendedInvariants is StdInvariant, Test {
         address guardian = makeAddr("guardian");
         usdg = new MockERC20();
         MockERC20 brainToken = new MockERC20();
-        DecisionLog log_ = new DecisionLog(address(this), brain);
-        ModelRegistry reg = new ModelRegistry(address(this));
+        DecisionLog decisionLog = new DecisionLog(address(this), brain);
+        ModelRegistry registry = new ModelRegistry(address(this));
         address[4] memory payees = [makeAddr("a0"), makeAddr("a1"), makeAddr("a2"), makeAddr("a3")];
-        reg.setModel(keccak256("claude"), payees[0], 1, true);
-        reg.setModel(keccak256("gpt"), payees[1], 1, true);
-        de = new DecisionExecutor(log_, IERC20(address(usdg)), guardian, 8_500, 2 days, type(uint32).max, 1e10, 1e15);
+        registry.setModel(keccak256("claude"), payees[0], 1, true);
+        registry.setModel(keccak256("gpt"), payees[1], 1, true);
+        executor = new DecisionExecutor(decisionLog, IERC20(address(usdg)), guardian, 8_500, 2 days, type(uint32).max, 1e10, 1e15);
         staking = new WorkerStaking(IERC20(address(brainToken)), address(this), 500e18, 3 days, 2_000);
         board = new TaskBoard(
             IERC20(address(usdg)),
-            log_,
-            reg,
+            decisionLog,
+            registry,
             staking,
-            address(de),
+            address(executor),
             guardian,
             TaskBoard.Config(1_500, 7_000, 7_000, 30 minutes, 3 days, 6 hours, 6 hours, 6 hours, 1e6)
         );
         vm.prank(guardian);
-        de.bindBoard(board);
+        executor.bindBoard(board);
         staking.setSlasher(address(board));
-        reg.setOwner(address(de));
-        vm.prank(address(de));
+        registry.setOwner(address(executor));
+        vm.prank(address(executor));
         board.setWorkerAllowed(stakedWorker, true);
         brainToken.mint(stakedWorker, 1e30);
         vm.startPrank(stakedWorker);
@@ -271,7 +269,7 @@ contract ExtendedInvariants is StdInvariant, Test {
         staking.stake(1e24, 0);
         vm.stopPrank();
 
-        h = new ExtendedHandler(board, log_, usdg, reg, de, staking, brain, feeTo, payees, staking.idOf(stakedWorker));
+        h = new ExtendedHandler(board, decisionLog, usdg, registry, executor, staking, brain, feeTo, payees, staking.idOf(stakedWorker));
         targetContract(address(h));
     }
 
@@ -300,6 +298,6 @@ contract ExtendedInvariants is StdInvariant, Test {
     }
 
     function invariant_houseSpendStaysUnderTheCap() public view {
-        assertLe(de.houseSpentOnDay(block.timestamp / 1 days), de.houseSpendPerDay());
+        assertLe(executor.houseSpentOnDay(block.timestamp / 1 days), executor.houseSpendPerDay());
     }
 }

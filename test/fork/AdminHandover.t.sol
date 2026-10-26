@@ -11,8 +11,8 @@ interface IRoles {
 
 /// Replays the UpgradeExecutor half of the handover on forks of BrainChain and
 /// Robinhood Chain. ArbOwner is an Arbitrum precompile that forks cannot run,
-/// so steps 1 and 3 are checked by their calldata. Skipped unless
-/// BRAINCHAIN_RPC and ROBINHOOD_RPC are set.
+/// so steps 1 and 3 are checked by their calldata. Each test skips unless its
+/// RPC is set (BRAINCHAIN_RPC or ROBINHOOD_RPC).
 contract AdminHandoverForkTest is Test {
     bytes32 constant EXECUTOR_ROLE = keccak256("EXECUTOR_ROLE");
     address constant DEPLOYER = 0x8D4b5d7E287ddf83C440a19b2DD6037F58723660;

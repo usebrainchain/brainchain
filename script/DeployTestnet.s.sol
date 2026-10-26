@@ -10,7 +10,7 @@ import {DecisionLog} from "../src/DecisionLog.sol";
 import {ModelRegistry} from "../src/ModelRegistry.sol";
 import {TaskBoard} from "../src/TaskBoard.sol";
 import {FeeRouter} from "../src/flywheel/FeeRouter.sol";
-import {IChangeThreshold, ProposalBonds} from "../src/flywheel/ProposalBonds.sol";
+import {IDecisionExecutor, ProposalBonds} from "../src/flywheel/ProposalBonds.sol";
 import {WorkerStaking} from "../src/flywheel/WorkerStaking.sol";
 import {TestBRAIN} from "../src/testnet/TestBRAIN.sol";
 import {TestSwap} from "../src/testnet/TestSwap.sol";
@@ -68,7 +68,7 @@ contract DeployTestnet is Script {
         ProposalBonds bonds = new ProposalBonds(
             IERC20(address(brainToken)),
             decisionLog,
-            IChangeThreshold(address(executor)),
+            IDecisionExecutor(address(executor)),
             address(executor),
             100e18,
             7 days

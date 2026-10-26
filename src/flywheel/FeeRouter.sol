@@ -23,6 +23,7 @@ contract FeeRouter is ReentrancyGuard {
     error NotReady();
     error BadShare();
     error BelowFloor();
+    error ShortSwap();
 
     event BrainSet(address indexed brain);
     event AdapterSet(address indexed adapter);
@@ -110,7 +111,7 @@ contract FeeRouter is ReentrancyGuard {
         adapter.swap(address(feeToken), address(brain), amountIn, minOut, address(this));
         feeToken.forceApprove(address(adapter), 0);
         brainOut = brain.balanceOf(address(this)) - before;
-        if (brainOut < minOut) revert BelowFloor();
+        if (brainOut < minOut) revert ShortSwap();
 
         uint256 burned = (brainOut * burnBps) / 10_000;
         brain.safeTransfer(BURN, burned);

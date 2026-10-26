@@ -9,7 +9,7 @@ import {DecisionLog} from "../src/DecisionLog.sol";
 import {ModelRegistry} from "../src/ModelRegistry.sol";
 import {TaskBoard} from "../src/TaskBoard.sol";
 import {FeeRouter} from "../src/flywheel/FeeRouter.sol";
-import {ProposalBonds, IChangeThreshold} from "../src/flywheel/ProposalBonds.sol";
+import {ProposalBonds, IDecisionExecutor} from "../src/flywheel/ProposalBonds.sol";
 import {WorkerStaking} from "../src/flywheel/WorkerStaking.sol";
 import {TestBRAIN} from "../src/testnet/TestBRAIN.sol";
 import {TestSwap} from "../src/testnet/TestSwap.sol";
@@ -81,7 +81,7 @@ contract FlywheelTest is Test {
         swap = new TestSwap(IERC20(address(usdg)), IERC20(address(brainToken)), 1e12);
         brainToken.transfer(address(swap), 500_000e18);
         bonds = new ProposalBonds(
-            IERC20(address(brainToken)), decisionLog, IChangeThreshold(address(executor)), address(this), 100e18, 7 days
+            IERC20(address(brainToken)), decisionLog, IDecisionExecutor(address(executor)), address(this), 100e18, 7 days
         );
 
         usdg.mint(poster, 1_000e6);
@@ -181,14 +181,14 @@ contract FlywheelTest is Test {
         router.buyback(0.3e6, 0.285e18);
     }
 
-    function test_buybackChecksWhatTheVenueActuallyPaid() public {
+    function test_buybackChecksWhatTheVenuePaid() public {
         _runToPaid(CLAUDE, claude);
         ShortAdapter short = new ShortAdapter(IERC20(address(brainToken)));
         brainToken.transfer(address(short), 1e18);
         router.setBrain(IERC20(address(brainToken)));
         router.setAdapter(ISwapAdapter(address(short)));
         vm.prank(brain);
-        vm.expectRevert(FeeRouter.BelowFloor.selector);
+        vm.expectRevert(FeeRouter.ShortSwap.selector);
         router.buyback(0.3e6, 0.3e18);
     }
 

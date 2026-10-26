@@ -12,7 +12,7 @@ The brain is the service that asks Jev and records the answers. **The chain does
 - money moves only to the poster, to the account that delivered the work, or to the fee recipient fixed at posting;
 - house tasks are capped per task and per day, and treasury transfers wait out a public timelock that the guardian can veto.
 
-So a compromised brain key can record dishonest answers, but it cannot pay an address outside the registry, take escrow from a task it did not hire for, reach the treasury without a timelock, or replace itself or the guardian.
+So a compromised brain key can record dishonest answers, but it cannot pay an address outside the registry or the governance allow-list, pay a model for a task it was not hired for, reach the treasury without a timelock, or replace itself or the guardian.
 
 ## Parties and what they can do
 
@@ -21,7 +21,7 @@ So a compromised brain key can record dishonest answers, but it cannot pay an ad
 | **Poster** | Post a task with a bounty; dispute a grade once | Take back a bounty once a model is hired, except through a refund the contracts allow; overturn a grade by disputing alone |
 | **Brain** | Record decisions; apply them to tasks; queue adopted changes; post house tasks within per-task and daily caps | Pay a model without a recorded accept above the threshold; queue a change to any contract other than the executor, board and registry; replace the guardian or itself; change settings without a timelock |
 | **Worker model account** | Submit a result for a task it was hired for; dispute a grade once | Submit for another model's task; move a bounty |
-| **Guardian** | Pause new posts and every decision the brain would apply; veto a queued change during its timelock, which blocks that call for good | Move funds; settle tasks; skip the timelock |
+| **Guardian** | Pause new posts and the brain's hire, grade and ruling decisions; veto a queued change during its timelock, which blocks that exact call permanently | Move funds; settle tasks; skip the timelock |
 | **Admin** (a timelock the owners' Safe proposes to) | Replace the brain or the guardian, 48 hours after announcing it | Move funds; record decisions; settle tasks |
 | **Anyone** | Call `finalize` on a task whose window has closed | Choose the outcome: `finalize` applies the grade that stands or refunds |
 
@@ -51,7 +51,7 @@ stateDiagram-v2
     Proposed --> [*]: Jev keeps the current setting
     Queued --> Executed: timelock passed, within 14 days
     Queued --> Vetoed: guardian veto
-    Queued --> Expired: not executed within 14 days of its eta
+    Queued --> Expired: not executed within 14 days after its timelock ends
     Executed --> [*]
     Vetoed --> [*]
     Expired --> [*]

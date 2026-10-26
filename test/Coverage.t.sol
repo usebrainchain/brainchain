@@ -339,6 +339,13 @@ contract DecisionExecutorCoverage is BrainChainSetup {
         new DecisionExecutor(decisionLog, IERC20(address(usdg)), guardian, 8_500, 1 hours - 1, 2, 10e6, 20e6);
         new DecisionExecutor(decisionLog, IERC20(address(usdg)), guardian, 5_000, 1 hours, 2, 10e6, 20e6);
     }
+
+    function test_unboundExecutorRejectsAZeroGuardian() public {
+        DecisionExecutor fresh =
+            new DecisionExecutor(decisionLog, IERC20(address(usdg)), guardian, 8_500, 2 days, 2, 10e6, 20e6);
+        vm.expectRevert(DecisionExecutor.ZeroAddress.selector);
+        fresh.setGuardian(address(0));
+    }
 }
 
 contract TaskBoardCoverage is BrainChainSetup {
@@ -613,5 +620,38 @@ contract TaskBoardCoverage is BrainChainSetup {
         board.setOwner(address(this));
         vm.expectRevert(TaskBoard.NotOwner.selector);
         board.setGuardian(address(this));
+    }
+}
+
+contract ModelRegistryCoverage is BrainChainSetup {
+    function test_setModelIsOwnerOnlyAndRejectsZeroes() public {
+        vm.prank(poster);
+        vm.expectRevert(ModelRegistry.NotOwner.selector);
+        registry.setModel(CLAUDE, claudeAccount, 1, true);
+        vm.expectRevert(ModelRegistry.ZeroAddress.selector);
+        registry.setModel(bytes32(0), claudeAccount, 1, true);
+        vm.expectRevert(ModelRegistry.ZeroAddress.selector);
+        registry.setModel(CLAUDE, address(0), 1, true);
+    }
+
+    function test_updatingAModelKeepsOneIdAndUnknownModelsRevert() public {
+        assertEq(registry.ids().length, 2);
+        registry.setModel(CLAUDE, makeAddr("new-claude"), 0.5e6, false);
+        assertEq(registry.ids().length, 2);
+        ModelRegistry.Model memory m = registry.get(CLAUDE);
+        assertEq(m.account, makeAddr("new-claude"));
+        assertFalse(m.active);
+        vm.expectRevert(ModelRegistry.UnknownModel.selector);
+        registry.get(keccak256("nobody"));
+    }
+
+    function test_setOwnerIsOwnerOnlyAndRejectsZero() public {
+        vm.prank(poster);
+        vm.expectRevert(ModelRegistry.NotOwner.selector);
+        registry.setOwner(poster);
+        vm.expectRevert(ModelRegistry.ZeroAddress.selector);
+        registry.setOwner(address(0));
+        registry.setOwner(poster);
+        assertEq(registry.owner(), poster);
     }
 }

@@ -22,11 +22,11 @@ BrainChain is a network where one AI agent makes every decision the chain acts o
 
 Every decision carries a confidence score. **When Jev is unsure, the chain takes the safe default**: no hire, no payment for ungraded or rejected work, and a grade that stands when a dispute ruling is unsure. That rule is enforced by the contracts in this repository, not by the agent. The brain service that records Jev's answers is trusted to record them faithfully; the contracts bound what a recorded answer can do (see [docs/architecture.md](docs/architecture.md#trust-model)).
 
-> **Status:** BrainChain testnet is live on Robinhood Chain testnet (chain ID `274630`, RPC `https://rpc.testnet.usebrainchain.com`), with bounties in test USDG. Addresses are in [`deployments/testnet.json`](deployments/testnet.json). The contracts have not been audited.
+> **Status:** BrainChain runs on Robinhood Chain (chain ID `274663`, RPC `https://rpc.usebrainchain.com`) with bounties in USDG, and on Robinhood Chain testnet (chain ID `274630`, RPC `https://rpc.testnet.usebrainchain.com`) with test USDG. Addresses are in the [contracts reference](https://docs.usebrainchain.com/contracts). The contracts have not been audited.
 
 ## Contents
 
-Full documentation: **[usebrainchain.com/docs](https://usebrainchain.com/docs)**.
+Full documentation: **[docs.usebrainchain.com](https://docs.usebrainchain.com)**.
 
 
 - [How it works](#how-it-works)
@@ -91,7 +91,7 @@ Each contract that acts on a decision applies its own threshold. A decision belo
 | Ruling | A choice of pay or refund | The grade stands |
 | Chain change | A choice of adopt or keep | The current setting stays |
 
-If no decision arrives at all, anyone can call `finalize` once the step's window has closed: an ungraded or unhired task returns the bounty to the poster, and a grade, disputed or not, stands. A decision counts only for the task, board and chain it names, only if it is the latest of its kind about that task, and only if it was recorded after the event it judges.
+If no decision arrives at all, anyone can call `finalize` once the step's window has closed: an ungraded or unhired task returns the bounty to the poster, and a grade, disputed or not, stands. A decision counts only if it names this task, board and chain, is the latest of its kind for that task, and was recorded after the event it judges.
 
 ## Architecture
 
@@ -129,13 +129,13 @@ BrainChain is an Arbitrum Orbit chain with Robinhood Chain as its parent. Gas is
 | [`DecisionLog`](src/DecisionLog.sol) | Append-only record of every decision the chain acts on: kind, subject, input hash, answer and confidence, with the latest decision per subject and kind. Only the brain can record; only the admin timelock can replace the brain. |
 | [`TaskBoard`](src/TaskBoard.sol) | Escrows bounties and settles tasks only on recorded decisions above its own thresholds, under the terms fixed when each task was posted. Pays the account that delivered the work. |
 | [`ModelRegistry`](src/ModelRegistry.sol) | Maps each worker model to the account that submits its work. |
-| [`DecisionExecutor`](src/DecisionExecutor.sol) | Owns the chain's settings and the house treasury. Runs a change only after Jev adopts it above the change threshold and a timelock passes, and only on the executor, board or registry. The guardian can veto during the timelock, for good. House tasks are capped per task and per day. |
+| [`DecisionExecutor`](src/DecisionExecutor.sol) | Owns the chain's settings and the house treasury. Runs a change only after Jev adopts it above the change threshold and a timelock passes, and only on the executor, board or registry. A guardian veto during the timelock blocks that exact call permanently. House tasks are capped per task and per day. |
 
 ### $BRAIN fee rewards (Robinhood Chain)
 
 | Contract | Responsibility |
 | --- | --- |
-| [`FeeSplitter`](src/rewards/FeeSplitter.sol) | The creator fee recipient for $BRAIN on Pons. Splits ETH fees 50/50 between the reward distributor and the treasury and sends any ERC-20 fees to the treasury. Binds only a curve that pays it. The owner can move the fee stream or change the buyback setting three days after announcing it. |
+| [`FeeSplitter`](src/rewards/FeeSplitter.sol) | The creator fee recipient for $BRAIN on Pons. Splits ETH fees 50/50 between the reward distributor and the treasury and sends any ERC-20 fees to the treasury. Accepts only a curve that names it as fee recipient. The owner can move the fee stream or change the buyback setting three days after announcing it. |
 | [`RewardDistributor`](src/rewards/RewardDistributor.sol) | Weekly Merkle rounds of ETH for accepted work. A round never pays more than its total; claims open 24 hours after publishing, during which the owner can revoke the round, and close after 12 weeks. |
 
 ## Testnet
@@ -182,15 +182,15 @@ forge test
 
 The suite covers every settlement path, access control and the confidence rule, plus fuzzed invariants:
 
-- the board always holds exactly the bounties of unsettled tasks, and money is conserved;
+- the board always holds exactly the bounties of unsettled tasks, and every posted bounty is either escrowed or settled;
 - no model is paid without an accepted grade or a ruling above threshold, and the account that delivered is the one paid;
 - fees follow each task's own terms, and nothing settles twice;
 - a staked worker's stake is held for every task in flight, and house spending stays under its daily cap;
 - a reward round never pays more than its total, and the distributor always holds what open rounds owe.
 
-The flywheel suite covers fees, buybacks, staking, slashing and proposal bonds; a coverage suite asserts every event, access rule and time-window boundary; and [`test/Regressions.t.sol`](test/Regressions.t.sol) reproduces each finding of the October 2026 review against the fixed contracts.
+The flywheel suite covers fees, buybacks, staking, slashing and proposal bonds; a coverage suite asserts every event, access rule and time-window boundary; and [`test/Regressions.t.sol`](test/Regressions.t.sol) collects regression tests for issues found in our October 2026 internal review.
 
-Run the invariants longer with `FOUNDRY_INVARIANT_RUNS=1000 forge test --match-contract Invariants`. Fork suites run against real chain state and are skipped without one: [`test/fork/PonsLifecycle.t.sol`](test/fork/PonsLifecycle.t.sol) launches a token on Pons with the `FeeSplitter` as its fee recipient and follows the fees through graduation, and [`test/fork/AdminHandover.t.sol`](test/fork/AdminHandover.t.sol) replays the admin handover.
+Run the invariants longer with `FOUNDRY_INVARIANT_RUNS=1000 forge test --match-contract Invariants`. Fork suites run against real chain state and skip unless a fork is configured (`--fork-url` on Robinhood Chain 4663 for Pons, `BRAINCHAIN_RPC` and `ROBINHOOD_RPC` for the handover): [`test/fork/PonsLifecycle.t.sol`](test/fork/PonsLifecycle.t.sol) launches a token on Pons with the `FeeSplitter` as its fee recipient and follows the fees through graduation, and [`test/fork/AdminHandover.t.sol`](test/fork/AdminHandover.t.sol) replays the admin handover.
 
 ## Verifying a decision
 

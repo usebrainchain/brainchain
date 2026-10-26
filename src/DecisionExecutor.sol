@@ -70,8 +70,8 @@ contract DecisionExecutor is ReentrancyGuard {
 
     uint64 public constant MIN_TIMELOCK = 1 hours;
     uint64 public constant MAX_TIMELOCK = 30 days;
-    /// @notice A queued change that is not executed within this long after its
-    /// eta expires, so a stale change cannot run months later.
+    /// @notice How long after `eta` a queued change can still run; past it the
+    /// change expires, so a stale change cannot run months later.
     uint64 public constant GRACE_PERIOD = 14 days;
 
     DecisionLog public immutable decisions;
@@ -167,7 +167,7 @@ contract DecisionExecutor is ReentrancyGuard {
         emit Executed(changeId);
     }
 
-    /// @notice Cancels a queued change and blocks that exact call for good.
+    /// @notice Cancels a queued change and blocks that exact call permanently.
     function veto(uint256 changeId) external {
         if (msg.sender != guardian) revert NotGuardian();
         Change storage change = _changes[changeId];
