@@ -29,6 +29,7 @@ contract FeeRouter is ReentrancyGuard {
     event KeeperSet(address indexed keeper);
     event BurnShareSet(uint16 burnBps);
     event FloorRateSet(uint256 floorRate);
+    event OwnerSet(address indexed owner);
     event BoughtBack(uint256 feeIn, uint256 brainOut, uint256 burned, uint256 toTreasury);
 
     /// @dev $BRAIN is burned by sending it here; works for any ERC-20.
@@ -120,5 +121,6 @@ contract FeeRouter is ReentrancyGuard {
     function setOwner(address owner_) external onlyOwner {
         if (owner_ == address(0)) revert ZeroAddress();
         owner = owner_;
+        emit OwnerSet(owner_);
     }
 }

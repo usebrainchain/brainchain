@@ -38,6 +38,7 @@ contract WorkerStaking is ReentrancyGuard {
     event ConfigSet(uint128 minStake, uint64 cooldown, uint16 slashBps);
     event SlasherSet(address indexed slasher);
     event Held(address indexed account, uint32 tasks);
+    event OwnerSet(address indexed owner);
 
     address public constant BURN = 0x000000000000000000000000000000000000dEaD;
 
@@ -164,6 +165,7 @@ contract WorkerStaking is ReentrancyGuard {
         if (msg.sender != owner) revert NotOwner();
         if (owner_ == address(0)) revert ZeroAddress();
         owner = owner_;
+        emit OwnerSet(owner_);
     }
 
     function _setConfig(uint128 minStake_, uint64 cooldown_, uint16 slashBps_) private {

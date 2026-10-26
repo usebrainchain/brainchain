@@ -13,7 +13,26 @@ import {ProposalBonds, IChangeThreshold} from "../src/flywheel/ProposalBonds.sol
 import {WorkerStaking} from "../src/flywheel/WorkerStaking.sol";
 import {TestBRAIN} from "../src/testnet/TestBRAIN.sol";
 import {TestSwap} from "../src/testnet/TestSwap.sol";
+import {ISwapAdapter} from "../src/interfaces/ISwapAdapter.sol";
 import {MockERC20} from "./MockERC20.sol";
+
+/// A venue that pays less than the minimum it was given and does not revert.
+contract ShortAdapter {
+    IERC20 public immutable out;
+
+    constructor(IERC20 out_) {
+        out = out_;
+    }
+
+    function swap(address tokenIn, address, uint256 amountIn, uint256 minOut, address recipient)
+        external
+        returns (uint256)
+    {
+        IERC20(tokenIn).transferFrom(msg.sender, address(this), amountIn);
+        out.transfer(recipient, minOut - 1);
+        return minOut - 1;
+    }
+}
 
 contract FlywheelTest is Test {
     bytes32 internal constant CLAUDE = keccak256("claude");
@@ -160,6 +179,17 @@ contract FlywheelTest is Test {
         router.buyback(0.3e6, 0.28e18);
         vm.prank(brain);
         router.buyback(0.3e6, 0.285e18);
+    }
+
+    function test_buybackChecksWhatTheVenueActuallyPaid() public {
+        _runToPaid(CLAUDE, claude);
+        ShortAdapter short = new ShortAdapter(IERC20(address(brainToken)));
+        brainToken.transfer(address(short), 1e18);
+        router.setBrain(IERC20(address(brainToken)));
+        router.setAdapter(ISwapAdapter(address(short)));
+        vm.prank(brain);
+        vm.expectRevert(FeeRouter.BelowFloor.selector);
+        router.buyback(0.3e6, 0.3e18);
     }
 
     function test_buybackWaitsForAFloor() public {
