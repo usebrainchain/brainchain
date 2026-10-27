@@ -296,6 +296,20 @@ contract DecisionExecutorRegressions is BrainChainSetup {
         assertEq(registry.get(keccak256("gemini")).account, attacker);
     }
 
+    /// v3 let a change hand the board or registry to any address, whose owner could then
+    /// set the guardian, fee and config directly, with no timelock or veto.
+    function test_changesCannotMoveOwnership() public {
+        address taker = makeAddr("taker");
+        bytes memory data = abi.encodeCall(TaskBoard.setOwner, (taker));
+        for (uint256 i; i < 2; ++i) {
+            address target = i == 0 ? address(board) : address(registry);
+            uint256 d = _adopt(target, data);
+            vm.prank(brain);
+            vm.expectRevert(DecisionExecutor.ForbiddenCall.selector);
+            executor.queue(d, target, data);
+        }
+    }
+
     function test_changesNeedASelector() public {
         bytes memory empty = "";
         uint256 d = _adopt(address(board), empty);
