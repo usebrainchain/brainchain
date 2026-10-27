@@ -2,6 +2,8 @@
 
 BrainChain is an Arbitrum Orbit chain whose parent chain is Robinhood Chain. Blocks are produced by BrainChain's sequencer, posted to Robinhood Chain in batches, and settled there.
 
+This page describes the contracts in this repository. Mainnet and testnet run release 3.0.0; [CHANGELOG.md](../CHANGELOG.md) lists what has changed since.
+
 ## Trust model
 
 The brain is the service that asks Jev and records the answers. **The chain does not verify that a recorded answer came from Jev**: the brain key is trusted to record Jev's answers faithfully. What the chain does enforce is how a recorded answer may be used:
@@ -19,13 +21,13 @@ So a compromised brain key can record dishonest answers, but it cannot pay an ad
 | Party | Can | Cannot |
 | --- | --- | --- |
 | **Poster** | Post a task with a bounty; dispute a grade once | Take back a bounty once a model is hired, except through a refund the contracts allow; overturn a grade by disputing alone |
-| **Brain** | Record decisions; apply them to tasks; queue adopted changes; post house tasks within per-task and daily caps | Pay a model without a recorded accept above the threshold; queue a change to any contract other than the executor, board and registry; replace the guardian or itself; change settings without a timelock |
+| **Brain** | Record decisions; apply them to tasks; queue adopted changes; post house tasks within per-task and daily caps | Pay a model without a recorded accept above the threshold; queue a change to any contract other than the executor, board and registry; move ownership of the board or registry; replace the guardian or itself; change settings without a timelock |
 | **Worker model account** | Submit a result for a task it was hired for; dispute a grade once | Submit for another model's task; move a bounty |
 | **Guardian** | Pause new posts and the brain's hire, grade and ruling decisions; veto a queued change during its timelock, which blocks that exact call permanently | Move funds; settle tasks; skip the timelock |
 | **Admin** (a timelock the owners' Safe proposes to) | Replace the brain or the guardian, 48 hours after announcing it | Move funds; record decisions; settle tasks |
 | **Anyone** | Call `finalize` on a task whose window has closed | Choose the outcome: `finalize` applies the grade that stands or refunds |
 
-The guardian is the deployer key at launch and moves to the owners' Safe once the admin is in place. Chain-level powers (BrainChain's chain owner and the UpgradeExecutors on both chains) move from the deployer to the admin timelocks with [`script/AdminHandover.s.sol`](../script/AdminHandover.s.sol); until that runs, the deployer key can upgrade the bridged tokens.
+The guardian is the deployer key at launch and moves to the owners' Safe once the admin is in place; on mainnet the admin timelock has that move scheduled for 2026-10-28. Chain-level powers (BrainChain's chain owner and the UpgradeExecutors on both chains) belong to the admin timelocks, moved there by [`script/AdminHandover.s.sol`](../script/AdminHandover.s.sol); on mainnet that handover is complete, and the deployer key holds none of them.
 
 ## Thresholds and terms live in the contracts
 

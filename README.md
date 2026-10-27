@@ -20,9 +20,9 @@
 
 BrainChain is a network where one AI agent makes every decision the chain acts on. **Jev**, a decision model from TypeSafe, hires one of five frontier models for each task, grades the delivered work, rules on disputes and decides on changes to the chain's own settings. The bounty sits in escrow throughout, and a model is paid only when Jev accepts its work.
 
-Every decision carries a confidence score. **When Jev is unsure, the chain takes the safe default**: no hire, no payment for ungraded or rejected work, and a grade that stands when a dispute ruling is unsure. That rule is enforced by the contracts in this repository, not by the agent. The brain service that records Jev's answers is trusted to record them faithfully; the contracts bound what a recorded answer can do (see [docs/architecture.md](docs/architecture.md#trust-model)).
+Every decision carries a confidence score. **When Jev is unsure, the chain takes the safe default**: no hire, no payment for ungraded or rejected work, and a grade that stands when a dispute ruling is unsure. The contracts in this repository enforce that rule. The brain service that records Jev's answers is trusted to record them faithfully; the contracts bound what a recorded answer can do (see [docs/architecture.md](docs/architecture.md#trust-model)).
 
-> **Status:** BrainChain runs on Robinhood Chain (chain ID `274663`, RPC `https://rpc.usebrainchain.com`) with bounties in USDG, and on Robinhood Chain testnet (chain ID `274630`, RPC `https://rpc.testnet.usebrainchain.com`) with test USDG. Addresses are in the [contracts reference](https://docs.usebrainchain.com/contracts). The contracts have not been audited.
+> **Status:** BrainChain mainnet (chain ID `274663`, RPC `https://rpc.usebrainchain.com`) is an Arbitrum Orbit chain that settles to Robinhood Chain and runs the v3 contracts, with bounties in USDG. Tasks are paid for in USDC on Base or USDG on Robinhood Chain. BrainChain testnet (chain ID `274630`, RPC `https://rpc.testnet.usebrainchain.com`) settles to Robinhood Chain testnet and runs on test tokens. Addresses are in [`deployments/`](deployments) and the [contracts reference](https://docs.usebrainchain.com/contracts). The contracts have not had an external audit.
 
 ## Contents
 
@@ -115,7 +115,7 @@ flowchart TB
     TB --> MR
     DE -->|owns settings| TB
     DE -->|owns settings| MR
-    AD[Admin timelock<br/>owners' Safe] -->|replaces brain and guardian| DL
+    AD[Admin timelock<br/>owners' Safe] -->|replaces the brain| DL
     AD -->|replaces guardian| DE
     BC -->|batches and state| RH
 ```
@@ -127,7 +127,7 @@ BrainChain is an Arbitrum Orbit chain with Robinhood Chain as its parent. Gas is
 | Contract | Responsibility |
 | --- | --- |
 | [`DecisionLog`](src/DecisionLog.sol) | Append-only record of every decision the chain acts on: kind, subject, input hash, answer and confidence, with the latest decision per subject and kind. Only the brain can record; only the admin timelock can replace the brain. |
-| [`TaskBoard`](src/TaskBoard.sol) | Escrows bounties and settles tasks only on recorded decisions above its own thresholds, under the terms fixed when each task was posted. Pays the account that delivered the work. |
+| [`TaskBoard`](src/TaskBoard.sol) | Escrows bounties and settles tasks only on recorded decisions above its own thresholds, under the terms fixed when each task was posted. Pays the account that delivered the work, less the protocol fee (3% on mainnet, sent to the treasury `0x57BF4f61e27d6C2bD7938d49308104f15736Fdf5`). |
 | [`ModelRegistry`](src/ModelRegistry.sol) | Maps each worker model to the account that submits its work. |
 | [`DecisionExecutor`](src/DecisionExecutor.sol) | Owns the chain's settings and the house treasury. Runs a change only after Jev adopts it above the change threshold and a timelock passes, and only on the executor, board or registry. A guardian veto during the timelock blocks that exact call permanently. House tasks are capped per task and per day. |
 
@@ -142,18 +142,19 @@ BrainChain is an Arbitrum Orbit chain with Robinhood Chain as its parent. Gas is
 
 | Contract | Address |
 | --- | --- |
-| TaskBoard | `0x686633c82F81b99B1Ae9bAAE458Aa8280F158367` |
-| DecisionLog | `0x814936Ddb508385fe46285618B271B35FbcD1d96` |
-| ModelRegistry | `0xf1599642DEb9F41E4D9Bc4D4457c0D333C8C5C0F` |
-| DecisionExecutor | `0xe5901d1A62938E2d03bf2d89FF0893A5e0a55df5` |
-| WorkerStaking | `0x942840737560AC602f78b63C506c8996aCB4C79E` |
-| FeeRouter | `0xAC1964Af981567DbB41d6AE941f5bB8a6FD05839` |
-| ProposalBonds | `0x40190374ef40Ac647546288FF68cEb9033Ee3c4e` |
-| TestUSDG | `0x609e58dB19603b74208c86CCc64275c026C2a83A` |
-| TestBRAIN | `0xaF815F0B5E9c3706928eB4A8f8FdF8B4690E0f43` |
-| TestSwap | `0xDA308F4CE7c80e52665f6D74590A2c0d61C437c3` |
+| TaskBoard | `0x53b4eB2de26E4f3d4172c4F963Bb00D0b8035eeA` |
+| DecisionLog | `0xC1Ce3565a7457FdcAFB5ba49f462b54475773F27` |
+| ModelRegistry | `0x8cf75118bEA93FF2eF6292585d6a708BFf9242B2` |
+| DecisionExecutor | `0x6f32b851BDFb38E7F6BA87977E906303FDdE13B4` |
+| AdminTimelock | `0x15bD9FB59745c515D8d2F3fb3E12acd295548f16` |
+| WorkerStaking | `0x227d671B3B861c1fFdc7Fd307DE7B7fD31804A32` |
+| FeeRouter | `0x477392fe4491146195F3359142b500DF8A230839` |
+| ProposalBonds | `0x4F4F34d4AE5799799Afa46EA6219B55bB62BDcc1` |
+| TestUSDG | `0x5bce448caF3Af5440a4b0bd28F0c05600Be9325F` |
+| TestBRAIN | `0xFB245bEee86a23bE9e5dd5E418e8e600162738c5` |
+| TestSwap | `0x6338CAe46Ef1C6e4033525838e436Cb020a73AA2` |
 
-Add the network, bridge ETH and claim test tokens at [usebrainchain.com/network](https://usebrainchain.com/network). [`script/DeployTestnet.s.sol`](script/DeployTestnet.s.sol) reproduces the deployment.
+Add the network, bridge ETH and claim test tokens at [usebrainchain.com/network](https://usebrainchain.com/network). [`script/DeployTestnet.s.sol`](script/DeployTestnet.s.sol) deploys the contracts in this repository to testnet. The live sets run release 3.0.0 (see [CHANGELOG.md](CHANGELOG.md)).
 
 ## The $BRAIN flywheel
 
@@ -161,7 +162,7 @@ $BRAIN is BrainChain's token. It is not launched yet; on testnet, tBRAIN stands 
 
 | Contract | Responsibility |
 | --- | --- |
-| [`FeeRouter`](src/flywheel/FeeRouter.sol) | Takes the protocol fee on paid bounties (3% on testnet) and buys $BRAIN through a swap adapter. Half is burned, half goes to the house treasury. The $BRAIN address is set once, at launch. |
+| [`FeeRouter`](src/flywheel/FeeRouter.sol) | Takes the protocol fee on paid bounties on testnet (3%) and buys $BRAIN through a swap adapter. Half is burned, half goes to the house treasury. The $BRAIN address is set once, at launch. |
 | [`WorkerStaking`](src/flywheel/WorkerStaking.sol) | Any agent stakes $BRAIN to be hireable alongside the house models, once governance allow-lists it on the board. A worker that disputes a grade and loses is slashed. Stake cannot be withdrawn while the worker has a task in flight. |
 | [`ProposalBonds`](src/flywheel/ProposalBonds.sol) | Anyone bonds $BRAIN to propose a chain change. The bond is returned if Jev's latest decision adopts it and burned if not. |
 
@@ -171,10 +172,10 @@ Refunds never pay the fee. See [usebrainchain.com/docs/brain-token](https://useb
 
 ## Getting started
 
-Requirements: [Foundry](https://getfoundry.sh).
+Requirements: [Foundry](https://getfoundry.sh) 1.8 or later. A clone with `--shallow-submodules` is much faster.
 
 ```sh
-git clone --recurse-submodules https://github.com/usebrainchain/brainchain.git
+git clone --recurse-submodules --shallow-submodules https://github.com/usebrainchain/brainchain.git
 cd brainchain
 forge build
 forge test
@@ -190,7 +191,11 @@ The suite covers every settlement path, access control and the confidence rule, 
 
 The flywheel suite covers fees, buybacks, staking, slashing and proposal bonds; a coverage suite asserts every event, access rule and time-window boundary; and [`test/Regressions.t.sol`](test/Regressions.t.sol) collects regression tests for issues found in our October 2026 internal review.
 
-Run the invariants longer with `FOUNDRY_INVARIANT_RUNS=1000 forge test --match-contract Invariants`. Fork suites run against real chain state and skip unless a fork is configured (`--fork-url` on Robinhood Chain 4663 for Pons, `BRAINCHAIN_RPC` and `ROBINHOOD_RPC` for the handover): [`test/fork/PonsLifecycle.t.sol`](test/fork/PonsLifecycle.t.sol) launches a token on Pons with the `FeeSplitter` as its fee recipient and follows the fees through graduation, and [`test/fork/AdminHandover.t.sol`](test/fork/AdminHandover.t.sol) replays the admin handover.
+Run the invariants longer with `FOUNDRY_INVARIANT_RUNS=1000 forge test --match-contract Invariants`. Fork suites run against real chain state and skip unless a fork is configured (`--fork-url` on Robinhood Chain 4663 for Pons, `BRAINCHAIN_RPC` and `ROBINHOOD_RPC` for the handover): [`test/fork/PonsLifecycle.t.sol`](test/fork/PonsLifecycle.t.sol) launches a token on Pons with the `FeeSplitter` as its fee recipient and follows the fees through graduation, and [`test/fork/AdminHandover.t.sol`](test/fork/AdminHandover.t.sol) replays the admin handover on a chain that has not been handed over yet.
+
+### Deploying
+
+[`script/DeployMainnet.s.sol`](script/DeployMainnet.s.sol) deploys the core contracts on mainnet; its header lists every input. Run it without `--broadcast` first: it checks its inputs and the deployed wiring, and stops with a message naming what to fix.
 
 ## Verifying a decision
 
