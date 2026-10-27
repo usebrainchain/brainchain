@@ -137,7 +137,11 @@ contract DecisionExecutor is ReentrancyGuard {
         if (target == address(0)) revert ZeroAddress();
         if (target != address(this) && target != address(board) && target != address(models)) revert ForbiddenTarget();
         // TaskBoard and this contract share the setGuardian selector; neither may be reached by a change.
-        if (data.length < 4 || bytes4(data[:4]) == this.setGuardian.selector) revert ForbiddenCall();
+        // Nor may ownership of the board or registry move (both use this setOwner selector): a new
+        // owner could call their setters directly, past the timelock and the guardian's veto.
+        if (data.length < 4) revert ForbiddenCall();
+        bytes4 selector = bytes4(data[:4]);
+        if (selector == this.setGuardian.selector || selector == TaskBoard.setOwner.selector) revert ForbiddenCall();
         if (vetoedCall[keccak256(abi.encode(target, data))]) revert VetoedCall();
         if (decisionUsed[decisionId]) revert DecisionUsed();
 

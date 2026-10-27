@@ -246,7 +246,8 @@ contract DecisionExecutorCoverage is BrainChainSetup {
     }
 
     function test_failedCallRevertsTheExecution() public {
-        bytes memory data = abi.encodeCall(TaskBoard.setOwner, (address(0)));
+        // A fee above the 10% cap: queued like any change, reverted by the board when executed.
+        bytes memory data = abi.encodeCall(TaskBoard.setFee, (2_000, makeAddr("router")));
         uint256 changeId = _adopt(address(board), data, 9_000);
         vm.warp(block.timestamp + 2 days);
         vm.expectRevert();
