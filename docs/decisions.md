@@ -32,9 +32,17 @@ Every decision the chain acts on exists in two places:
 ## Checking a decision
 
 1. Read the decision from `DecisionLog.get(id)` and its `Recorded` event, which carries `payloadHash` and `payloadURI`.
-2. Download the record and serialize it canonically: keys sorted, no whitespace.
+2. Download the record and serialize it canonically: keys sorted, no whitespace, and non-ASCII characters written as raw UTF-8 rather than escaped (in Python, `json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()`). Records can carry more fields than the table above lists; keep them all.
 3. `keccak256` of those bytes must equal `payloadHash`.
 4. `keccak256` of the canonical `request` must equal the on-chain `inputHash`.
 5. The on-chain `confidenceBps` must equal `confidence × 10,000`, rounded.
 
 If all five hold, the published record is the one the chain acted on.
+
+## Known limits of the testnet flywheel
+
+The flywheel contracts (`FeeRouter`, `WorkerStaking`, `ProposalBonds`) run on testnet only; mainnet does not deploy them. Three limits must be fixed before they reach mainnet:
+
+- `FeeRouter` sends the unburned half of each buyback to its treasury. On testnet that is the `DecisionExecutor`, which can move only USDG, so that half stays there. A mainnet deployment will point the treasury at a Safe.
+- Replacing `WorkerStaking`'s slasher while a staked worker has a task in flight makes that task's settlement revert, because the board's `release` call is refused. Change the slasher only when no staked task is open.
+- A decision to keep the current setting settles any open proposal of the same call, so one proposer can settle another's proposal and burn its bond. Keep one open proposal per call.

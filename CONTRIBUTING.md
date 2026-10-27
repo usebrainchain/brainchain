@@ -11,7 +11,7 @@ Thank you for helping improve BrainChain. This guide covers how to propose a cha
 ## Development
 
 ```sh
-git clone --recurse-submodules https://github.com/usebrainchain/brainchain.git
+git clone --recurse-submodules --shallow-submodules https://github.com/usebrainchain/brainchain.git
 cd brainchain
 forge build
 forge test
