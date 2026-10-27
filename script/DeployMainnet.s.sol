@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Script, console2} from "forge-std/Script.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
 
 import {DecisionExecutor} from "../src/DecisionExecutor.sol";
@@ -30,15 +31,38 @@ import {WorkerStaking} from "../src/flywheel/WorkerStaking.sol";
 /// the chain-ownership powers, instead of deploying a new one).
 contract DeployMainnet is Script {
     function run() external {
+        require(
+            block.chainid == 274663, "not BrainChain mainnet (274663): pass --rpc-url https://rpc.usebrainchain.com"
+        );
         address safe = vm.envAddress("ADMIN_SAFE");
         address brainKey = vm.envAddress("BRAIN");
         IERC20 usdg = IERC20(vm.envAddress("USDG"));
         address feeRecipient = vm.envAddress("FEE_RECIPIENT");
         uint256 adminDelay = vm.envOr("ADMIN_DELAY", uint256(48 hours));
-        require(block.chainid == 274663, "not BrainChain mainnet");
+        // Every amount below is in 6-decimal units.
+        require(address(usdg).code.length > 0, "USDG has no code on this chain");
+        require(IERC20Metadata(address(usdg)).decimals() == 6, "USDG is not a 6-decimal token");
+        require(safe.code.length > 0, "ADMIN_SAFE has no code");
+        require(feeRecipient != address(0), "FEE_RECIPIENT is unset");
+        string[5] memory names = ["WORKER_CLAUDE", "WORKER_GPT", "WORKER_GEMINI", "WORKER_GROK", "WORKER_DEEPSEEK"];
+        address[5] memory workers = [
+            vm.envAddress("WORKER_CLAUDE"),
+            vm.envAddress("WORKER_GPT"),
+            vm.envAddress("WORKER_GEMINI"),
+            vm.envAddress("WORKER_GROK"),
+            vm.envAddress("WORKER_DEEPSEEK")
+        ];
+        for (uint256 i; i < 5; ++i) {
+            require(workers[i] != address(0), string.concat(names[i], " is unset"));
+            for (uint256 j = i + 1; j < 5; ++j) {
+                require(workers[i] != workers[j], string.concat(names[i], " and ", names[j], " are the same account"));
+            }
+        }
 
         vm.startBroadcast();
         address deployer = msg.sender;
+        require(brainKey != deployer, string.concat("BRAIN is the deploying key ", vm.toString(deployer)));
+        require(brainKey != safe, "BRAIN is the admin Safe");
 
         TimelockController admin = _admin(safe, adminDelay);
         DecisionLog decisionLog = new DecisionLog(address(admin), brainKey);
@@ -65,15 +89,32 @@ contract DeployMainnet is Script {
         );
 
         board.setFee(300, feeRecipient);
-        registry.setModel(keccak256("claude"), vm.envAddress("WORKER_CLAUDE"), 0.4e6, true);
-        registry.setModel(keccak256("gpt"), vm.envAddress("WORKER_GPT"), 0.35e6, true);
-        registry.setModel(keccak256("gemini"), vm.envAddress("WORKER_GEMINI"), 0.25e6, true);
-        registry.setModel(keccak256("grok"), vm.envAddress("WORKER_GROK"), 0.3e6, true);
-        registry.setModel(keccak256("deepseek"), vm.envAddress("WORKER_DEEPSEEK"), 0.1e6, true);
+        registry.setModel(keccak256("claude"), workers[0], 0.4e6, true);
+        registry.setModel(keccak256("gpt"), workers[1], 0.35e6, true);
+        registry.setModel(keccak256("gemini"), workers[2], 0.25e6, true);
+        registry.setModel(keccak256("grok"), workers[3], 0.3e6, true);
+        registry.setModel(keccak256("deepseek"), workers[4], 0.1e6, true);
         registry.setOwner(address(executor));
         board.setOwner(address(executor));
         executor.bindBoard(board);
         vm.stopBroadcast();
+
+        // The set is wired as intended, or the run fails before anyone points a service at it.
+        require(decisionLog.owner() == address(admin) && decisionLog.brain() == brainKey, "DecisionLog is mis-wired");
+        require(
+            registry.owner() == address(executor) && board.owner() == address(executor),
+            "the executor does not own the board and registry"
+        );
+        require(
+            executor.board() == board && executor.models() == registry,
+            "the executor is bound to another board or registry"
+        );
+        require(board.feeBps() == 300 && board.feeRouter() == feeRecipient, "the fee is mis-set");
+        require(admin.hasRole(admin.EXECUTOR_ROLE(), safe), "the Safe cannot execute through the admin");
+        require(
+            !admin.hasRole(admin.PROPOSER_ROLE(), deployer) && !admin.hasRole(admin.EXECUTOR_ROLE(), deployer),
+            "the deployer holds an admin role"
+        );
 
         console2.log("AdminTimelock", address(admin));
         console2.log("DecisionLog", address(decisionLog));
@@ -85,10 +126,12 @@ contract DeployMainnet is Script {
     function _admin(address safe, uint256 delay) private returns (TimelockController admin) {
         address existing = vm.envOr("ADMIN_TIMELOCK", address(0));
         if (existing == address(0)) {
+            require(delay >= 1 days, "ADMIN_DELAY must be at least a day");
             address[] memory safes = new address[](1);
             safes[0] = safe;
             return new TimelockController(delay, safes, safes, address(0));
         }
+        require(existing.code.length > 0, "ADMIN_TIMELOCK has no code");
         admin = TimelockController(payable(existing));
         require(admin.hasRole(admin.PROPOSER_ROLE(), safe), "the Safe cannot propose to ADMIN_TIMELOCK");
         require(admin.getMinDelay() == delay, "ADMIN_TIMELOCK has a different delay");
