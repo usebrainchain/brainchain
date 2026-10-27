@@ -25,3 +25,7 @@ fail_on_revert = false
 
 [fmt]
 line_length = 120
+
+[lint]
+# Notes stay out of every build; `forge lint` still reports them on demand.
+lint_on_build = false
