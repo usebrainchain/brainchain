@@ -8,3 +8,8 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    ignore:
+      # The deployed contracts are built against OpenZeppelin v5.0.2, and any
+      # change to it changes their bytecode. Move it by hand, to a release tag,
+      # when a new deployment needs it.
+      - dependency-name: lib/openzeppelin-contracts
