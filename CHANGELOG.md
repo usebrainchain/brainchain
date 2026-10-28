@@ -9,6 +9,8 @@ All notable changes to this project are documented here. The format follows [Kee
 - A change Jev adopts can no longer move ownership of the board or the registry. A new owner could have called their setters directly, past the timelock and the guardian's veto.
 
 ### Changed
+
+- The $BRAIN fee splitter on mainnet pays its treasury half to the owners' Safe instead of a single key: `script/DeployFeeSplitter.s.sol` deployed it at `0x15Cf18dBA874EA0c77ED8Cecf38aDa64697102fb`, next to the existing `RewardDistributor`.
 - `DeployMainnet` checks its inputs (6-decimal USDG, a Safe with code, distinct worker accounts, a separate brain key) and asserts the deployed set's wiring before it finishes.
 - `DeployMainnet` sets a 60% change threshold and can reuse an existing admin timelock.
 
