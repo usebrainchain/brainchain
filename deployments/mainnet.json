@@ -4,15 +4,15 @@
   "rpc": "https://rpc.usebrainchain.com",
   "parentChainId": 4663,
   "rollup": "0x6e116c6E439613e6c223b49D243B31160d074c1B",
-  "fromBlock": 101,
+  "fromBlock": 282,
   "contracts": {
-    "TaskBoard": "0x33825Bc40E43cC7f8A301D6b7aC79eDCDb92ACa7",
-    "DecisionLog": "0x78314f2d6f29E79ADAdbA9ebcd10cAD7Aa3f205f",
-    "ModelRegistry": "0x22AA74E6d3e225e8FBA32d04Fb8e8afE5B859Bc3",
-    "DecisionExecutor": "0xdE2e18fB117832EEefD5895646550E0BDC166d0b",
+    "TaskBoard": "0x6fBF25F036F18C7AE3b1B7343ED8d16Dc695f6e0",
+    "DecisionLog": "0xbe8E68EbDEaf2C65bc13D8AD070d17098Be6d335",
+    "ModelRegistry": "0x4E5E2eee7c1CBe1484f3E8218151a567f9144f4F",
+    "DecisionExecutor": "0xC5442fEFDa6B55f48a1FCfc195a8737D7EfB829B",
     "AdminTimelock": "0xB23F49390061B1E7Faf0F99B146E491Ee1574B1e",
     "USDG": "0x8eBFEce96c0AeF7Fd23425D846a302a552c8c451",
-    "Treasury": "0x57BF4f61e27d6C2bD7938d49308104f15736Fdf5"
+    "AdminSafe": "0xdFeFbdBF680568e8DC44abbbd657c0701964cC8c"
   },
   "robinhoodChain": {
     "FeeSplitter": "0x15Cf18dBA874EA0c77ED8Cecf38aDa64697102fb",
@@ -20,5 +20,18 @@
     "RollupAdminTimelock": "0xDA308F4CE7c80e52665f6D74590A2c0d61C437c3",
     "USDG": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168"
   },
-  "release": "3.0.0"
+  "release": "3.1.0",
+  "retired": [
+    {
+      "release": "3.0.0",
+      "fromBlock": 101,
+      "contracts": {
+        "TaskBoard": "0x33825Bc40E43cC7f8A301D6b7aC79eDCDb92ACa7",
+        "DecisionLog": "0x78314f2d6f29E79ADAdbA9ebcd10cAD7Aa3f205f",
+        "ModelRegistry": "0x22AA74E6d3e225e8FBA32d04Fb8e8afE5B859Bc3",
+        "DecisionExecutor": "0xdE2e18fB117832EEefD5895646550E0BDC166d0b"
+      },
+      "feeRecipient": "0x57BF4f61e27d6C2bD7938d49308104f15736Fdf5"
+    }
+  ]
 }

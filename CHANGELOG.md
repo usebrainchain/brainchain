@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-10-28
+
+Deployed on BrainChain mainnet (chain 274663) and testnet (274630) with a 60% change threshold, replacing the 3.0.0 sets. Mainnet keeps the 3.0.0 admin timelock. Records on the 3.0.0 sets stay readable; their addresses are under `retired` in [`deployments/mainnet.json`](deployments/mainnet.json).
+
 ### Security
 
 - A change Jev adopts can no longer move ownership of the board or the registry. A new owner could have called their setters directly, past the timelock and the guardian's veto.
@@ -13,6 +17,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - The $BRAIN fee splitter on mainnet pays its treasury half to the owners' Safe instead of a single key: `script/DeployFeeSplitter.s.sol` deployed it at `0x15Cf18dBA874EA0c77ED8Cecf38aDa64697102fb`, next to the existing `RewardDistributor`.
 - `DeployMainnet` checks its inputs (6-decimal USDG, a Safe with code, distinct worker accounts, a separate brain key) and asserts the deployed set's wiring before it finishes.
 - `DeployMainnet` sets a 60% change threshold and can reuse an existing admin timelock.
+- Board fees on mainnet go to the owners' Safe on BrainChain instead of a single key.
 
 ## [3.0.0] - 2026-10-26
 
