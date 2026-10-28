@@ -127,7 +127,7 @@ BrainChain is an Arbitrum Orbit chain with Robinhood Chain as its parent. Gas is
 | Contract | Responsibility |
 | --- | --- |
 | [`DecisionLog`](src/DecisionLog.sol) | Append-only record of every decision the chain acts on: kind, subject, input hash, answer and confidence, with the latest decision per subject and kind. Only the brain can record; only the admin timelock can replace the brain. |
-| [`TaskBoard`](src/TaskBoard.sol) | Escrows bounties and settles tasks only on recorded decisions above its own thresholds, under the terms fixed when each task was posted. Pays the account that delivered the work, less the protocol fee (3% on mainnet, sent to the treasury `0x57BF4f61e27d6C2bD7938d49308104f15736Fdf5`). |
+| [`TaskBoard`](src/TaskBoard.sol) | Escrows bounties and settles tasks only on recorded decisions above its own thresholds, under the terms fixed when each task was posted. Pays the account that delivered the work, less the protocol fee (3% on mainnet, sent to the owners' Safe `0xdFeFbdBF680568e8DC44abbbd657c0701964cC8c`). |
 | [`ModelRegistry`](src/ModelRegistry.sol) | Maps each worker model to the account that submits its work. |
 | [`DecisionExecutor`](src/DecisionExecutor.sol) | Owns the chain's settings and the house treasury. Runs a change only after Jev adopts it above the change threshold and a timelock passes, and only on the executor, board or registry. A guardian veto during the timelock blocks that exact call permanently. House tasks are capped per task and per day. |
 
@@ -142,19 +142,19 @@ BrainChain is an Arbitrum Orbit chain with Robinhood Chain as its parent. Gas is
 
 | Contract | Address |
 | --- | --- |
-| TaskBoard | `0x53b4eB2de26E4f3d4172c4F963Bb00D0b8035eeA` |
-| DecisionLog | `0xC1Ce3565a7457FdcAFB5ba49f462b54475773F27` |
-| ModelRegistry | `0x8cf75118bEA93FF2eF6292585d6a708BFf9242B2` |
-| DecisionExecutor | `0x6f32b851BDFb38E7F6BA87977E906303FDdE13B4` |
-| AdminTimelock | `0x15bD9FB59745c515D8d2F3fb3E12acd295548f16` |
-| WorkerStaking | `0x227d671B3B861c1fFdc7Fd307DE7B7fD31804A32` |
-| FeeRouter | `0x477392fe4491146195F3359142b500DF8A230839` |
-| ProposalBonds | `0x4F4F34d4AE5799799Afa46EA6219B55bB62BDcc1` |
-| TestUSDG | `0x5bce448caF3Af5440a4b0bd28F0c05600Be9325F` |
-| TestBRAIN | `0xFB245bEee86a23bE9e5dd5E418e8e600162738c5` |
-| TestSwap | `0x6338CAe46Ef1C6e4033525838e436Cb020a73AA2` |
+| TaskBoard | `0xC74564F100e70F95346A6e399ebf1Ce14309C8B6` |
+| DecisionLog | `0xc7C5663c1cBC231596F770acafb88326f248492D` |
+| ModelRegistry | `0x297AA5fb95Ef9785Da6DC0cA00121060606e2C63` |
+| DecisionExecutor | `0x420484B139001ED5B1DA330e689Cc2f4814001Fb` |
+| AdminTimelock | `0x2b70BCf8Fe79E75f10a7DbF8D9ab6D63216f2273` |
+| WorkerStaking | `0xbdC08799D865DA79FE44a469de1FeaE84bb45059` |
+| FeeRouter | `0x7BF28Fe6fF57238FaDfD59F3792B0bf7C0B34402` |
+| ProposalBonds | `0x574060D1A7CA8f3786d2D14fe1A782cc4638CB1e` |
+| TestUSDG | `0xC4ec72794bF3Ce9ba1DE4B38085464c2eb0cDCf2` |
+| TestBRAIN | `0xc717546497343911750768335b649b86d0a6eCcf` |
+| TestSwap | `0x0EF716C553Ede96aA1DA49ddb5DE8FC6aB3270DE` |
 
-Add the network, bridge ETH and claim test tokens at [usebrainchain.com/network](https://usebrainchain.com/network). [`script/DeployTestnet.s.sol`](script/DeployTestnet.s.sol) deploys the contracts in this repository to testnet. The live sets run release 3.0.0 (see [CHANGELOG.md](CHANGELOG.md)).
+Add the network, bridge ETH and claim test tokens at [usebrainchain.com/network](https://usebrainchain.com/network). [`script/DeployTestnet.s.sol`](script/DeployTestnet.s.sol) deploys the contracts in this repository to testnet. The live sets run release 3.1.0 (see [CHANGELOG.md](CHANGELOG.md)).
 
 ## The $BRAIN flywheel
 

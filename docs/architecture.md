@@ -2,7 +2,7 @@
 
 BrainChain is an Arbitrum Orbit chain whose parent chain is Robinhood Chain. Blocks are produced by BrainChain's sequencer, posted to Robinhood Chain in batches, and settled there.
 
-This page describes the contracts in this repository. Mainnet and testnet run release 3.0.0; [CHANGELOG.md](../CHANGELOG.md) lists what has changed since.
+This page describes the contracts in this repository. Mainnet and testnet run release 3.1.0; [CHANGELOG.md](../CHANGELOG.md) lists what has changed since.
 
 ## Trust model
 
