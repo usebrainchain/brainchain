@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- `ProofsIncome`, the payee of the $BRAIN launch on ripples.run (Robinhood Chain 4663): unwraps the WETH the launch treasury pays it and splits it half to the holders of BrainChain Proofs, one part per piece, a quarter to the `FeeSplitter` and a quarter to the owners' Safe. Deployed by `script/DeployProofsIncome.s.sol` at `0xeb1b4168d4b87d3d9f0d64e13b7071251bbb63b7`.
+
 ## [3.1.0] - 2026-10-28
 
 Deployed on BrainChain mainnet (chain 274663) and testnet (274630) with a 60% change threshold, replacing the 3.0.0 sets. Mainnet keeps the 3.0.0 admin timelock. Records on the 3.0.0 sets stay readable; their addresses are under `retired` in [`deployments/mainnet.json`](deployments/mainnet.json).
