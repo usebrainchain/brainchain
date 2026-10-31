@@ -18,7 +18,8 @@
     "FeeSplitter": "0x15Cf18dBA874EA0c77ED8Cecf38aDa64697102fb",
     "RewardDistributor": "0x686633c82F81b99B1Ae9bAAE458Aa8280F158367",
     "RollupAdminTimelock": "0xDA308F4CE7c80e52665f6D74590A2c0d61C437c3",
-    "USDG": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168"
+    "USDG": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+    "ProofsIncome": "0xeb1b4168d4b87d3d9f0d64e13b7071251bbb63b7"
   },
   "release": "3.1.0",
   "retired": [
