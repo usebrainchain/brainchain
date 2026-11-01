@@ -188,7 +188,11 @@ The suite covers every settlement path, access control and the confidence rule, 
 - no model is paid without an accepted grade or a ruling above threshold, and the account that delivered is the one paid;
 - fees follow each task's own terms, and nothing settles twice;
 - a staked worker's stake is held for every task in flight, and house spending stays under its daily cap;
-- a reward round never pays more than its total, and the distributor always holds what open rounds owe.
+- a reward round never pays more than its total, and the distributor always holds what open rounds owe;
+- a queued change runs at most once, only between its timelock and the end of its grace period, and never after a veto; only Jev's latest Change decision, adopted at or above the change threshold, queues a call, and a vetoed call is never queued again;
+- the change threshold never drops below 50%, and only the admin replaces the guardian or the brain;
+- the bond contract holds exactly the bonds of open proposals, and each bond is taken once and leaves once: returned on adoption or timeout, burned otherwise;
+- staking holds exactly what workers have at stake; a stake drops only when its worker unstakes or the board slashes it by exactly the slash share, and nothing is withdrawn before the cooldown or while a task is in flight.
 
 The flywheel suite covers fees, buybacks, staking, slashing and proposal bonds; a coverage suite asserts every event, access rule and time-window boundary; and [`test/Regressions.t.sol`](test/Regressions.t.sol) collects regression tests for issues found in our October 2026 internal review.
 
