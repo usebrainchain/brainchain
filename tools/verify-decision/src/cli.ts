@@ -126,7 +126,7 @@ function report(reports: DecisionReport[], header: string, task?: number): never
       errors,
       skipped,
       decisions,
-      notChecked: "That Jev produced the answer. The chain trusts the brain key to record Jev's answers faithfully.",
+      notChecked: "That Jev produced the answer. BrainChain records Jev's answers, and the contracts bound what a recorded answer can do.",
       trustModel: TRUST_MODEL,
     };
     console.log(JSON.stringify(out, null, 2));
@@ -138,7 +138,7 @@ function report(reports: DecisionReport[], header: string, task?: number): never
     for (const c of r.checks) console.log(`  ${TAGS[c.status].padEnd(5)} ${c.message}`);
   }
   console.log(`\n${verdict(failed, errors, skipped, reports.length > 1)}`);
-  console.log(`Not checked: that Jev produced the answer. The chain trusts the brain key for that: ${TRUST_MODEL}`);
+  console.log(`Not checked: that Jev produced the answer. See ${TRUST_MODEL}`);
   process.exit(failed + errors > 0 ? 1 : 0);
 }
 

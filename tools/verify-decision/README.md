@@ -49,7 +49,7 @@ Decision 22 on BrainChain mainnet, contract set v3-1 (DecisionLog 0xbe8E68EbDEaf
   ok    threshold: accept at 80% is at or above the 70% grade threshold fixed when task 11 was posted, so the work is accepted, as the board recorded
 
 Verdict: match. The published record is exactly what the chain recorded, and the chain applied it as its contracts require.
-Not checked: that Jev produced the answer. The chain trusts the brain key for that: https://docs.usebrainchain.com/trust-model
+Not checked: that Jev produced the answer. See https://docs.usebrainchain.com/trust-model
 ```
 
 Each line is one check. `ok` passed and `FAIL` means the record and the chain disagree. `skip` is a check that could not run, with the reason on the line. `ERROR` means the record host did not answer after three tries, so the checks that need the record did not run.
@@ -82,7 +82,7 @@ Some checks skip by design:
 
 ## What it cannot check
 
-That Jev produced the answer. The chain trusts the brain key to record Jev's answers faithfully, and the contracts bound what a recorded answer can do. A decision that passes every check has the question, answer and probabilities the chain acted on; whether Jev gave that answer rests on the brain key. The [trust model](https://docs.usebrainchain.com/trust-model) says what bounds that key.
+That Jev produced the answer. BrainChain records Jev's answers, and the contracts bound what a recorded answer can do. A decision that passes every check has the question, answer and probabilities the chain acted on. The [trust model](https://docs.usebrainchain.com/trust-model) explains what the chain relies on and what bounds it.
 
 ## Exit status
 
@@ -127,7 +127,7 @@ That Jev produced the answer. The chain trusts the brain key to record Jev's ans
       ]
     }
   ],
-  "notChecked": "That Jev produced the answer. The chain trusts the brain key to record Jev's answers faithfully.",
+  "notChecked": "That Jev produced the answer. BrainChain records Jev's answers, and the contracts bound what a recorded answer can do.",
   "trustModel": "https://docs.usebrainchain.com/trust-model"
 }
 ```
