@@ -47,7 +47,7 @@ contract DeployMainnetTest is Test {
 
         assertEq(address(d.board.staking()), address(d.staking));
         assertEq(d.staking.slasher(), address(d.board));
-        assertEq(d.staking.owner(), address(d.executor));
+        assertEq(d.staking.owner(), address(d.admin));
         assertEq(address(d.staking.token()), address(brainToken));
         assertEq(d.staking.minStake(), 1_000_000e18);
         assertEq(d.staking.cooldown(), 3 days);
@@ -55,7 +55,7 @@ contract DeployMainnetTest is Test {
         assertEq(address(d.bonds.token()), address(brainToken));
         assertEq(address(d.bonds.decisions()), address(d.decisionLog));
         assertEq(address(d.bonds.executor()), address(d.executor));
-        assertEq(d.bonds.owner(), address(d.executor));
+        assertEq(d.bonds.owner(), address(d.admin));
         assertEq(d.bonds.bond(), 250_000e18);
         assertEq(d.bonds.decideWithin(), 7 days);
         assertEq(d.board.feeRouter(), feeRecipient);
