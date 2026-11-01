@@ -8,6 +8,7 @@ import {DecisionExecutor} from "../src/DecisionExecutor.sol";
 import {DecisionLog} from "../src/DecisionLog.sol";
 import {ModelRegistry} from "../src/ModelRegistry.sol";
 import {WorkerStaking} from "../src/flywheel/WorkerStaking.sol";
+import {GuardianGate, IGuardedExecutor, IGuardedBoard} from "../src/GuardianGate.sol";
 import {TaskBoard} from "../src/TaskBoard.sol";
 import {MockERC20} from "./MockERC20.sol";
 
@@ -495,6 +496,32 @@ contract DecisionExecutorTest is BrainChainSetup {
         vm.warp(block.timestamp + 2 days);
         vm.expectRevert(DecisionExecutor.Closed.selector);
         executor.execute(changeId);
+        assertFalse(board.paused());
+    }
+
+    function test_aWatcherVetoesThroughTheGuardianGate() public {
+        address watcher = makeAddr("watcher");
+        GuardianGate gate =
+            new GuardianGate(guardian, IGuardedExecutor(address(executor)), IGuardedBoard(address(board)), watcher);
+        vm.prank(decisionLog.owner());
+        executor.setGuardian(address(gate));
+        assertEq(board.guardian(), address(gate));
+
+        bytes memory data = abi.encodeCall(TaskBoard.setPaused, (true));
+        uint256 d = changeDecision(address(board), data, YES, 9_900);
+        vm.prank(brain);
+        uint256 changeId = executor.queue(d, address(board), data);
+        vm.prank(watcher);
+        gate.veto(changeId, "outside the constitution");
+        vm.warp(block.timestamp + 2 days);
+        vm.expectRevert(DecisionExecutor.Closed.selector);
+        executor.execute(changeId);
+
+        vm.prank(watcher);
+        gate.setPaused(true, "drill");
+        assertTrue(board.paused());
+        vm.prank(guardian);
+        gate.setPaused(false, "drill over");
         assertFalse(board.paused());
     }
 
