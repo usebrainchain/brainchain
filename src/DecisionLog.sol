@@ -8,6 +8,11 @@ interface IDcapAttestation {
         external
         payable
         returns (bool success, bytes memory output);
+
+    function verifyAndAttestOnChain(bytes calldata rawQuote, uint32 tcbEvaluationDataNumber)
+        external
+        payable
+        returns (bool success, bytes memory output);
 }
 
 /// @notice Append-only record of every Jev decision the chain acts on. Only the
@@ -75,6 +80,7 @@ contract DecisionLog {
     event AttestationSet(address indexed attestation);
     event ImageAllowed(bytes32 indexed image, bool allowed);
     event AppAllowed(bytes32 indexed app, bool allowed);
+    event TcbEvaluationSet(uint32 number);
     event OwnershipTransferStarted(address indexed owner, address indexed pendingOwner);
     event OwnerSet(address indexed owner);
 
@@ -94,6 +100,9 @@ contract DecisionLog {
     mapping(bytes32 => bool) public allowedApp;
     /// Successful attestations so far; the nonce a quote must carry moves with it.
     uint256 public attestations;
+    /// Intel's TCB evaluation number to verify against, or zero for the verifier's default. Pinning keeps
+    /// quotes verifying when Intel moves to a number the on-chain collateral does not cover yet.
+    uint32 public tcbEvaluationNumber;
 
     // Offsets in the verifier's output: an 11-byte header (version, TEE type,
     // TCB status at byte 4, FMSPC), then the TD report body.
@@ -166,7 +175,10 @@ contract DecisionLog {
     /// `attestationNonce()` followed by the brain address left-padded to 32 bytes.
     function attestBrain(bytes calldata quote) external returns (address brain_) {
         if (address(attestation) == address(0)) revert NoAttestation();
-        (bool ok, bytes memory out) = attestation.verifyAndAttestOnChain(quote);
+        bool ok;
+        bytes memory out;
+        if (tcbEvaluationNumber == 0) (ok, out) = attestation.verifyAndAttestOnChain(quote);
+        else (ok, out) = attestation.verifyAndAttestOnChain(quote, tcbEvaluationNumber);
         if (!ok || out.length < OUTPUT_MIN) revert QuoteRejected();
 
         uint8 tcb = uint8(out[TCB_STATUS]);
@@ -191,6 +203,12 @@ contract DecisionLog {
         if (msg.sender != owner) revert NotOwner();
         attestation = attestation_;
         emit AttestationSet(address(attestation_));
+    }
+
+    function setTcbEvaluationNumber(uint32 number) external {
+        if (msg.sender != owner) revert NotOwner();
+        tcbEvaluationNumber = number;
+        emit TcbEvaluationSet(number);
     }
 
     function allowImage(bytes32 image, bool allowed) external {

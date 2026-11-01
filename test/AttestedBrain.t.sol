@@ -14,7 +14,15 @@ contract MockAttestation is IDcapAttestation {
         output = output_;
     }
 
+    uint32 public pinned;
+
     function verifyAndAttestOnChain(bytes calldata) external payable returns (bool, bytes memory) {
+        pinned = 0;
+        return (ok, output);
+    }
+
+    function verifyAndAttestOnChain(bytes calldata, uint32 number) external payable returns (bool, bytes memory) {
+        pinned = number;
         return (ok, output);
     }
 }
@@ -99,6 +107,16 @@ contract AttestedBrainTest is Test {
         verifier.set(true, hex"0102");
         vm.expectRevert(DecisionLog.QuoteRejected.selector);
         decisions.attestBrain(hex"00");
+    }
+
+    function test_theOwnerCanPinTheTcbEvaluationNumber() public {
+        vm.prank(owner);
+        decisions.setTcbEvaluationNumber(20);
+        verifier.set(true, _output(0, rtmr3, decisions.attestationNonce(), enclaveKey));
+        decisions.attestBrain(hex"00");
+        assertEq(verifier.pinned(), 20);
+        vm.expectRevert(DecisionLog.NotOwner.selector);
+        decisions.setTcbEvaluationNumber(21);
     }
 
     function test_withoutAVerifierOnlyTheOwnerSetsTheBrain() public {
