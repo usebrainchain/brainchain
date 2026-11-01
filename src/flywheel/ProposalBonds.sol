@@ -33,6 +33,9 @@ contract ProposalBonds is ReentrancyGuard {
         uint64 createdAt;
         State state;
         bytes32 subject;
+        /// The decision window and the adoption bar in force when the call was proposed; later admin changes do not move them.
+        uint64 deadline;
+        uint16 thresholdBps;
     }
 
     error NotOwner();
@@ -42,6 +45,7 @@ contract ProposalBonds is ReentrancyGuard {
     error StaleDecision();
     error DecisionUsed();
     error TooEarly();
+    error Decided();
     error BadConfig();
 
     event Proposed(
@@ -95,8 +99,15 @@ contract ProposalBonds is ReentrancyGuard {
         if (target == address(0)) revert ZeroAddress();
         id = ++count;
         uint128 amount = bond;
-        _proposals[id] =
-            Proposal(msg.sender, amount, uint64(block.timestamp), State.Open, executor.changeSubject(target, data));
+        _proposals[id] = Proposal(
+            msg.sender,
+            amount,
+            uint64(block.timestamp),
+            State.Open,
+            executor.changeSubject(target, data),
+            uint64(block.timestamp) + decideWithin,
+            executor.changeThresholdBps()
+        );
         token.safeTransferFrom(msg.sender, address(this), amount);
         emit Proposed(id, msg.sender, target, data, amount, uri);
     }
@@ -113,17 +124,24 @@ contract ProposalBonds is ReentrancyGuard {
         if (decisions.latestOf(p.subject, DecisionLog.Kind.Change) != decisionId) revert StaleDecision();
         decisionUsed[decisionId] = true;
 
-        bool adopted = d.answer == YES && d.confidenceBps >= executor.changeThresholdBps();
+        bool adopted = d.answer == YES && d.confidenceBps >= p.thresholdBps;
         p.state = adopted ? State.Returned : State.Burned;
         token.safeTransfer(adopted ? p.proposer : BURN, p.bond);
         emit Settled(id, decisionId, adopted);
     }
 
-    /// @notice Returns the bond of a proposal Jev did not decide on in time.
+    /// @notice Returns the bond of a proposal Jev did not decide on in time. A
+    /// proposal with a decision recorded inside its window is settled on that
+    /// decision instead, so a "keep" cannot be dodged by expiring first.
     function expire(uint256 id) external nonReentrant {
         Proposal storage p = _proposals[id];
         if (p.state != State.Open) revert BadState();
-        if (block.timestamp <= uint256(p.createdAt) + decideWithin) revert TooEarly();
+        if (block.timestamp <= p.deadline) revert TooEarly();
+        uint256 latest = decisions.latestOf(p.subject, DecisionLog.Kind.Change);
+        if (latest != 0) {
+            uint64 recordedAt = decisions.get(latest).recordedAt;
+            if (recordedAt >= p.createdAt && recordedAt <= p.deadline) revert Decided();
+        }
         p.state = State.Returned;
         token.safeTransfer(p.proposer, p.bond);
         emit Expired(id);

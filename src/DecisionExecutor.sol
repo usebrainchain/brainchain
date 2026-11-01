@@ -162,6 +162,8 @@ contract DecisionExecutor is ReentrancyGuard {
         Change storage change = _changes[changeId];
         if (change.target == address(0)) revert UnknownChange();
         if (change.executed || change.vetoed) revert Closed();
+        // A veto covers every queued copy of the same call, not only the one vetoed.
+        if (vetoedCall[keccak256(abi.encode(change.target, change.data))]) revert VetoedCall();
         if (block.timestamp < change.eta) revert NotReady();
         if (block.timestamp > uint256(change.eta) + GRACE_PERIOD) revert Expired();
 
