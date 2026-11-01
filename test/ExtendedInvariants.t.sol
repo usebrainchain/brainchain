@@ -80,8 +80,10 @@ contract ExtendedHandler is Test {
     }
 
     function _decide(DecisionLog.Kind kind, uint256 id, bytes32 answer, uint16 confidence) internal returns (uint256) {
+        bytes32 subject = board.subjectOf(id);
+        uint16 bps = uint16(bound(confidence, 0, 10_000));
         vm.prank(brain);
-        return decisionLog.record(kind, board.subjectOf(id), 0, answer, uint16(bound(confidence, 0, 10_000)), 0, "");
+        return decisionLog.record(kind, subject, 0, answer, bps, 0, "");
     }
 
     function _account(bytes32 model) internal view returns (address) {
@@ -130,6 +132,30 @@ contract ExtendedHandler is Test {
         vm.prank(account);
         try board.submit(id, keccak256("r"), "") {
             submitter[id] = account;
+        } catch {}
+    }
+
+    /// A task runs to its grade in one go: posted, hired, delivered and graded.
+    function deliver(uint128 bounty, uint256 model, bool yes, uint16 confidence) external {
+        bounty = uint128(bound(bounty, 1e6, 1e12));
+        vm.prank(posters[model % 2]);
+        try board.post(bounty, uint64(block.timestamp) + 1 days, 0, "") returns (uint256 id) {
+            ids.push(id);
+            openSum += bounty;
+            posted += bounty;
+            uint256 d = _decide(DecisionLog.Kind.Hire, id, workerIds[model % 3], 10_000);
+            vm.prank(brain);
+            try board.hire(id, d) {}
+            catch {
+                return;
+            }
+            address account = _account(workerIds[model % 3]);
+            vm.prank(account);
+            board.submit(id, keccak256("r"), "");
+            submitter[id] = account;
+            d = _decide(DecisionLog.Kind.Grade, id, yes ? YES : bytes32(0), confidence);
+            vm.prank(brain);
+            board.grade(id, d);
         } catch {}
     }
 

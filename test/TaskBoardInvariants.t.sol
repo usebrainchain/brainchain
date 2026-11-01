@@ -52,8 +52,9 @@ contract TaskBoardHandler is Test {
     }
 
     function _decide(DecisionLog.Kind kind, uint256 id, bytes32 answer, uint16 confidence) private returns (uint256) {
+        bytes32 subject = board.subjectOf(id);
         vm.prank(brain);
-        return decisionLog.record(kind, board.subjectOf(id), 0, answer, confidence, 0, "");
+        return decisionLog.record(kind, subject, 0, answer, confidence, 0, "");
     }
 
     function post(uint128 bounty, uint64 duration) external {
@@ -80,6 +81,24 @@ contract TaskBoardHandler is Test {
         address account = task.model == modelIds[0] ? accounts[0] : accounts[1];
         vm.prank(account);
         try board.submit(id, keccak256("r"), "") {} catch {}
+    }
+
+    /// A task runs to its grade in one go: posted, hired, delivered and graded.
+    function deliver(uint128 bounty, uint256 model, bool yes, uint16 confidence) external {
+        bounty = uint128(bound(bounty, 1e6, 1_000_000e6));
+        vm.prank(poster);
+        uint256 id = board.post(bounty, uint64(block.timestamp) + 1 days, 0, "");
+        ids.push(id);
+        openSum += bounty;
+        uint256 d = _decide(DecisionLog.Kind.Hire, id, modelIds[model % 2], 10_000);
+        vm.prank(brain);
+        board.hire(id, d);
+        vm.prank(accounts[model % 2]);
+        board.submit(id, keccak256("r"), "");
+        d = _decide(DecisionLog.Kind.Grade, id, yes ? YES : bytes32(0), uint16(bound(confidence, 0, 10_000)));
+        vm.prank(brain);
+        board.grade(id, d);
+        if (board.get(id).accepted) everAccepted[id] = true;
     }
 
     function grade(uint256 seed, bool yes, uint16 confidence) external {
