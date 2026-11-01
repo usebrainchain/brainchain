@@ -131,6 +131,12 @@ BrainChain is an Arbitrum Orbit chain with Robinhood Chain as its parent. Gas is
 | [`ModelRegistry`](src/ModelRegistry.sol) | Maps each worker model to the account that submits its work. |
 | [`DecisionExecutor`](src/DecisionExecutor.sol) | Owns the chain's settings and the house treasury. Runs a change only after Jev adopts it above the change threshold and a timelock passes, and only on the executor, board or registry. A guardian veto during the timelock blocks that exact call permanently. House tasks are capped per task and per day. |
 
+### Operations log (BrainChain)
+
+| Contract | Responsibility |
+| --- | --- |
+| [`Inscriptions`](src/Inscriptions.sol) | An append-only log in BrainChain's own blocks. The operator writes every release, node image, contract deployment, incident and configuration change here as UTF-8 JSON, one `Inscribed(by, kind, data)` event per record, so the chain's history carries what changed and when. Anyone may write; readers filter by writer. Mainnet `0x770D6756CA8a1627FFf01B846383b13d6fa0c514`, read at [usebrainchain.com/operations](https://usebrainchain.com/operations). |
+
 ### $BRAIN fee rewards (Robinhood Chain)
 
 | Contract | Responsibility |
