@@ -9,9 +9,9 @@ import {FeeSplitter} from "../src/rewards/FeeSplitter.sol";
 /// @notice Deploys the ProofsIncome router on Robinhood Chain (chain 4663): the
 /// payee of the $BRAIN launch on ripples.run. Half of the income goes to the
 /// holders of BrainChain Proofs, a quarter to the FeeSplitter and a quarter to
-/// the owners' Safe, which also owns the router. Run it before the launch: the
-/// launch names the router as its payee, and the deployer binds the Proofs
-/// collection the launch creates with `bindProofs`.
+/// the owners' Safe, which also owns the router. Run it before the launch, which
+/// names the router as its payee. Once the launch has created the Proofs
+/// collection, the deployer calls `bindProofs` with its address.
 ///
 /// Env: OWNER_SAFE (owner and treasury), FEE_SPLITTER.
 contract DeployProofsIncome is Script {
@@ -34,8 +34,8 @@ contract DeployProofsIncome is Script {
 
         require(income.treasury() == safe && income.owner() == safe, "the router is not the Safe's");
         require(income.splitter() == splitter && address(income.weth()) == address(WETH), "the router is mis-wired");
-        require(income.holdersBps() == 5000 && income.splitterBps() == 2500, "the split is off");
-        require(income.minRound() == 0.001 ether, "the round minimum is off");
+        require(income.holdersBps() == 5000 && income.splitterBps() == 2500, "the split is mis-set");
+        require(income.minRound() == 0.001 ether, "the round minimum is mis-set");
         console2.log("ProofsIncome", address(income));
     }
 }

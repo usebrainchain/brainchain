@@ -4,9 +4,13 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-10-31
+
+Deployed on Robinhood Chain (chain 4663) next to the 3.1.0 BrainChain sets, which are unchanged.
+
 ### Added
 
-- `ProofsIncome`, the payee of the $BRAIN launch on ripples.run (Robinhood Chain 4663): unwraps the WETH the launch treasury pays it and splits it half to the holders of BrainChain Proofs, one part per piece, a quarter to the `FeeSplitter` and a quarter to the owners' Safe, which owns it; rounds under 0.001 ETH wait. Deployed by `script/DeployProofsIncome.s.sol` at `0xeb1b4168D4b87D3d9F0D64E13B7071251BBB63b7` and bound to the Proofs collection `0xE6E6B7DBF1a66dFB25c6F6A87a916B3186113169`.
+- `ProofsIncome`, the payee of the $BRAIN launch on ripples.run: unwraps the WETH the launch treasury pays it and splits it half to BrainChain Proof holders (one equal part per piece), a quarter to the `FeeSplitter` and a quarter to the owners' Safe, which also owns the contract. Rounds under 0.001 ETH wait. Deployed by `script/DeployProofsIncome.s.sol` at `0xeb1b4168D4b87D3d9F0D64E13B7071251BBB63b7` and bound to the Proofs collection `0xE6E6B7DBF1a66dFB25c6F6A87a916B3186113169`.
 
 ## [3.1.0] - 2026-10-28
 
