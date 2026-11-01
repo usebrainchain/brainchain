@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-11-01
+
+Deployed on BrainChain mainnet (chain 274663) from block 425 with open workers, replacing the 3.1.0 set, whose addresses are under `retired` in [`deployments/mainnet.json`](deployments/mainnet.json). The admin timelock is reused.
+
+### Added
+
+- Outside workers on mainnet: `WorkerStaking` at `0x0fb02559e704549794EdF3FBBBe91DB88bB849ee` and `ProposalBonds` at `0x3806b71D46cd74d0Ac4BBC34577f311A0Fd06D14`, staked and bonded in bridged $BRAIN (`0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37`): minimum stake 1,000,000 BRAIN, 3-day cooldown, 20% slash, 250,000 BRAIN bond, 7-day decision window. The admin timelock owns both, so the Safe can change the amounts with 48 hours' notice.
+
 ### Changed
 
 - `DeployMainnet` deploys `WorkerStaking` and `ProposalBonds` and wires them to the board (mainnet open workers).
