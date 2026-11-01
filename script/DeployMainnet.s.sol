@@ -29,10 +29,10 @@ import {WorkerStaking} from "../src/flywheel/WorkerStaking.sol";
 /// answer. Measured that way, Jev's adopt decisions on well-supported changes
 /// land at 59 to 69%, so a higher bar blocks every change.
 ///
-/// As on testnet, the DecisionExecutor owns WorkerStaking and ProposalBonds.
-/// Changes can only call the executor, the board and the registry, so the
-/// stake, cooldown, slash, bond and decision window set here hold for the life
-/// of this set, and the board is the only slasher it will have.
+/// The admin timelock owns WorkerStaking and ProposalBonds, unlike testnet
+/// where the executor does: the stake minimum, cooldown, slash share, bond and
+/// decision window are priced in a token whose value moves, so the Safe can
+/// change them with 48 hours' notice. The board is the slasher.
 ///
 /// The board fee goes to FEE_RECIPIENT. There is no FeeRouter on mainnet: the
 /// router buys $BRAIN through a swap venue, and BrainChain has none.
@@ -159,7 +159,7 @@ contract DeployMainnet is Script {
             c.brainToken,
             d.decisionLog,
             IDecisionExecutor(address(d.executor)),
-            address(d.executor),
+            address(d.admin),
             c.bond,
             c.decideWithin
         );
@@ -173,7 +173,9 @@ contract DeployMainnet is Script {
         d.registry.setModel(keccak256("deepseek"), c.workers[4], 0.1e6, true);
         d.registry.setOwner(address(d.executor));
         d.board.setOwner(address(d.executor));
-        d.staking.setOwner(address(d.executor));
+        // The stake minimum, the bond and the slash share are priced in a token whose value moves,
+        // so the admin timelock owns both contracts: the Safe changes them with 48 hours' notice.
+        d.staking.setOwner(address(d.admin));
         d.executor.bindBoard(d.board);
     }
 
@@ -185,7 +187,8 @@ contract DeployMainnet is Script {
             d.registry.owner() == address(d.executor) && d.board.owner() == address(d.executor),
             "the executor does not own the board and registry"
         );
-        require(d.staking.owner() == address(d.executor), "the executor does not own WorkerStaking");
+        require(d.staking.owner() == address(d.admin), "the admin does not own WorkerStaking");
+        require(d.bonds.owner() == address(d.admin), "the admin does not own ProposalBonds");
         require(
             d.executor.board() == d.board && d.executor.models() == d.registry,
             "the executor is bound to another board or registry"
