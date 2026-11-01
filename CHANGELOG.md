@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- Invariant suites for `DecisionExecutor`, `ProposalBonds` and `WorkerStaking` slashing, driven through decisions the brain records.
+
+### Fixed
+
+- The board invariant handlers record decisions as the brain, so fuzzed tasks are hired, graded, disputed and ruled on.
+
 ## [3.3.0] - 2026-11-01
 
 Deployed on BrainChain mainnet (chain 274663) from block 425 with open workers, replacing the 3.1.0 set, whose addresses are under `retired` in [`deployments/mainnet.json`](deployments/mainnet.json). The admin timelock is reused.
