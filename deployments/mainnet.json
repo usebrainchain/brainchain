@@ -19,7 +19,10 @@
     "RewardDistributor": "0x686633c82F81b99B1Ae9bAAE458Aa8280F158367",
     "RollupAdminTimelock": "0xDA308F4CE7c80e52665f6D74590A2c0d61C437c3",
     "USDG": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
-    "ProofsIncome": "0xeb1b4168d4b87d3d9f0d64e13b7071251bbb63b7"
+    "ProofsIncome": "0xeb1b4168D4b87D3d9F0D64E13B7071251BBB63b7",
+    "BrainChainProofs": "0xE6E6B7DBF1a66dFB25c6F6A87a916B3186113169",
+    "BRAIN": "0xC80333bf7f4078e14Ce5b6e223aF607aDcA44418",
+    "BrainLaunchTreasury": "0x396003b5Ffb940466325622D05f1b59acCF894A2"
   },
   "release": "3.1.0",
   "retired": [

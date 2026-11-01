@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {Script, console2} from "forge-std/Script.sol";
 
 import {ProofsIncome, IWETH} from "../src/rewards/ProofsIncome.sol";
+import {FeeSplitter} from "../src/rewards/FeeSplitter.sol";
 
 /// @notice Deploys the ProofsIncome router on Robinhood Chain (chain 4663): the
 /// payee of the $BRAIN launch on ripples.run. Half of the income goes to the
@@ -24,6 +25,7 @@ contract DeployProofsIncome is Script {
         address splitter = vm.envAddress("FEE_SPLITTER");
         require(safe.code.length > 0, "OWNER_SAFE has no code");
         require(splitter.code.length > 0, "FEE_SPLITTER has no code");
+        require(FeeSplitter(payable(splitter)).treasury() == safe, "FEE_SPLITTER does not pay the Safe");
         require(address(WETH).code.length > 0, "WETH has no code");
 
         vm.startBroadcast();
@@ -33,6 +35,7 @@ contract DeployProofsIncome is Script {
         require(income.treasury() == safe && income.owner() == safe, "the router is not the Safe's");
         require(income.splitter() == splitter && address(income.weth()) == address(WETH), "the router is mis-wired");
         require(income.holdersBps() == 5000 && income.splitterBps() == 2500, "the split is off");
+        require(income.minRound() == 0.001 ether, "the round minimum is off");
         console2.log("ProofsIncome", address(income));
     }
 }
