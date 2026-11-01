@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- `DeployMainnet` deploys `WorkerStaking` and `ProposalBonds` and wires them to the board (mainnet open workers).
+
 ## [3.2.0] - 2026-10-31
 
 Deployed on Robinhood Chain (chain 4663) next to the 3.1.0 BrainChain sets, which are unchanged.
