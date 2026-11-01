@@ -215,3 +215,7 @@ Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before openin
 [MIT](LICENSE).
 
 Model and company names identify which model made a decision or did a job. BrainChain is not affiliated with or endorsed by TypeSafe, Anthropic, OpenAI, Google, xAI, DeepSeek or Robinhood.
+
+## Tools
+
+`node tools/latency.mjs` prints how long tasks take per step on mainnet (`--network testnet` for testnet), read from every task board's events. No dependencies beyond Node 22.
