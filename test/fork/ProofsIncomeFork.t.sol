@@ -10,7 +10,7 @@ import {ProofsIncome, IWETH, IProofs} from "../../src/rewards/ProofsIncome.sol";
 // Robinhood Chain (chain 4663). Skipped without a fork:
 //   forge test --match-path test/fork/ProofsIncomeFork.t.sol --fork-url https://rpc.mainnet.chain.robinhood.com -vv
 
-contract SequentialProofs is ERC721 {
+contract MockProofs is ERC721 {
     uint256 public totalSupply;
 
     constructor() ERC721("BrainChain Proofs", "PROOF") {}
@@ -28,7 +28,7 @@ contract ProofsIncomeForkTest is Test {
 
     function test_incomeFlowsThroughRealWethAndSplitter() public {
         vm.skip(block.chainid != 4663);
-        SequentialProofs proofs = new SequentialProofs();
+        MockProofs proofs = new MockProofs();
         ProofsIncome income = new ProofsIncome(WETH, FEE_SPLITTER, SAFE, SAFE, 5000, 2500, 0.001 ether);
         income.bindProofs(IProofs(address(proofs)));
 

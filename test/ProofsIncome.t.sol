@@ -34,7 +34,7 @@ contract MockProofs is ERC721 {
     }
 }
 
-contract Rejecting {
+contract Rejecter {
     receive() external payable {
         revert("no");
     }
@@ -171,7 +171,7 @@ contract ProofsIncomeTest is Test {
         assertEq(alice.balance, 0.5 ether);
     }
 
-    function test_claimManyAndSkippedRounds() public {
+    function test_claimManyPaysEveryRound() public {
         proofs.mint(alice);
         proofs.mint(bob);
         for (uint256 i = 0; i < 5; i++) {
@@ -188,7 +188,7 @@ contract ProofsIncomeTest is Test {
         assertEq(address(income).balance, 0);
     }
 
-    function test_claimForAProofThatDoesNotExistReverts() public {
+    function test_claimOfMissingProofReverts() public {
         pay(1 ether);
         proofs.mint(alice);
         income.distribute();
@@ -306,7 +306,7 @@ contract ProofsIncomeTest is Test {
     }
 
     function test_holderThatRejectsEthBlocksOnlyItsOwnClaim() public {
-        Rejecting rejecting = new Rejecting();
+        Rejecter rejecting = new Rejecter();
         proofs.mint(address(rejecting));
         proofs.mint(alice);
         pay(1 ether);
@@ -319,7 +319,7 @@ contract ProofsIncomeTest is Test {
     }
 
     function test_targetThatRejectsEthBlocksDistribution() public {
-        Rejecting rejecting = new Rejecting();
+        Rejecter rejecting = new Rejecter();
         vm.prank(owner);
         income.setTargets(address(rejecting), treasury);
         pay(1 ether);
@@ -327,7 +327,7 @@ contract ProofsIncomeTest is Test {
         income.distribute();
     }
 
-    function test_ownershipInTwoSteps() public {
+    function test_ownershipIsTwoStep() public {
         vm.prank(alice);
         vm.expectRevert(ProofsIncome.NotOwner.selector);
         income.transferOwnership(alice);
@@ -348,7 +348,7 @@ contract ProofsIncomeTest is Test {
 
     /// @dev Every wei distributed ends up with a holder, the splitter or the
     /// treasury, whatever the order of mints, payments and claims.
-    function testFuzz_conservation(uint8[8] calldata mints, uint64[8] calldata payments, uint8 claimMask) public {
+    function testFuzz_conservesEveryWei(uint8[8] calldata mints, uint64[8] calldata payments, uint8 claimMask) public {
         uint256 paid;
         for (uint256 i = 0; i < 8; i++) {
             for (uint256 m = 0; m < mints[i] % 4; m++) {
