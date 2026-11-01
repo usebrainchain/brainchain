@@ -115,7 +115,7 @@ flowchart TB
     TB --> MR
     DE -->|owns settings| TB
     DE -->|owns settings| MR
-    AD[Admin timelock<br/>owners' Safe] -->|replaces the brain| DL
+    AD[Admin timelock<br/>48-hour delay] -->|replaces the brain| DL
     AD -->|replaces guardian| DE
     BC -->|batches and state| RH
 ```
@@ -127,23 +127,23 @@ BrainChain is an Arbitrum Orbit chain with Robinhood Chain as its parent. Gas is
 | Contract | Responsibility |
 | --- | --- |
 | [`DecisionLog`](src/DecisionLog.sol) | Append-only record of every decision the chain acts on: kind, subject, input hash, answer and confidence, with the latest decision per subject and kind. Only the brain can record; only the admin timelock can replace the brain. |
-| [`TaskBoard`](src/TaskBoard.sol) | Escrows bounties and settles tasks only on recorded decisions above its own thresholds, under the terms fixed when each task was posted. Pays the account that delivered the work, less the protocol fee (3% on mainnet, sent to the owners' Safe `0xdFeFbdBF680568e8DC44abbbd657c0701964cC8c`). |
+| [`TaskBoard`](src/TaskBoard.sol) | Escrows bounties and settles tasks only on recorded decisions above its own thresholds, under the terms fixed when each task was posted. Pays the account that delivered the work, less the protocol fee (3% on mainnet, paid to the BrainChain treasury). |
 | [`ModelRegistry`](src/ModelRegistry.sol) | Maps each worker model to the account that submits its work. |
 | [`DecisionExecutor`](src/DecisionExecutor.sol) | Owns the chain's settings and the house treasury. Runs a change only after Jev adopts it above the change threshold and a timelock passes, and only on the executor, board or registry. A guardian veto during the timelock blocks that exact call permanently. House tasks are capped per task and per day. |
 
-### Operations log (BrainChain)
+### Change log (BrainChain)
 
 | Contract | Responsibility |
 | --- | --- |
-| [`Inscriptions`](src/Inscriptions.sol) | An append-only log in BrainChain's own blocks. The operator writes every release, node image, contract deployment, incident and configuration change here as UTF-8 JSON, one `Inscribed(by, kind, data)` event per record, so the chain's history carries what changed and when. Anyone may write; readers filter by writer. Mainnet `0x770D6756CA8a1627FFf01B846383b13d6fa0c514`, read at [usebrainchain.com/operations](https://usebrainchain.com/operations). |
+| [`Inscriptions`](src/Inscriptions.sol) | An append-only log in BrainChain's own blocks. BrainChain records each network upgrade, contract deployment and configuration change here as UTF-8 JSON, one `Inscribed(by, kind, data)` event per record, so the chain's history shows what changed and when. Anyone may write; readers filter by writer. Mainnet `0x770D6756CA8a1627FFf01B846383b13d6fa0c514`, read at [usebrainchain.com/operations](https://usebrainchain.com/operations). |
 
 ### $BRAIN fee rewards (Robinhood Chain)
 
 | Contract | Responsibility |
 | --- | --- |
-| [`FeeSplitter`](src/rewards/FeeSplitter.sol) | The creator fee recipient for $BRAIN on Pons. Splits ETH fees 50/50 between the reward distributor and the treasury and sends any ERC-20 fees to the treasury. Accepts only a curve that names it as fee recipient. The owner can move the fee stream or change the buyback setting three days after announcing it. |
+| [`FeeSplitter`](src/rewards/FeeSplitter.sol) | Receives a quarter of $BRAIN's launch income through `ProofsIncome`. Splits the ETH it receives 50/50 between the reward distributor and the treasury and sends any ERC-20 to the treasury. The admin can move the fee stream or change the buyback setting three days after announcing it. |
 | [`RewardDistributor`](src/rewards/RewardDistributor.sol) | Weekly Merkle rounds of ETH for accepted work. A round never pays more than its total; claims open 24 hours after publishing, during which the owner can revoke the round, and close after 12 weeks. |
-| [`ProofsIncome`](src/rewards/ProofsIncome.sol) | The payee of the $BRAIN launch on ripples.run. Unwraps the WETH it is paid and splits it: half to the holders of BrainChain Proofs, one equal part per piece minted by then, claimable by whoever holds the piece; a quarter to the `FeeSplitter`; a quarter to the treasury, with the rounding dust. The owner (the owners' Safe) can change the split and the two targets for income not yet distributed. What holders were allotted stays theirs as long as both targets accept ETH without calling back into the contract. A piece held by a contract that cannot receive ETH cannot claim until it moves. |
+| [`ProofsIncome`](src/rewards/ProofsIncome.sol) | The payee of the $BRAIN launch on ripples.run. Unwraps the WETH it is paid and splits it: half to the holders of BrainChain Proofs, one equal part per piece minted by then, claimable by whoever holds the piece; a quarter to the `FeeSplitter`; a quarter to the treasury, with the rounding dust. The admin can change the split and the two targets for income not yet distributed. What holders were allotted stays theirs as long as both targets accept ETH without calling back into the contract. A piece held by a contract that cannot receive ETH cannot claim until it moves. |
 
 ## Testnet
 
@@ -161,11 +161,11 @@ BrainChain is an Arbitrum Orbit chain with Robinhood Chain as its parent. Gas is
 | TestBRAIN | `0xc717546497343911750768335b649b86d0a6eCcf` |
 | TestSwap | `0x0EF716C553Ede96aA1DA49ddb5DE8FC6aB3270DE` |
 
-Add the network, bridge ETH and claim test tokens at [usebrainchain.com/network](https://usebrainchain.com/network). [`script/DeployTestnet.s.sol`](script/DeployTestnet.s.sol) deploys the contracts in this repository to testnet. The live sets run release 3.1.0 (see [CHANGELOG.md](CHANGELOG.md)).
+Add the network, bridge ETH and claim test tokens at [usebrainchain.com/network](https://usebrainchain.com/network). [`script/DeployTestnet.s.sol`](script/DeployTestnet.s.sol) deploys the contracts in this repository to testnet. Testnet runs the 3.1.0 contracts (see [CHANGELOG.md](CHANGELOG.md)).
 
 ## The $BRAIN flywheel
 
-$BRAIN is BrainChain's token. It is not launched yet; on testnet, tBRAIN stands in for it.
+$BRAIN is BrainChain's token, on Robinhood Chain at `0xC80333bf7f4078e14Ce5b6e223aF607aDcA44418`. On testnet, tBRAIN stands in for it.
 
 | Contract | Responsibility |
 | --- | --- |
