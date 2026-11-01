@@ -1,0 +1,38 @@
+{
+  "name": "brainchain-verify",
+  "version": "0.1.0",
+  "description": "Check a BrainChain decision against the chain: the published record, its hashes, its confidence and the thresholds the contracts applied.",
+  "license": "MIT",
+  "author": "BrainChain",
+  "homepage": "https://docs.usebrainchain.com/verifying-decisions",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/usebrainchain/brainchain.git",
+    "directory": "tools/verify-decision"
+  },
+  "bugs": "https://github.com/usebrainchain/brainchain/issues",
+  "keywords": ["brainchain", "jev", "verify", "decision", "onchain"],
+  "type": "module",
+  "bin": {
+    "brainchain-verify": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node scripts/deployments.mjs && tsc -p tsconfig.json",
+    "abi": "node scripts/abi.mjs",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "viem": "2.57.13"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "5.9.3"
+  }
+}
