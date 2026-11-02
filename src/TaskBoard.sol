@@ -96,10 +96,13 @@ contract TaskBoard is ReentrancyGuard {
     error TooEarly();
     error TransferMismatch();
     error BadFee();
+    error NotPoster();
+    error BadThreshold();
 
     event Posted(
         uint256 indexed id, address indexed poster, uint128 bounty, uint64 deadline, bytes32 briefHash, string briefURI
     );
+    event GradeBarRaised(uint256 indexed id, uint16 gradeThresholdBps, uint16 ruleThresholdBps);
     event WorkerHired(uint256 indexed id, bytes32 indexed model, uint256 indexed decisionId);
     event HireHeld(uint256 indexed id, uint256 indexed decisionId);
     event WorkSubmitted(uint256 indexed id, bytes32 indexed model, bytes32 resultHash, string resultURI);
@@ -211,6 +214,20 @@ contract TaskBoard is ReentrancyGuard {
         if (token.balanceOf(address(this)) - before != bounty) revert TransferMismatch();
 
         emit Posted(id, msg.sender, bounty, deadline, briefHash, briefURI);
+    }
+
+    /// @notice The poster raises its own task's grade bar while the task is
+    /// still open: work is then paid only when the grade reaches the new bar,
+    /// and a ruling needs at least as much to overturn a grade. The bars fixed
+    /// when the task was posted are the floor; nothing lowers them.
+    function raiseGradeBar(uint256 id, uint16 bps) external {
+        Task storage task = _tasks[id];
+        if (msg.sender != task.poster) revert NotPoster();
+        if (task.status != Status.Open) revert BadStatus();
+        if (bps <= task.gradeThresholdBps || bps > 10_000) revert BadThreshold();
+        task.gradeThresholdBps = bps;
+        if (bps > task.ruleThresholdBps) task.ruleThresholdBps = bps;
+        emit GradeBarRaised(id, bps, task.ruleThresholdBps);
     }
 
     /// @notice Applies a Hire decision. Below threshold, or with no model chosen,
