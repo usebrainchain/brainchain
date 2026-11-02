@@ -57,6 +57,8 @@ contract AttestedBrainTest is Test {
     /// The verifier's output: 11-byte header with the TCB status at byte 4, then the TD report body.
     function _output(uint8 tcb, bytes memory rtmr3_, bytes32 nonce, address key) internal view returns (bytes memory) {
         bytes memory header = new bytes(11);
+        header[1] = 0x04;
+        header[3] = 0x02;
         header[4] = bytes1(tcb);
         bytes memory beforeMrtd = new bytes(136);
         bytes memory between = new bytes(0);

@@ -74,7 +74,7 @@ contract FlywheelTest is Test {
             guardian,
             TaskBoard.Config(7_000, 7_000, 7_000, 1 hours, 7 days, 6 hours, 1 hours, 6 hours, 1e6)
         );
-        staking.setSlasher(address(board));
+        staking.setSlasher(address(board), true);
         router = new FeeRouter(IERC20(address(usdg)), address(executor), address(this), brain, 5_000);
         board.setFee(300, address(router));
         router.setFloorRate((1e12 * 1e18 * 95) / 100);
@@ -393,13 +393,20 @@ contract FlywheelTest is Test {
         assertEq(brainToken.balanceOf(agent), 100e18);
     }
 
-    function test_aDecisionSettlesOneProposal() public {
+    function test_aCallHasOneOpenProposalAndADecisionSettlesIt() public {
         (uint256 first, bytes memory data) = _propose();
-        (uint256 second,) = _propose();
+        brainToken.transfer(agent, 100e18);
+        vm.startPrank(agent);
+        brainToken.approve(address(bonds), 100e18);
+        vm.expectRevert(abi.encodeWithSelector(ProposalBonds.AlreadyProposed.selector, first));
+        bonds.propose(address(board), data, "ipfs://proposal");
+        vm.stopPrank();
         uint256 d = _decide(DecisionLog.Kind.Change, executor.changeSubject(address(board), data), bytes32(0), 9_000);
         bonds.settle(first, d);
-        vm.expectRevert(ProposalBonds.DecisionUsed.selector);
-        bonds.settle(second, d);
+        vm.expectRevert(ProposalBonds.BadState.selector);
+        bonds.settle(first, d);
+        (uint256 second,) = _propose();
+        assertEq(bonds.openProposal(executor.changeSubject(address(board), data)), second);
     }
 
     /// 3.3.0 let a proposer expire a bond after the window even though Jev had decided "keep" in time.

@@ -164,7 +164,7 @@ contract DeployMainnet is Script {
             c.decideWithin
         );
 
-        d.staking.setSlasher(address(d.board));
+        d.staking.setSlasher(address(d.board), true);
         d.board.setFee(300, c.feeRecipient);
         d.registry.setModel(keccak256("claude"), c.workers[0], 0.4e6, true);
         d.registry.setModel(keccak256("gpt"), c.workers[1], 0.35e6, true);
@@ -195,7 +195,7 @@ contract DeployMainnet is Script {
         );
         require(d.board.feeBps() == 300 && d.board.feeRouter() == c.feeRecipient, "the fee is mis-set");
         require(d.board.staking() == d.staking, "the board hires from another staking contract");
-        require(d.staking.slasher() == address(d.board), "the board cannot slash or hold stakes");
+        require(d.staking.slashers(address(d.board)), "the board cannot slash or hold stakes");
         require(
             d.staking.token() == c.brainToken && d.bonds.token() == c.brainToken, "staking or bonds take another token"
         );

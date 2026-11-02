@@ -64,6 +64,7 @@ contract DecisionLog {
     error ImageNotAllowed(bytes32 image);
     error AppNotAllowed(bytes32 app);
     error StaleQuote();
+    error NotATdQuote();
 
     event Recorded(
         uint256 indexed id,
@@ -92,7 +93,8 @@ contract DecisionLog {
     mapping(bytes32 => mapping(Kind => uint256)) private _latest;
 
     /// Where quotes are verified; zero until the owner sets it, which leaves
-    /// `setBrain` as the only path.
+    /// `setBrain` as the only path. `setBrain` clears it, so a recovery holds
+    /// until the owner reopens attestation.
     IDcapAttestation public attestation;
     /// keccak256(MRTD, RTMR0, RTMR1, RTMR2): the virtual hardware, firmware and OS image.
     mapping(bytes32 => bool) public allowedImage;
@@ -112,6 +114,11 @@ contract DecisionLog {
     uint256 private constant RTMR3 = 483;
     uint256 private constant REPORT_DATA = 531;
     uint256 private constant OUTPUT_MIN = 595;
+    /// Quote versions and body types the verifier reports for a TDX quote: v4 or v5 with a TD 1.0 or TD 1.5 body.
+    uint8 private constant QUOTE_V4 = 4;
+    uint8 private constant QUOTE_V5 = 5;
+    uint8 private constant BODY_TD10 = 2;
+    uint8 private constant BODY_TD15 = 3;
     /// TCB statuses accepted: up to date, or software hardening needed.
     uint8 private constant TCB_OK = 0;
     uint8 private constant TCB_SW_HARDENING_NEEDED = 1;
@@ -157,11 +164,18 @@ contract DecisionLog {
         return _latest[subject][kind];
     }
 
+    /// @notice Names the brain directly and closes attestation, so an enclave
+    /// still on the allowlists cannot name itself again until the owner calls
+    /// `setAttestation`. A recovery therefore holds for as long as the owner wants.
     function setBrain(address brain_) external {
         if (msg.sender != owner) revert NotOwner();
         if (brain_ == address(0)) revert ZeroAddress();
         brain = brain_;
         emit BrainSet(brain_);
+        if (address(attestation) != address(0)) {
+            attestation = IDcapAttestation(address(0));
+            emit AttestationSet(address(0));
+        }
     }
 
     /// @notice What an enclave writes into the first 32 bytes of its quote's
@@ -180,6 +194,9 @@ contract DecisionLog {
         if (tcbEvaluationNumber == 0) (ok, out) = attestation.verifyAndAttestOnChain(quote);
         else (ok, out) = attestation.verifyAndAttestOnChain(quote, tcbEvaluationNumber);
         if (!ok || out.length < OUTPUT_MIN) revert QuoteRejected();
+        // Big-endian uint16 version and body type; an SGX report would be read at the wrong offsets.
+        if (out[0] != 0 || (uint8(out[1]) != QUOTE_V4 && uint8(out[1]) != QUOTE_V5)) revert NotATdQuote();
+        if (out[2] != 0 || (uint8(out[3]) != BODY_TD10 && uint8(out[3]) != BODY_TD15)) revert NotATdQuote();
 
         uint8 tcb = uint8(out[TCB_STATUS]);
         if (tcb != TCB_OK && tcb != TCB_SW_HARDENING_NEEDED) revert TcbNotAccepted(tcb);

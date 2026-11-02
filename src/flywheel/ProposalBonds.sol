@@ -16,7 +16,9 @@ interface IDecisionExecutor {
 /// decides, the bond is returned if the change was adopted above the change
 /// threshold and burned otherwise. Only Jev's latest decision on the call
 /// settles a proposal, and each decision settles one proposal. A proposal Jev
-/// never decides on is returned after the decision window.
+/// never decides on is returned after the decision window. One call has at most
+/// one open proposal, so the latest decision inside a proposal's window is that
+/// proposal's decision.
 contract ProposalBonds is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -47,6 +49,7 @@ contract ProposalBonds is ReentrancyGuard {
     error TooEarly();
     error Decided();
     error BadConfig();
+    error AlreadyProposed(uint256 id);
 
     event Proposed(
         uint256 indexed id, address indexed proposer, address indexed target, bytes data, uint128 bond, string uri
@@ -68,6 +71,8 @@ contract ProposalBonds is ReentrancyGuard {
     uint256 public count;
     mapping(uint256 => Proposal) private _proposals;
     mapping(uint256 => bool) public decisionUsed;
+    /// @notice The open proposal for each subject, or zero.
+    mapping(bytes32 => uint256) public openProposal;
 
     constructor(
         IERC20 token_,
@@ -97,14 +102,17 @@ contract ProposalBonds is ReentrancyGuard {
         returns (uint256 id)
     {
         if (target == address(0)) revert ZeroAddress();
+        bytes32 subject = executor.changeSubject(target, data);
+        if (openProposal[subject] != 0) revert AlreadyProposed(openProposal[subject]);
         id = ++count;
+        openProposal[subject] = id;
         uint128 amount = bond;
         _proposals[id] = Proposal(
             msg.sender,
             amount,
             uint64(block.timestamp),
             State.Open,
-            executor.changeSubject(target, data),
+            subject,
             uint64(block.timestamp) + decideWithin,
             executor.changeThresholdBps()
         );
@@ -118,14 +126,16 @@ contract ProposalBonds is ReentrancyGuard {
         if (p.state != State.Open) revert BadState();
         if (decisionUsed[decisionId]) revert DecisionUsed();
         DecisionLog.Decision memory d = decisions.get(decisionId);
-        if (d.kind != DecisionLog.Kind.Change || d.subject != p.subject || d.recordedAt < p.createdAt) {
-            revert BadDecision();
-        }
+        if (
+            d.kind != DecisionLog.Kind.Change || d.subject != p.subject || d.recordedAt < p.createdAt
+                || d.recordedAt > p.deadline
+        ) revert BadDecision();
         if (decisions.latestOf(p.subject, DecisionLog.Kind.Change) != decisionId) revert StaleDecision();
         decisionUsed[decisionId] = true;
 
         bool adopted = d.answer == YES && d.confidenceBps >= p.thresholdBps;
         p.state = adopted ? State.Returned : State.Burned;
+        delete openProposal[p.subject];
         token.safeTransfer(adopted ? p.proposer : BURN, p.bond);
         emit Settled(id, decisionId, adopted);
     }
@@ -143,6 +153,7 @@ contract ProposalBonds is ReentrancyGuard {
             if (recordedAt >= p.createdAt && recordedAt <= p.deadline) revert Decided();
         }
         p.state = State.Returned;
+        delete openProposal[p.subject];
         token.safeTransfer(p.proposer, p.bond);
         emit Expired(id);
     }

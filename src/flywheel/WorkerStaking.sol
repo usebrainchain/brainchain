@@ -36,7 +36,7 @@ contract WorkerStaking is ReentrancyGuard {
     event Slashed(address indexed account, uint256 amount);
     event PriceSet(address indexed account, uint128 price);
     event ConfigSet(uint128 minStake, uint64 cooldown, uint16 slashBps);
-    event SlasherSet(address indexed slasher);
+    event SlasherSet(address indexed slasher, bool allowed);
     event Held(address indexed account, uint32 tasks);
     event OwnerSet(address indexed owner);
 
@@ -44,8 +44,9 @@ contract WorkerStaking is ReentrancyGuard {
 
     IERC20 public immutable token;
     address public owner;
-    /// @notice The task board: it slashes stakes, and holds them while a worker has a task in flight.
-    address public slasher;
+    /// @notice Task boards that slash stakes and hold them while a worker has a task in flight.
+    /// A retired board stays listed until its last task settles, so nothing it holds is stranded.
+    mapping(address => bool) public slashers;
     uint128 public minStake;
     uint64 public cooldown;
     uint16 public slashBps;
@@ -109,7 +110,7 @@ contract WorkerStaking is ReentrancyGuard {
     /// including stake waiting to unlock. Called by the task board when the
     /// worker loses a dispute it opened.
     function slash(address account) external nonReentrant returns (uint256 amount) {
-        if (msg.sender != slasher) revert NotSlasher();
+        if (!slashers[msg.sender]) revert NotSlasher();
         Worker storage w = _workers[account];
         uint256 fromStaked = (uint256(w.staked) * slashBps) / 10_000;
         uint256 fromUnstaking = (uint256(w.unstaking) * slashBps) / 10_000;
@@ -122,7 +123,7 @@ contract WorkerStaking is ReentrancyGuard {
 
     /// @notice Called by the task board when it hires the worker.
     function hold(address account) external {
-        if (msg.sender != slasher) revert NotSlasher();
+        if (!slashers[msg.sender]) revert NotSlasher();
         uint32 tasks = held[account] + 1;
         held[account] = tasks;
         emit Held(account, tasks);
@@ -130,7 +131,7 @@ contract WorkerStaking is ReentrancyGuard {
 
     /// @notice Called by the task board when a task the worker was hired for settles.
     function release(address account) external {
-        if (msg.sender != slasher) revert NotSlasher();
+        if (!slashers[msg.sender]) revert NotSlasher();
         uint32 tasks = held[account];
         if (tasks == 0) revert NotHeld();
         held[account] = tasks - 1;
@@ -150,11 +151,11 @@ contract WorkerStaking is ReentrancyGuard {
         return _workers[account];
     }
 
-    function setSlasher(address slasher_) external {
+    function setSlasher(address slasher_, bool allowed) external {
         if (msg.sender != owner) revert NotOwner();
         if (slasher_ == address(0)) revert ZeroAddress();
-        slasher = slasher_;
-        emit SlasherSet(slasher_);
+        slashers[slasher_] = allowed;
+        emit SlasherSet(slasher_, allowed);
     }
 
     function setConfig(uint128 minStake_, uint64 cooldown_, uint16 slashBps_) external {

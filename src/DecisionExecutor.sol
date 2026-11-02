@@ -12,7 +12,9 @@ import {TaskBoard} from "./TaskBoard.sol";
 /// @notice Owns BrainChain's parameters, the task board, the model registry and
 /// the house treasury. A change runs only after Jev adopted it above the change
 /// threshold and a timelock passed; the guardian can veto during the timelock,
-/// and a vetoed call can never be queued again. Changes may only call this
+/// and a veto shuts that function on that target (not only the exact bytes, since
+/// a call re-encoded with trailing data reaches the same function) until the
+/// admin clears it. Changes may only call this
 /// contract, the board or the registry, and can never replace the guardian:
 /// that power belongs to the admin, the timelock that owns the DecisionLog.
 /// The brain can also post house tasks from the treasury, within daily caps on
@@ -53,7 +55,8 @@ contract DecisionExecutor is ReentrancyGuard {
 
     event Queued(uint256 indexed changeId, uint256 indexed decisionId, address indexed target, bytes data, uint64 eta);
     event Executed(uint256 indexed changeId);
-    event Vetoed(uint256 indexed changeId);
+    event Vetoed(uint256 indexed changeId, address indexed target, bytes4 indexed selector);
+    event VetoCleared(address indexed target, bytes4 indexed selector);
     event HouseTaskPosted(uint256 indexed taskId, uint128 bounty);
     event ParametersSet(
         uint16 changeThresholdBps,
@@ -89,7 +92,8 @@ contract DecisionExecutor is ReentrancyGuard {
     uint256 public changeCount;
     mapping(uint256 => Change) private _changes;
     mapping(uint256 => bool) public decisionUsed;
-    mapping(bytes32 => bool) public vetoedCall;
+    /// @notice Functions a veto shut, by target and selector, until the admin clears them.
+    mapping(address => mapping(bytes4 => bool)) public vetoed;
     mapping(uint256 => uint32) public houseTasksOnDay;
     mapping(uint256 => uint128) public houseSpentOnDay;
 
@@ -142,7 +146,7 @@ contract DecisionExecutor is ReentrancyGuard {
         if (data.length < 4) revert ForbiddenCall();
         bytes4 selector = bytes4(data[:4]);
         if (selector == this.setGuardian.selector || selector == TaskBoard.setOwner.selector) revert ForbiddenCall();
-        if (vetoedCall[keccak256(abi.encode(target, data))]) revert VetoedCall();
+        if (vetoed[target][selector]) revert VetoedCall();
         if (decisionUsed[decisionId]) revert DecisionUsed();
 
         bytes32 subject = changeSubject(target, data);
@@ -162,8 +166,8 @@ contract DecisionExecutor is ReentrancyGuard {
         Change storage change = _changes[changeId];
         if (change.target == address(0)) revert UnknownChange();
         if (change.executed || change.vetoed) revert Closed();
-        // A veto covers every queued copy of the same call, not only the one vetoed.
-        if (vetoedCall[keccak256(abi.encode(change.target, change.data))]) revert VetoedCall();
+        // A veto covers every queued call of the same function, not only the one vetoed.
+        if (vetoed[change.target][bytes4(change.data)]) revert VetoedCall();
         if (block.timestamp < change.eta) revert NotReady();
         if (block.timestamp > uint256(change.eta) + GRACE_PERIOD) revert Expired();
 
@@ -173,15 +177,24 @@ contract DecisionExecutor is ReentrancyGuard {
         emit Executed(changeId);
     }
 
-    /// @notice Cancels a queued change and blocks that exact call permanently.
+    /// @notice Cancels a queued change and shuts its function on its target until the admin clears it.
     function veto(uint256 changeId) external {
         if (msg.sender != guardian) revert NotGuardian();
         Change storage change = _changes[changeId];
         if (change.target == address(0)) revert UnknownChange();
         if (change.executed || change.vetoed) revert Closed();
         change.vetoed = true;
-        vetoedCall[keccak256(abi.encode(change.target, change.data))] = true;
-        emit Vetoed(changeId);
+        bytes4 selector = bytes4(change.data);
+        vetoed[change.target][selector] = true;
+        emit Vetoed(changeId, change.target, selector);
+    }
+
+    /// @notice Reopens a function a veto shut. Only the admin can, so a veto
+    /// stands until the owners have looked, whatever the brain proposes meanwhile.
+    function clearVeto(address target, bytes4 selector) external {
+        if (msg.sender != decisions.owner()) revert NotAdmin();
+        vetoed[target][selector] = false;
+        emit VetoCleared(target, selector);
     }
 
     function getChange(uint256 changeId) external view returns (Change memory) {

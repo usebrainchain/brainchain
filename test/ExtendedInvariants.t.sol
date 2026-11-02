@@ -287,7 +287,7 @@ contract ExtendedInvariants is StdInvariant, Test {
         );
         vm.prank(guardian);
         executor.bindBoard(board);
-        staking.setSlasher(address(board));
+        staking.setSlasher(address(board), true);
         registry.setOwner(address(executor));
         vm.prank(address(executor));
         board.setWorkerAllowed(stakedWorker, true);

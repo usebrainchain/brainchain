@@ -429,7 +429,7 @@ contract StakingRegressions is BrainChainSetup {
         TaskBoard tb = new TaskBoard(
             IERC20(address(usdg)), decisionLog, registry, staking, address(this), guardian, defaultConfig()
         );
-        staking.setSlasher(address(tb));
+        staking.setSlasher(address(tb), true);
         address attacker = makeAddr("attacker");
         brainToken.mint(attacker, 500e18);
         vm.startPrank(attacker);

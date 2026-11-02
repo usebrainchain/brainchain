@@ -19,6 +19,7 @@ interface IGuardedBoard {
 contract GuardianGate {
     error NotSafe();
     error NotAllowed();
+    error ZeroAddress();
 
     event WatcherSet(address indexed watcher);
     event Vetoed(uint256 indexed changeId, address indexed by, string reason);
@@ -30,6 +31,9 @@ contract GuardianGate {
     address public watcher;
 
     constructor(address safe_, IGuardedExecutor executor_, IGuardedBoard board_, address watcher_) {
+        if (safe_ == address(0) || address(executor_) == address(0) || address(board_) == address(0)) {
+            revert ZeroAddress();
+        }
         safe = safe_;
         executor = executor_;
         board = board_;

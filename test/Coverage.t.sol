@@ -122,7 +122,8 @@ contract DecisionLogCoverage is BrainChainSetup {
 contract DecisionExecutorCoverage is BrainChainSetup {
     event Queued(uint256 indexed changeId, uint256 indexed decisionId, address indexed target, bytes data, uint64 eta);
     event Executed(uint256 indexed changeId);
-    event Vetoed(uint256 indexed changeId);
+    event Vetoed(uint256 indexed changeId, address indexed target, bytes4 indexed selector);
+    event VetoCleared(address indexed target, bytes4 indexed selector);
     event HouseTaskPosted(uint256 indexed taskId, uint128 bounty);
     event ParametersSet(
         uint16 changeThresholdBps,
@@ -224,20 +225,30 @@ contract DecisionExecutorCoverage is BrainChainSetup {
         uint256 vetoed = _adopt(address(board), data, 9_000);
         vm.prank(guardian);
         vm.expectEmit(true, false, false, false, address(executor));
-        emit Vetoed(vetoed);
+        emit Vetoed(vetoed, address(board), bytes4(data));
         executor.veto(vetoed);
         vm.prank(guardian);
         vm.expectRevert(DecisionExecutor.Closed.selector);
         executor.veto(vetoed);
-        assertTrue(executor.vetoedCall(keccak256(abi.encode(address(board), data))));
+        assertTrue(executor.vetoed(address(board), bytes4(data)));
 
         // v2 let the brain record a fresh decision and queue the vetoed call again.
         uint256 again = decide(DecisionLog.Kind.Change, executor.changeSubject(address(board), data), YES, 9_000);
         vm.prank(brain);
         vm.expectRevert(DecisionExecutor.VetoedCall.selector);
         executor.queue(again, address(board), data);
+        // 3.4.0 shuts the function, not only those bytes, until the admin clears it.
+        bytes memory unpause = abi.encodeCall(TaskBoard.setPaused, (false));
+        uint256 other = decide(DecisionLog.Kind.Change, executor.changeSubject(address(board), unpause), YES, 9_000);
+        vm.prank(brain);
+        vm.expectRevert(DecisionExecutor.VetoedCall.selector);
+        executor.queue(other, address(board), unpause);
+        vm.expectEmit(true, true, false, false, address(executor));
+        emit VetoCleared(address(board), bytes4(data));
+        executor.clearVeto(address(board), bytes4(data));
+        assertFalse(executor.vetoed(address(board), bytes4(data)));
 
-        uint256 executed = _adopt(address(board), abi.encodeCall(TaskBoard.setPaused, (false)), 9_000);
+        uint256 executed = _adopt(address(board), unpause, 9_000);
         vm.warp(block.timestamp + 2 days);
         executor.execute(executed);
         vm.prank(guardian);

@@ -74,7 +74,7 @@ contract DeployTestnet is Script {
             7 days
         );
 
-        staking.setSlasher(address(board));
+        staking.setSlasher(address(board), true);
         board.setFee(300, address(router));
         router.setBrain(IERC20(address(brainToken)));
         router.setAdapter(swap);

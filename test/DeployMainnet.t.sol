@@ -46,7 +46,7 @@ contract DeployMainnetTest is Test {
         DeployMainnet.Deployment memory d = script.deploy();
 
         assertEq(address(d.board.staking()), address(d.staking));
-        assertEq(d.staking.slasher(), address(d.board));
+        assertTrue(d.staking.slashers(address(d.board)));
         assertEq(d.staking.owner(), address(d.admin));
         assertEq(address(d.staking.token()), address(brainToken));
         assertEq(d.staking.minStake(), 1_000_000e18);
