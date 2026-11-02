@@ -175,6 +175,68 @@ contract TaskBoardTest is BrainChainSetup {
         assertEq(usdg.balanceOf(claudeAccount), 0);
     }
 
+    function test_posterRaisesTheGradeBarWhileOpen() public {
+        uint256 id = postTask();
+        vm.prank(poster);
+        vm.expectEmit(true, false, false, true);
+        emit TaskBoard.GradeBarRaised(id, 9_000, 9_000);
+        board.raiseGradeBar(id, 9_000);
+        assertEq(board.get(id).gradeThresholdBps, 9_000);
+        assertEq(board.get(id).ruleThresholdBps, 9_000);
+        hireClaude(id);
+        deliver(id);
+        gradeAs(id, YES, 8_900);
+        assertFalse(board.get(id).accepted);
+        vm.warp(block.timestamp + 2 hours);
+        board.finalize(id);
+        assertEq(uint8(board.get(id).status), uint8(TaskBoard.Status.Refunded));
+
+        uint256 second = postTask();
+        vm.prank(poster);
+        board.raiseGradeBar(second, 9_000);
+        hireClaude(second);
+        deliver(second);
+        gradeAs(second, YES, 9_000);
+        assertTrue(board.get(second).accepted);
+    }
+
+    function test_raisedBarBindsTheRulingToo() public {
+        uint256 id = postTask();
+        vm.prank(poster);
+        board.raiseGradeBar(id, 9_000);
+        hireClaude(id);
+        deliver(id);
+        gradeAs(id, NO, 8_000);
+        vm.prank(claudeAccount);
+        board.dispute(id);
+        uint256 d = decide(DecisionLog.Kind.Ruling, board.subjectOf(id), YES, 8_500);
+        vm.prank(brain);
+        board.rule(id, d);
+        assertEq(uint8(board.get(id).status), uint8(TaskBoard.Status.Refunded));
+    }
+
+    function test_gradeBarOnlyRisesOnlyByThePosterOnlyWhileOpen() public {
+        uint256 id = postTask();
+        vm.expectRevert(TaskBoard.NotPoster.selector);
+        board.raiseGradeBar(id, 9_000);
+        vm.prank(poster);
+        vm.expectRevert(TaskBoard.BadThreshold.selector);
+        board.raiseGradeBar(id, 7_000);
+        vm.prank(poster);
+        vm.expectRevert(TaskBoard.BadThreshold.selector);
+        board.raiseGradeBar(id, 10_001);
+        vm.prank(poster);
+        board.raiseGradeBar(id, 8_000);
+        vm.prank(poster);
+        vm.expectRevert(TaskBoard.BadThreshold.selector);
+        board.raiseGradeBar(id, 7_500);
+        hireClaude(id);
+        vm.prank(poster);
+        vm.expectRevert(TaskBoard.BadStatus.selector);
+        board.raiseGradeBar(id, 9_500);
+        assertEq(board.get(id).gradeThresholdBps, 8_000);
+    }
+
     function test_lowConfidenceAcceptStillRefunds() public {
         uint256 id = postTask();
         hireClaude(id);
