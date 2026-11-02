@@ -36,6 +36,7 @@ contract DeployMainnetTest is Test {
         vm.setEnv("WORKER_GEMINI", vm.toString(makeAddr("gemini")));
         vm.setEnv("WORKER_GROK", vm.toString(makeAddr("grok")));
         vm.setEnv("WORKER_DEEPSEEK", vm.toString(makeAddr("deepseek")));
+        vm.setEnv("WATCHER", vm.toString(makeAddr("watcher")));
 
         DeployMainnetHarness script = new DeployMainnetHarness();
         vm.setEnv("BRAIN_TOKEN", vm.toString(address(usdg)));
