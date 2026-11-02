@@ -6,6 +6,9 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- `TaskBoard.raiseGradeBar(id, bps)`: the poster raises its own task's grade bar while the task is open; the ruling bar rises with it, and nothing lowers either.
+- Deploy scripts default the grade and ruling bars to 80%.
+- `brainchain-verify` 0.2.0 checks grades and rulings graded twice (the lower of Jev's and the second grader's probability of paying) and refunds for failed brief checks.
 - Invariant suites for `DecisionExecutor`, `ProposalBonds` and `WorkerStaking` slashing, driven through decisions the brain records.
 
 ### Fixed
