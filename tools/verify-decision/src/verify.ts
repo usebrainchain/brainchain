@@ -61,6 +61,11 @@ interface Published {
   /** Grades recorded since the chain gates on the paid levels; older grades recorded this as their confidence. */
   scoreConfidence?: number;
   probabilities: Record<string, number>;
+  /** Grades and rulings graded twice: the second grader's answer, and the probability of paying from each. */
+  jevPaid?: number;
+  second?: { model: string; probabilities: Record<string, number>; paid: number; receipt: { id: string } | null; requestHash: string };
+  /** How the brief's checks ran on the delivered code; failed checks refund at full confidence. */
+  checks?: "passed" | "failed";
 }
 
 interface State {
@@ -79,6 +84,9 @@ const NO_ANSWERS = new Set(["reject", "refund", "keep", "refuse"]);
 // TypeSafe rounds probabilities and its own choice confidence to two decimals,
 // so a hire's confidence recomputed from the probabilities can differ slightly.
 const ROUNDING = 0.02;
+// The brain keeps a probability of paying to four decimals.
+const share = (parts: number[]): number => Math.min(1, Number(parts.reduce((sum, p) => sum + p, 0).toFixed(4)));
+const twice = (record: Published): boolean => record.second !== undefined || record.checks !== undefined;
 
 const ADDRESS = /^0x[0-9a-f]{40}$/i;
 const short = (value: string): string => `${value.slice(0, 6)}…${value.slice(-4)}`;
@@ -386,7 +394,7 @@ export async function verifyDecision(ctx: Context, id: bigint): Promise<Decision
   );
 
   const chosen = record.probabilities[record.answer];
-  if (decision.kind !== Kind.Grade) {
+  if (decision.kind !== Kind.Grade && !(decision.kind === Kind.Ruling && twice(record))) {
     const top = Math.max(...Object.values(record.probabilities));
     c.check(
       "top-option",
@@ -406,7 +414,9 @@ export async function verifyDecision(ctx: Context, id: bigint): Promise<Decision
       `confidence recomputed from the probabilities is ${recomputed.toFixed(4)}, not ${record.confidence}`,
     );
   }
-  if (decision.kind === Kind.Ruling || decision.kind === Kind.Change) {
+  if (decision.kind === Kind.Ruling && twice(record)) {
+    checkPaying(c, record, { jev: record.probabilities.pay ?? 0, second: record.second?.probabilities.pay, yes: "pay", no: "refund" });
+  } else if (decision.kind === Kind.Ruling || decision.kind === Kind.Change) {
     c.check(
       "confidence-recomputed",
       record.confidence === chosen,
@@ -474,14 +484,56 @@ async function checkBrief(ctx: Context, c: Checks, task: bigint, decision: Decis
   }
   const paidKeys = ascending.map((_, i) => String(i)).slice(ascending.length - 1 - brief.passIndex);
   const parts = paidKeys.map((key) => record.probabilities[key] ?? 0);
-  const paid = Math.min(1, parts.reduce((sum, p) => sum + p, 0));
-  const accept = paid >= 0.5;
-  const confidence = accept ? paid : 1 - paid;
+  const jev = share(parts);
+  const how = `paid levels ${paidKeys.join(", ")} hold ${parts.join(" + ")} = ${jev.toFixed(4)}`;
+  if (!twice(record)) {
+    const accept = jev >= 0.5;
+    const confidence = accept ? jev : 1 - jev;
+    c.check(
+      "confidence-recomputed",
+      Math.abs(confidence - record.confidence) < 1e-6 && record.answer === (accept ? "accept" : "reject"),
+      `confidence recomputed: ${how}, so ${accept ? "accept" : "reject"} at ${confidence.toFixed(4)}`,
+      `recomputed from the probabilities, the grade is ${accept ? "accept" : "reject"} at ${confidence.toFixed(4)}, not ${record.answer} at ${record.confidence}`,
+    );
+    return;
+  }
+  const second = record.second ? share(paidKeys.map((key) => record.second!.probabilities[key] ?? 0)) : undefined;
+  checkPaying(c, record, { jev, second, yes: "accept", no: "reject", how });
+}
+
+/**
+ * The rule grades and rulings share since they are graded twice: the
+ * probability of paying is the lower of Jev's and the second grader's, zero
+ * when the brief's checks failed, and the answer and confidence follow it.
+ */
+function checkPaying(c: Checks, record: Published, p: { jev: number; second?: number; yes: string; no: string; how?: string }): void {
+  const steps: string[] = [p.how ?? `Jev puts ${p.jev} on ${p.yes}`];
+  let paying = p.jev;
+  if (record.second) {
+    c.check(
+      "second-grader",
+      p.second !== undefined && Math.abs(p.second - record.second.paid) < 1e-6 && Math.abs((record.jevPaid ?? p.jev) - p.jev) < 1e-6,
+      `the second grader (${record.second.model}) puts ${p.second} on paying${record.second.receipt ? `, with receipt ${record.second.receipt.id}` : ", without a receipt"}`,
+      `the second grader's probability of paying recomputes to ${p.second}, not the recorded ${record.second.paid}`,
+    );
+    if (p.second !== undefined) {
+      paying = Math.min(paying, p.second);
+      steps.push(`the second grader holds ${p.second.toFixed(4)}, so the lower, ${paying.toFixed(4)}, counts`);
+    }
+  }
+  if (record.checks === "failed") {
+    paying = 0;
+    steps.push("the brief's checks failed on the delivered code, so the probability of paying is 0");
+  } else if (record.checks === "passed") {
+    steps.push("the brief's checks passed");
+  }
+  const yes = paying >= 0.5;
+  const confidence = yes ? paying : 1 - paying;
   c.check(
     "confidence-recomputed",
-    Math.abs(confidence - record.confidence) < 1e-9 && record.answer === (accept ? "accept" : "reject"),
-    `confidence recomputed: paid levels ${paidKeys.join(", ")} hold ${parts.join(" + ")} = ${paid.toFixed(4)}, so ${accept ? "accept" : "reject"} at ${confidence.toFixed(4)}`,
-    `recomputed from the probabilities, the grade is ${accept ? "accept" : "reject"} at ${confidence.toFixed(4)}, not ${record.answer} at ${record.confidence}`,
+    Math.abs(confidence - record.confidence) < 1e-6 && record.answer === (yes ? p.yes : p.no),
+    `confidence recomputed: ${steps.join("; ")}, so ${yes ? p.yes : p.no} at ${confidence.toFixed(4)}`,
+    `recomputed under the two-grader rule, the decision is ${yes ? p.yes : p.no} at ${confidence.toFixed(4)}, not ${record.answer} at ${record.confidence}`,
   );
 }
 
