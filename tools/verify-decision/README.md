@@ -68,7 +68,8 @@ Each line is one check. `ok` passed and `FAIL` means the record and the chain di
 | `answer` | The record's answer encodes to the one on chain: the hired model's id or worker address, or 1 for accept, pay, adopt and allow and 0 for their opposites. |
 | `confidence` | The record's confidence times 10,000, rounded, equals `confidenceBps`. |
 | `top-option` | For a hire, ruling or change, the answer is Jev's most likely option. |
-| `confidence-recomputed` | The confidence follows from the probabilities. A hire uses `(p - 1/n) / (1 - 1/n)`, within 0.02 because the probabilities are rounded to two decimals. A grade sums the probabilities on the paid levels. A ruling or change uses the chosen option's probability. |
+| `confidence-recomputed` | The confidence follows from the probabilities. A hire uses `(p - 1/n) / (1 - 1/n)`, within 0.02 because the probabilities are rounded to two decimals. A grade sums the probabilities on the paid levels. A change uses the chosen option's probability, and so does a ruling recorded before rulings were graded twice. A grade or ruling with a `second` or `checks` field follows the two-grader rule: the probability of paying is the lower of Jev's and the second grader's, zero when the brief's checks failed, and the answer and confidence follow it. |
+| `second-grader` | On a decision graded twice: the second grader's probability of paying recomputes from its probabilities, and the receipt id it carries is shown. |
 | `brief` | The question quotes the task's brief, fetched from its `Posted` event and checked against `briefHash`. |
 | `levels` | A grade or ruling used the brief's own quality levels and pass level. |
 | `threshold` | The threshold fixed when the task was posted, applied as `TaskBoard.hire`, `grade` and `rule` do, gives the outcome the board emitted. A change is queued only on a yes. |
