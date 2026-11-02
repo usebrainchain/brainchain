@@ -1,6 +1,6 @@
 {
   "name": "brainchain-verify",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Check a BrainChain decision against the chain: the published record, its hashes, its confidence and the thresholds the contracts applied.",
   "license": "MIT",
   "author": "BrainChain",
@@ -11,10 +11,29 @@
     "directory": "tools/verify-decision"
   },
   "bugs": "https://github.com/usebrainchain/brainchain/issues",
-  "keywords": ["brainchain", "jev", "verify", "decision", "onchain"],
+  "keywords": [
+    "brainchain",
+    "jev",
+    "verify",
+    "decision",
+    "onchain"
+  ],
   "type": "module",
   "bin": {
     "brainchain-verify": "dist/cli.js"
+  },
+  "main": "dist/verify.js",
+  "types": "dist/verify.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/verify.d.ts",
+      "default": "./dist/verify.js"
+    },
+    "./deployments": {
+      "types": "./dist/deployments.d.ts",
+      "default": "./dist/deployments.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
