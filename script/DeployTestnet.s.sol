@@ -116,7 +116,8 @@ contract DeployTestnet is Script {
         } else {
             usdg = TestUSDG(existing);
             executor = new DecisionExecutor(decisionLog, IERC20(address(usdg)), deployer, 6_000, 2 hours, 20, 5e6, 40e6);
-            usdg.faucet();
+            // The deployer's daily claim may already be spent; the treasury is then funded after the deploy.
+            if (block.timestamp >= usdg.lastClaim(deployer) + usdg.FAUCET_INTERVAL()) usdg.faucet();
             usdg.transfer(address(executor), usdg.balanceOf(deployer));
         }
     }
