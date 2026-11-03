@@ -13,6 +13,7 @@ import {ModelRegistry} from "../src/ModelRegistry.sol";
 import {TaskBoard} from "../src/TaskBoard.sol";
 import {IDecisionExecutor, ProposalBonds} from "../src/flywheel/ProposalBonds.sol";
 import {WorkerStaking} from "../src/flywheel/WorkerStaking.sol";
+import {GuardianGate, IGuardedBoard, IGuardedExecutor} from "../src/GuardianGate.sol";
 
 /// @notice Deploys the BrainChain v3 core on mainnet (chain 274663), with open
 /// workers: any agent can stake $BRAIN in WorkerStaking and be hired on the
@@ -63,6 +64,8 @@ contract DeployMainnet is Script {
         uint16 slashBps;
         uint128 bond;
         uint64 decideWithin;
+        /// The agent key that may veto and pause through the guardian gate; the Safe keeps every guardian power.
+        address watcher;
     }
 
     struct Deployment {
@@ -73,6 +76,7 @@ contract DeployMainnet is Script {
         WorkerStaking staking;
         TaskBoard board;
         ProposalBonds bonds;
+        GuardianGate gate;
     }
 
     function run() external returns (Deployment memory d) {
@@ -97,6 +101,7 @@ contract DeployMainnet is Script {
         console2.log("TaskBoard", address(d.board));
         console2.log("WorkerStaking", address(d.staking));
         console2.log("ProposalBonds", address(d.bonds));
+        console2.log("GuardianGate", address(d.gate));
     }
 
     function _config() internal view returns (Config memory c) {
@@ -111,6 +116,7 @@ contract DeployMainnet is Script {
         c.slashBps = SafeCast.toUint16(vm.envOr("SLASH_BPS", uint256(2_000)));
         c.bond = SafeCast.toUint128(vm.envOr("BOND", uint256(250_000)) * 1e18);
         c.decideWithin = SafeCast.toUint64(vm.envOr("BOND_DECIDE_WITHIN", uint256(7 days)));
+        c.watcher = vm.envAddress("WATCHER");
         // Every USDG amount below is in 6-decimal units, every $BRAIN amount in 18.
         require(address(c.usdg).code.length > 0, "USDG has no code on this chain");
         require(IERC20Metadata(address(c.usdg)).decimals() == 6, "USDG is not a 6-decimal token");
@@ -164,7 +170,7 @@ contract DeployMainnet is Script {
             c.decideWithin
         );
 
-        d.staking.setSlasher(address(d.board));
+        d.staking.setSlasher(address(d.board), true);
         d.board.setFee(300, c.feeRecipient);
         d.registry.setModel(keccak256("claude"), c.workers[0], 0.4e6, true);
         d.registry.setModel(keccak256("gpt"), c.workers[1], 0.35e6, true);
@@ -177,6 +183,9 @@ contract DeployMainnet is Script {
         // so the admin timelock owns both contracts: the Safe changes them with 48 hours' notice.
         d.staking.setOwner(address(d.admin));
         d.executor.bindBoard(d.board);
+        // The guardian seat stays with the deployer until the admin hands it to the gate, after bindBoard.
+        d.gate =
+            new GuardianGate(c.safe, IGuardedExecutor(address(d.executor)), IGuardedBoard(address(d.board)), c.watcher);
     }
 
     /// @dev The set is wired as intended, or the run fails before anyone points a service at it.
@@ -195,11 +204,16 @@ contract DeployMainnet is Script {
         );
         require(d.board.feeBps() == 300 && d.board.feeRouter() == c.feeRecipient, "the fee is mis-set");
         require(d.board.staking() == d.staking, "the board hires from another staking contract");
-        require(d.staking.slasher() == address(d.board), "the board cannot slash or hold stakes");
+        require(d.staking.slashers(address(d.board)), "the board cannot slash or hold stakes");
         require(
             d.staking.token() == c.brainToken && d.bonds.token() == c.brainToken, "staking or bonds take another token"
         );
         require(d.bonds.bond() == c.bond, "the proposal bond is mis-set");
+        require(d.gate.safe() == c.safe && d.gate.watcher() == c.watcher, "the gate is mis-wired");
+        require(
+            d.executor.guardian() == deployer && d.board.guardian() == deployer,
+            "the deployer does not hold the guardian seat"
+        );
         require(admin.hasRole(admin.EXECUTOR_ROLE(), c.safe), "the Safe cannot execute through the admin");
         require(
             !admin.hasRole(admin.PROPOSER_ROLE(), deployer) && !admin.hasRole(admin.EXECUTOR_ROLE(), deployer),

@@ -74,7 +74,7 @@ contract FlywheelTest is Test {
             guardian,
             TaskBoard.Config(7_000, 7_000, 7_000, 1 hours, 7 days, 6 hours, 1 hours, 6 hours, 1e6)
         );
-        staking.setSlasher(address(board));
+        staking.setSlasher(address(board), true);
         router = new FeeRouter(IERC20(address(usdg)), address(executor), address(this), brain, 5_000);
         board.setFee(300, address(router));
         router.setFloorRate((1e12 * 1e18 * 95) / 100);
@@ -393,13 +393,73 @@ contract FlywheelTest is Test {
         assertEq(brainToken.balanceOf(agent), 100e18);
     }
 
-    function test_aDecisionSettlesOneProposal() public {
+    function test_aCallHasOneOpenProposalAndADecisionSettlesIt() public {
         (uint256 first, bytes memory data) = _propose();
-        (uint256 second,) = _propose();
+        brainToken.transfer(agent, 100e18);
+        vm.startPrank(agent);
+        brainToken.approve(address(bonds), 100e18);
+        vm.expectRevert(abi.encodeWithSelector(ProposalBonds.AlreadyProposed.selector, first));
+        bonds.propose(address(board), data, "ipfs://proposal");
+        vm.stopPrank();
         uint256 d = _decide(DecisionLog.Kind.Change, executor.changeSubject(address(board), data), bytes32(0), 9_000);
         bonds.settle(first, d);
-        vm.expectRevert(ProposalBonds.DecisionUsed.selector);
-        bonds.settle(second, d);
+        vm.expectRevert(ProposalBonds.BadState.selector);
+        bonds.settle(first, d);
+        (uint256 second,) = _propose();
+        assertEq(bonds.openProposal(executor.changeSubject(address(board), data)), second);
+    }
+
+    /// 3.3.0 let a proposer expire a bond after the window even though Jev had decided "keep" in time.
+    function test_aDecisionInTheWindowCannotBeDodgedByExpiring() public {
+        (uint256 id, bytes memory data) = _propose();
+        uint256 keep = _decide(DecisionLog.Kind.Change, executor.changeSubject(address(board), data), bytes32(0), 9_000);
+        vm.warp(block.timestamp + 7 days + 1);
+        vm.expectRevert(ProposalBonds.Decided.selector);
+        bonds.expire(id);
+        bonds.settle(id, keep);
+        assertEq(brainToken.balanceOf(BURN), 100e18);
+    }
+
+    function test_aDecisionAfterTheWindowStillLetsTheProposerExpire() public {
+        (uint256 id, bytes memory data) = _propose();
+        vm.warp(block.timestamp + 7 days + 1);
+        _decide(DecisionLog.Kind.Change, executor.changeSubject(address(board), data), bytes32(0), 9_000);
+        bonds.expire(id);
+        assertEq(brainToken.balanceOf(agent), 100e18);
+    }
+
+    /// 3.3.0 read the window and the bar live, so an admin change moved open proposals.
+    function test_anOpenProposalKeepsItsWindowAndBar() public {
+        (uint256 id, bytes memory data) = _propose();
+        uint64 created = uint64(block.timestamp);
+        assertEq(bonds.get(id).deadline, created + 7 days);
+        assertEq(bonds.get(id).thresholdBps, 8_500);
+        bonds.setConfig(100e18, 1 days);
+        vm.prank(address(executor));
+        executor.setParameters(9_500, 2 hours, 5, 10e6, 20e6);
+        vm.warp(created + 2 days);
+        vm.expectRevert(ProposalBonds.TooEarly.selector);
+        bonds.expire(id);
+        uint256 adopt = _decide(DecisionLog.Kind.Change, executor.changeSubject(address(board), data), YES, 9_000);
+        bonds.settle(id, adopt);
+        assertEq(brainToken.balanceOf(agent), 100e18);
+    }
+
+    /// 3.3.0 checked the veto only when queueing, so a copy queued earlier still ran.
+    function test_aVetoBlocksEveryQueuedCopyOfTheCall() public {
+        bytes memory data = abi.encodeCall(DecisionExecutor.setParameters, (9_000, 2 hours, 5, 10e6, 20e6));
+        bytes32 subject = executor.changeSubject(address(executor), data);
+        uint256 first = _decide(DecisionLog.Kind.Change, subject, YES, 9_000);
+        vm.prank(brain);
+        uint256 changeA = executor.queue(first, address(executor), data);
+        uint256 second = _decide(DecisionLog.Kind.Change, subject, YES, 9_000);
+        vm.prank(brain);
+        uint256 changeB = executor.queue(second, address(executor), data);
+        vm.prank(guardian);
+        executor.veto(changeA);
+        vm.warp(block.timestamp + 2 hours + 1);
+        vm.expectRevert(DecisionExecutor.VetoedCall.selector);
+        executor.execute(changeB);
     }
 
     function test_decisionMustBeAboutTheProposal() public {

@@ -130,7 +130,7 @@ contract ExecutorHandler is Test {
                 staleBrain || _decisionQueued[decisionId] || !_allowed(target, data)
                     || !_adopted(decisionId, target, data, threshold)
             ) badQueue++;
-            if (_callVetoed[keccak256(abi.encode(target, data))]) requeuedAfterVeto++;
+            if (_callVetoed[keccak256(abi.encode(target, bytes4(data)))]) requeuedAfterVeto++;
             _decisionQueued[decisionId] = true;
             _eta[id] = block.timestamp + lock;
             if (target == address(executor) && bytes4(data) == DecisionExecutor.transfer.selector) {
@@ -232,7 +232,7 @@ contract ExecutorHandler is Test {
         try executor.veto(id) {
             vetoed[id] = true;
             DecisionExecutor.Change memory c = executor.getChange(id);
-            _callVetoed[keccak256(abi.encode(c.target, c.data))] = true;
+            _callVetoed[keccak256(abi.encode(c.target, bytes4(c.data)))] = true;
         } catch {}
     }
 

@@ -132,7 +132,8 @@ contract ProposalBondHandler is Test {
         else if (pick % 3 == 1 && history.length > 0) decisionId = history[decisionSeed % history.length];
         else decisionId = bound(decisionSeed, 0, decisionLog.count() + 1);
 
-        uint16 threshold = executor.changeThresholdBps();
+        // The bar is the one in force when the call was proposed.
+        uint16 threshold = p.thresholdBps;
         uint256 proposerBefore = token.balanceOf(p.proposer);
         uint256 burnBefore = token.balanceOf(bonds.BURN());
         try bonds.settle(id, decisionId) {
@@ -168,11 +169,14 @@ contract ProposalBondHandler is Test {
     function expire(uint256 seed) external {
         if (bonds.count() == 0) return;
         (uint256 id, ProposalBonds.Proposal memory p) = _proposal(seed);
-        uint256 window = bonds.decideWithin();
         uint256 before = token.balanceOf(p.proposer);
+        uint256 latest = decisionLog.latestOf(p.subject, DecisionLog.Kind.Change);
+        uint64 decidedAt = latest == 0 ? 0 : decisionLog.get(latest).recordedAt;
+        // A proposal Jev decided inside its window is settled on that decision, never expired.
+        bool decidedInTime = latest != 0 && decidedAt >= p.createdAt && decidedAt <= p.deadline;
         try bonds.expire(id) {
             if (
-                block.timestamp <= uint256(p.createdAt) + window || bonds.get(id).state != ProposalBonds.State.Returned
+                block.timestamp <= p.deadline || decidedInTime || bonds.get(id).state != ProposalBonds.State.Returned
                     || token.balanceOf(p.proposer) - before != p.bond
             ) offPath++;
             _closed(id, p.bond, false);

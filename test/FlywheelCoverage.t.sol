@@ -17,7 +17,7 @@ contract WorkerStakingCoverage is FlywheelTest {
     event Slashed(address indexed account, uint256 amount);
     event PriceSet(address indexed account, uint128 price);
     event ConfigSet(uint128 minStake, uint64 cooldown, uint16 slashBps);
-    event SlasherSet(address indexed slasher);
+    event SlasherSet(address indexed slasher, bool allowed);
 
     function _fund(uint256 amount) internal {
         brainToken.transfer(agent, amount);
@@ -161,7 +161,7 @@ contract WorkerStakingCoverage is FlywheelTest {
     function test_adminIsOwnerOnlyAndAnnounced() public {
         vm.startPrank(agent);
         vm.expectRevert(WorkerStaking.NotOwner.selector);
-        staking.setSlasher(agent);
+        staking.setSlasher(agent, true);
         vm.expectRevert(WorkerStaking.NotOwner.selector);
         staking.setConfig(1, 1, 1);
         vm.expectRevert(WorkerStaking.NotOwner.selector);
@@ -169,10 +169,10 @@ contract WorkerStakingCoverage is FlywheelTest {
         vm.stopPrank();
 
         vm.expectRevert(WorkerStaking.ZeroAddress.selector);
-        staking.setSlasher(address(0));
+        staking.setSlasher(address(0), true);
         vm.expectEmit(true, false, false, false, address(staking));
-        emit SlasherSet(agent);
-        staking.setSlasher(agent);
+        emit SlasherSet(agent, true);
+        staking.setSlasher(agent, true);
 
         vm.expectEmit(false, false, false, true, address(staking));
         emit ConfigSet(10, 20, 30);
@@ -337,7 +337,9 @@ contract ProposalBondsCoverage is FlywheelTest {
         vm.expectEmit(true, true, true, true, address(bonds));
         emit Proposed(1, agent, address(board), data, 100e18, "uri");
         assertEq(bonds.propose(address(board), data, "uri"), 1);
-        assertEq(bonds.propose(address(board), data, "uri"), 2);
+        vm.expectRevert(abi.encodeWithSelector(ProposalBonds.AlreadyProposed.selector, 1));
+        bonds.propose(address(board), data, "uri");
+        assertEq(bonds.propose(address(board), abi.encodeWithSignature("setPaused(bool)", false), "uri"), 2);
         vm.expectRevert(ProposalBonds.ZeroAddress.selector);
         bonds.propose(address(0), data, "uri");
         vm.stopPrank();
