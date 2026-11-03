@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- `TaskBoard` appeals (set 3.5.0): the side a ruling goes against may appeal it once, inside the appeal window and with a bond fixed when the task was posted, and Jev rules again. A confident ruling the other way settles the task the other way and returns the bond; a confident ruling the same way keeps the bond for the fee recipient; otherwise the ruling stands and the bond returns. `appeal`, `ruleAppeal`, `appealOf`, `appealBond`, `appealConfig` and `setAppealConfig`; statuses `Ruled` and `Appealed` are appended after `Refunded`, so earlier readers keep their numbers. A staked worker that disputed is slashed only when the final ruling goes against it.
+- Deployed on testnet from block 2288 (1-hour appeal window, 25% bond), with 3.4.1 under `retired` in `deployments/testnet.json`. Deploy scripts set the appeal terms: 24 hours and 25% on mainnet.
 - `TaskBoard.raiseGradeBar(id, bps)`: the poster raises its own task's grade bar while the task is open; the ruling bar rises with it, and nothing lowers either.
 - Deploy scripts default the grade and ruling bars to 80%.
 - `brainchain-verify` 0.2.0 checks grades and rulings graded twice (the lower of Jev's and the second grader's probability of paying) and refunds for failed brief checks.
