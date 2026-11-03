@@ -132,6 +132,7 @@ contract DeployTestnet is Script {
     function _wire(Deployed memory d, address deployer) private {
         d.staking.setSlasher(address(d.board), true);
         d.board.setFee(300, address(d.router));
+        d.board.setAppealConfig(TaskBoard.AppealConfig({window: 1 hours, bondBps: 2_500}));
         d.router.setBrain(IERC20(address(d.brainToken)));
         d.router.setAdapter(d.swap);
         // 5% under the swap's fixed rate, scaled by 1e18.

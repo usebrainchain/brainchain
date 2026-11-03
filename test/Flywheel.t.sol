@@ -327,6 +327,52 @@ contract FlywheelTest is Test {
         assertEq(staking.held(agent), 0);
     }
 
+    /// A staked worker that disputed, lost the ruling and appealed: returns the task, ruled again with `answer`.
+    function _appealLostDispute(bytes32 answer) internal returns (uint256 id) {
+        board.setAppealConfig(TaskBoard.AppealConfig({window: 1 days, bondBps: 2_500}));
+        _stake(1_000e18);
+        usdg.mint(agent, 10e6);
+        vm.prank(agent);
+        usdg.approve(address(board), type(uint256).max);
+        id = _post();
+        uint256 d = _decide(DecisionLog.Kind.Hire, board.subjectOf(id), staking.idOf(agent), 9_000);
+        vm.prank(brain);
+        board.hire(id, d);
+        vm.prank(agent);
+        board.submit(id, 0, "");
+        d = _decide(DecisionLog.Kind.Grade, board.subjectOf(id), bytes32(0), 9_000);
+        vm.prank(brain);
+        board.grade(id, d);
+        vm.prank(agent);
+        board.dispute(id);
+        d = _decide(DecisionLog.Kind.Ruling, board.subjectOf(id), bytes32(0), 9_000);
+        vm.prank(brain);
+        board.rule(id, d);
+        assertEq(staking.get(agent).staked, 1_000e18, "no slash before the ruling is final");
+        vm.prank(agent);
+        board.appeal(id);
+        vm.warp(block.timestamp + 1);
+        d = _decide(DecisionLog.Kind.Ruling, board.subjectOf(id), answer, 9_000);
+        vm.prank(brain);
+        board.ruleAppeal(id, d);
+    }
+
+    function test_aWorkerThatWinsItsAppealIsPaidAndKeepsItsStake() public {
+        _appealLostDispute(YES);
+        assertEq(staking.get(agent).staked, 1_000e18);
+        assertEq(usdg.balanceOf(agent), 10e6 + BOUNTY - 0.3e6);
+        assertEq(staking.held(agent), 0);
+    }
+
+    function test_aWorkerThatLosesItsAppealIsSlashedAndLosesTheBond() public {
+        _appealLostDispute(bytes32(0));
+        assertEq(staking.get(agent).staked, 800e18);
+        assertEq(usdg.balanceOf(agent), 10e6 - BOUNTY / 4);
+        assertEq(usdg.balanceOf(address(router)), BOUNTY / 4);
+        assertEq(usdg.balanceOf(poster), 1_000e6);
+        assertEq(staking.held(agent), 0);
+    }
+
     function test_unstakeWaitsForTheCooldown() public {
         _stake(600e18);
         vm.startPrank(agent);
