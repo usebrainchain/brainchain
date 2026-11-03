@@ -72,7 +72,7 @@ Each line is one check. `ok` passed and `FAIL` means the record and the chain di
 | `second-grader` | On a decision graded twice: the second grader's probability of paying recomputes from its probabilities, and the receipt id it carries is shown. |
 | `brief` | The question quotes the task's brief, fetched from its `Posted` event and checked against `briefHash`. |
 | `levels` | A grade or ruling used the brief's own quality levels and pass level. |
-| `threshold` | The threshold fixed when the task was posted, applied as `TaskBoard.hire`, `grade` and `rule` do, gives the outcome the board emitted. A change is queued only on a yes. |
+| `threshold` | The threshold fixed when the task was posted, applied as `TaskBoard.hire`, `grade`, `rule` and `ruleAppeal` do, gives the outcome the board emitted. A ruling on appeal (set 3.5.0 and later) is checked against the board's `AppealRuled` event. A change is queued only on a yes. |
 | `change-subject`, `change-call` | A queued change is the call the decision names and the call Jev was shown. |
 
 Some checks skip by design:

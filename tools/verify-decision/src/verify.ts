@@ -582,18 +582,32 @@ async function checkTaskThreshold(ctx: Context, c: Checks, id: bigint, task: big
   }
 
   const confident = bps >= terms.ruleThresholdBps;
-  const expected = `${rule(terms.ruleThresholdBps, "ruling")}, so ${confident ? `the ruling decides: ${decision.answer === YES ? "pay the model" : "refund the poster"}` : "the grade stands"}`;
+  const pays = decision.answer === YES;
+  // A second ruling, after an appeal (set 3.5.0 and later), is applied by ruleAppeal.
+  const [appealRuled] = await client.getContractEvents({ ...filter, eventName: "AppealRuled" });
+  if (appealRuled) {
+    const expected = `${rule(terms.ruleThresholdBps, "ruling")}, so on appeal ${confident ? `the ruling decides: ${pays ? "pay the model" : "refund the poster"}` : "the ruling under appeal stands"}`;
+    const outcome = `${appealRuled.args.paid ? "the model was paid" : "the poster was refunded"}${appealRuled.args.overturned ? ", overturning the ruling under appeal" : ""}`;
+    c.check(
+      "threshold",
+      appealRuled.args.confident === confident && (!confident || appealRuled.args.paid === pays),
+      `${expected}; ${outcome}`,
+      `${expected}, but the board ${appealRuled.args.confident ? "applied the ruling" : "kept the ruling under appeal"} and ${outcome}`,
+    );
+    return;
+  }
+  const expected = `${rule(terms.ruleThresholdBps, "ruling")}, so ${confident ? `the ruling decides: ${pays ? "pay the model" : "refund the poster"}` : "the grade stands"}`;
   const [ruled] = await client.getContractEvents({ ...filter, eventName: "Ruled" });
   if (!ruled) {
     c.add("threshold", "skip", `${expected}; this decision was not applied, and the ruling window closed with the grade standing`);
     return;
   }
-  const outcome = ruled.args.paid ? "the model was paid" : "the poster was refunded";
+  const outcome = ruled.args.paid ? "the ruling pays the model" : "the ruling refunds the poster";
   c.check(
     "threshold",
-    ruled.args.confident === confident && (!confident || ruled.args.paid === (decision.answer === YES)),
+    ruled.args.confident === confident && (!confident || ruled.args.paid === pays),
     `${expected}; ${outcome}`,
-    `${expected}, but the board ${ruled.args.confident ? "applied the ruling" : "kept the grade"} and ${outcome}`,
+    `${expected}, but the board ${ruled.args.confident ? "applied the ruling" : "kept the grade"} and ${outcome.replace("the ruling ", "")}`,
   );
 }
 
