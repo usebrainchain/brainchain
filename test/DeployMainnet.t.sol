@@ -60,6 +60,9 @@ contract DeployMainnetTest is Test {
         assertEq(d.bonds.bond(), 250_000e18);
         assertEq(d.bonds.decideWithin(), 7 days);
         assertEq(d.board.feeRouter(), feeRecipient);
+        (uint64 appealWindow, uint16 appealBondBps) = d.board.appealConfig();
+        assertEq(appealWindow, 24 hours);
+        assertEq(appealBondBps, 2_500);
 
         address worker = makeAddr("worker");
         brainToken.transfer(worker, 1_000_000e18);

@@ -14,7 +14,8 @@ import {WorkerStaking} from "./flywheel/WorkerStaking.sol";
 /// threshold never moves funds toward a model, and every path that stalls (no
 /// hire, no delivery, no grade) ends in a refund to the poster. A task settles
 /// under the terms in force when it was posted, and pays the account that
-/// submitted the work.
+/// submitted the work. The side a ruling goes against may appeal it once, with
+/// a bond, for a second ruling by Jev on the full record.
 contract TaskBoard is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -26,7 +27,11 @@ contract TaskBoard is ReentrancyGuard {
         Graded,
         Disputed,
         Paid,
-        Refunded
+        Refunded,
+        /// A ruling stands and settles once its appeal window closes unappealed.
+        Ruled,
+        /// The side the ruling went against appealed; Jev rules again.
+        Appealed
     }
 
     enum RefundReason {
@@ -65,6 +70,27 @@ contract TaskBoard is ReentrancyGuard {
         uint64 ruleWindow;
     }
 
+    /// @notice A task's appeal terms, fixed when it was posted, and its ruling
+    /// once there is one.
+    struct Appeal {
+        /// How long after a ruling the losing side may appeal; zero settles at the ruling.
+        uint64 window;
+        /// The bond, as a share of the bounty.
+        uint16 bondBps;
+        uint64 ruledAt;
+        /// What the standing ruling decides, and whether it was at or above the ruling threshold.
+        bool pays;
+        bool confident;
+        address appellant;
+        uint128 bond;
+        uint64 appealedAt;
+    }
+
+    struct AppealConfig {
+        uint64 window;
+        uint16 bondBps;
+    }
+
     struct Config {
         uint16 hireThresholdBps;
         uint16 gradeThresholdBps;
@@ -98,6 +124,7 @@ contract TaskBoard is ReentrancyGuard {
     error BadFee();
     error NotPoster();
     error BadThreshold();
+    error NotAppellant();
 
     event Posted(
         uint256 indexed id, address indexed poster, uint128 bounty, uint64 deadline, bytes32 briefHash, string briefURI
@@ -113,6 +140,11 @@ contract TaskBoard is ReentrancyGuard {
     event BountyPaid(uint256 indexed id, bytes32 indexed model, address indexed account, uint128 bounty, uint128 fee);
     event BountyRefunded(uint256 indexed id, address indexed poster, uint128 amount, RefundReason reason);
     event FeeTaken(uint256 indexed id, address indexed recipient, uint128 fee);
+    event Appealed(uint256 indexed id, address indexed appellant, uint128 bond);
+    /// @param paid What settles the task. @param overturned True when Jev confidently decided against the standing ruling.
+    event AppealRuled(uint256 indexed id, uint256 indexed decisionId, bool paid, bool confident, bool overturned);
+    event AppealBondSettled(uint256 indexed id, address indexed to, uint128 bond);
+    event AppealConfigSet(AppealConfig config);
     event ConfigSet(Config config);
     event FeeSet(uint16 feeBps, address feeRouter);
     event PausedSet(bool paused);
@@ -140,9 +172,12 @@ contract TaskBoard is ReentrancyGuard {
     address public guardian;
     bool public paused;
     Config public config;
+    /// @notice Appeal terms for tasks posted from now on. Zero window: rulings settle at once.
+    AppealConfig public appealConfig;
 
     uint256 public count;
     mapping(uint256 => Task) private _tasks;
+    mapping(uint256 => Appeal) private _appeals;
     mapping(uint256 => bool) public decisionUsed;
     /// @notice Staked workers governance has approved for hire. Staking alone
     /// is not enough: anyone can stake, and without it a compromised brain key
@@ -208,6 +243,11 @@ contract TaskBoard is ReentrancyGuard {
         task.gradeWindow = c.gradeWindow;
         task.disputeWindow = c.disputeWindow;
         task.ruleWindow = c.ruleWindow;
+        AppealConfig memory a = appealConfig;
+        if (a.window != 0) {
+            _appeals[id].window = a.window;
+            _appeals[id].bondBps = a.bondBps;
+        }
 
         uint256 before = token.balanceOf(address(this));
         token.safeTransferFrom(msg.sender, address(this), bounty);
@@ -301,7 +341,8 @@ contract TaskBoard is ReentrancyGuard {
 
     /// @notice Applies a Ruling decision recorded after the dispute. A confident
     /// ruling decides; below threshold the grade stands, so a dispute alone can
-    /// never overturn a grade.
+    /// never overturn a grade. Under appeal terms the ruling settles when its
+    /// appeal window closes, unless the side it went against appeals.
     function rule(uint256 id, uint256 decisionId) external nonReentrant {
         if (paused) revert IsPaused();
         Task storage task = _tasks[id];
@@ -312,11 +353,59 @@ contract TaskBoard is ReentrancyGuard {
         bool confident = d.confidenceBps >= task.ruleThresholdBps;
         bool pay = confident ? d.answer == YES : task.accepted;
         emit Ruled(id, decisionId, pay, confident);
-        _settle(id, task, pay, confident ? RefundReason.RuledForPoster : RefundReason.Rejected);
-        // A staked worker that disputes and loses forfeits part of its stake.
-        if (!pay && task.disputedByModel && _isStaked(task.model)) {
-            staking.slash(address(uint160(uint256(task.model))));
+        Appeal storage a = _appeals[id];
+        // A bond that rounds to nothing would make appeals free, so such a task settles now.
+        if (a.window == 0 || _bond(task, a) == 0) {
+            _settleRuling(id, task, pay, confident);
+            return;
         }
+        a.ruledAt = uint64(block.timestamp);
+        a.pays = pay;
+        a.confident = confident;
+        task.status = Status.Ruled;
+    }
+
+    /// @notice The side the ruling went against (the poster when it pays, the
+    /// account that delivered when it refunds) may appeal once, inside the
+    /// appeal window, by posting the bond.
+    function appeal(uint256 id) external nonReentrant {
+        Task storage task = _tasks[id];
+        Appeal storage a = _appeals[id];
+        if (task.status != Status.Ruled) revert BadStatus();
+        if (msg.sender != (a.pays ? task.poster : task.payee)) revert NotAppellant();
+        if (block.timestamp > uint256(a.ruledAt) + a.window) revert TooLate();
+
+        uint128 bond = _bond(task, a);
+        a.appellant = msg.sender;
+        a.bond = bond;
+        a.appealedAt = uint64(block.timestamp);
+        task.status = Status.Appealed;
+
+        uint256 before = token.balanceOf(address(this));
+        token.safeTransferFrom(msg.sender, address(this), bond);
+        if (token.balanceOf(address(this)) - before != bond) revert TransferMismatch();
+        emit Appealed(id, msg.sender, bond);
+    }
+
+    /// @notice Applies the second Ruling, recorded after the appeal, and settles
+    /// the task. A confident ruling that differs from the standing one decides
+    /// and returns the bond; a confident one that agrees keeps the bond, which
+    /// paid for the second look; below threshold the standing ruling settles and
+    /// the bond returns.
+    function ruleAppeal(uint256 id, uint256 decisionId) external nonReentrant {
+        if (paused) revert IsPaused();
+        Task storage task = _tasks[id];
+        Appeal storage a = _appeals[id];
+        if (task.status != Status.Appealed) revert BadStatus();
+        if (block.timestamp > uint256(a.appealedAt) + task.ruleWindow) revert TooLate();
+        DecisionLog.Decision memory d = _consume(decisionId, DecisionLog.Kind.Ruling, id, a.appealedAt);
+
+        bool confident = d.confidenceBps >= task.ruleThresholdBps;
+        bool overturned = confident && (d.answer == YES) != a.pays;
+        bool pay = overturned ? !a.pays : a.pays;
+        emit AppealRuled(id, decisionId, pay, confident, overturned);
+        _settleBond(id, task, a, confident && !overturned);
+        _settleRuling(id, task, pay, confident || a.confident);
     }
 
     /// @notice Settles a task whose next step has run out of time. Anyone can
@@ -339,9 +428,42 @@ contract TaskBoard is ReentrancyGuard {
         } else if (status == Status.Disputed) {
             if (block.timestamp <= uint256(task.disputedAt) + task.ruleWindow) revert TooEarly();
             _settle(id, task, task.accepted, RefundReason.Rejected);
+        } else if (status == Status.Ruled) {
+            Appeal storage a = _appeals[id];
+            if (block.timestamp <= uint256(a.ruledAt) + a.window) revert TooEarly();
+            _settleRuling(id, task, a.pays, a.confident);
+        } else if (status == Status.Appealed) {
+            // No second ruling in time: the standing ruling settles and the appellant gets its bond back.
+            Appeal storage a = _appeals[id];
+            if (block.timestamp <= uint256(a.appealedAt) + task.ruleWindow) revert TooEarly();
+            _settleBond(id, task, a, false);
+            _settleRuling(id, task, a.pays, a.confident);
         } else {
             revert BadStatus();
         }
+    }
+
+    /// @dev A staked worker that disputes and loses the final ruling forfeits part of its stake.
+    function _settleRuling(uint256 id, Task storage task, bool pay, bool confident) private {
+        _settle(id, task, pay, confident ? RefundReason.RuledForPoster : RefundReason.Rejected);
+        if (!pay && task.disputedByModel && _isStaked(task.model)) {
+            staking.slash(address(uint160(uint256(task.model))));
+        }
+    }
+
+    /// @dev A kept bond goes to the task's fee recipient, or to the other side when the task has none.
+    function _settleBond(uint256 id, Task storage task, Appeal storage a, bool keep) private {
+        address to = a.appellant;
+        if (keep) {
+            to = task.feeRecipient != address(0) ? task.feeRecipient : (to == task.poster ? task.payee : task.poster);
+        }
+        uint128 bond = a.bond;
+        token.safeTransfer(to, bond);
+        emit AppealBondSettled(id, to, bond);
+    }
+
+    function _bond(Task storage task, Appeal storage a) private view returns (uint128) {
+        return uint128((uint256(task.bounty) * a.bondBps) / 10_000);
     }
 
     function _settle(uint256 id, Task storage task, bool pay, RefundReason reason) private {
@@ -398,9 +520,29 @@ contract TaskBoard is ReentrancyGuard {
         return _tasks[id];
     }
 
+    function appealOf(uint256 id) external view returns (Appeal memory) {
+        return _appeals[id];
+    }
+
+    /// @notice The bond an appeal of task `id` takes, under the terms it was posted with.
+    function appealBond(uint256 id) external view returns (uint128) {
+        return _bond(_tasks[id], _appeals[id]);
+    }
+
     function setConfig(Config calldata config_) external {
         if (msg.sender != owner) revert NotOwner();
         _setConfig(config_);
+    }
+
+    /// @notice Sets the appeal window and bond for tasks posted from now on. A
+    /// zero window turns appeals off; otherwise the bond is between 1 bp and the bounty.
+    function setAppealConfig(AppealConfig calldata config_) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (config_.window > MAX_WINDOW || config_.bondBps > 10_000 || (config_.window != 0 && config_.bondBps == 0)) {
+            revert BadConfig();
+        }
+        appealConfig = config_;
+        emit AppealConfigSet(config_);
     }
 
     /// @notice The guardian can stop new posts and every decision the brain

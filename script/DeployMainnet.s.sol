@@ -172,6 +172,7 @@ contract DeployMainnet is Script {
 
         d.staking.setSlasher(address(d.board), true);
         d.board.setFee(300, c.feeRecipient);
+        d.board.setAppealConfig(TaskBoard.AppealConfig({window: 24 hours, bondBps: 2_500}));
         d.registry.setModel(keccak256("claude"), c.workers[0], 0.4e6, true);
         d.registry.setModel(keccak256("gpt"), c.workers[1], 0.35e6, true);
         d.registry.setModel(keccak256("gemini"), c.workers[2], 0.25e6, true);
@@ -203,6 +204,8 @@ contract DeployMainnet is Script {
             "the executor is bound to another board or registry"
         );
         require(d.board.feeBps() == 300 && d.board.feeRouter() == c.feeRecipient, "the fee is mis-set");
+        (uint64 appealWindow, uint16 appealBondBps) = d.board.appealConfig();
+        require(appealWindow == 24 hours && appealBondBps == 2_500, "the appeal terms are mis-set");
         require(d.board.staking() == d.staking, "the board hires from another staking contract");
         require(d.staking.slashers(address(d.board)), "the board cannot slash or hold stakes");
         require(

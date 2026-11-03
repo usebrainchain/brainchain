@@ -24,8 +24,13 @@ contract TaskBoardHandler is Test {
 
     uint256[] public ids;
     uint256 public openSum;
+    uint256 public bondSum;
+    uint256 public appealsOpened;
+    uint256 public appealsRuled;
     uint256 public paidWithoutAcceptedGrade;
     mapping(uint256 => bool) public everAccepted;
+    /// A ruling, first or on appeal, decided to pay.
+    mapping(uint256 => bool) public ruledToPay;
 
     constructor(
         TaskBoard board_,
@@ -45,10 +50,24 @@ contract TaskBoardHandler is Test {
         usdg.mint(poster, type(uint128).max);
         vm.prank(poster);
         usdg.approve(address(board), type(uint256).max);
+        for (uint256 i; i < 2; ++i) {
+            usdg.mint(accounts_[i], type(uint128).max);
+            vm.prank(accounts_[i]);
+            usdg.approve(address(board), type(uint256).max);
+        }
     }
 
     function _pick(uint256 seed) private view returns (uint256) {
         return ids[seed % ids.length];
+    }
+
+    /// The first task from `seed` on in `status`, or zero: appeals need a task at the right step.
+    function _find(uint256 seed, TaskBoard.Status status) private view returns (uint256) {
+        for (uint256 i; i < ids.length; ++i) {
+            uint256 id = ids[(seed % ids.length + i) % ids.length];
+            if (board.get(id).status == status) return id;
+        }
+        return 0;
     }
 
     function _decide(DecisionLog.Kind kind, uint256 id, bytes32 answer, uint16 confidence) private returns (uint256) {
@@ -101,6 +120,17 @@ contract TaskBoardHandler is Test {
         if (board.get(id).accepted) everAccepted[id] = true;
     }
 
+    /// A task runs to its first ruling in one go, so appeals have rulings to work on.
+    function disputeAndRule(uint128 bounty, uint256 model, bool yes, bool asPoster, bool pay, uint16 confidence)
+        external
+    {
+        this.deliver(bounty, model, yes, 9_000);
+        uint256 id = ids[ids.length - 1];
+        vm.prank(asPoster ? poster : accounts[model % 2]);
+        board.dispute(id);
+        this.rule(ids.length - 1, pay, confidence);
+    }
+
     function grade(uint256 seed, bool yes, uint16 confidence) external {
         if (ids.length == 0) return;
         uint256 id = _pick(seed);
@@ -125,15 +155,46 @@ contract TaskBoardHandler is Test {
         uint256 d = _decide(DecisionLog.Kind.Ruling, id, pay ? YES : bytes32(0), uint16(bound(confidence, 0, 10_000)));
         vm.prank(brain);
         try board.rule(id, d) {
-            _afterSettle(id, true);
+            TaskBoard.Task memory task = board.get(id);
+            if (task.status == TaskBoard.Status.Ruled) ruledToPay[id] = board.appealOf(id).pays;
+            else ruledToPay[id] = task.status == TaskBoard.Status.Paid;
+            _afterSettle(id);
+        } catch {}
+    }
+
+    function appeal(uint256 seed) external {
+        if (ids.length == 0) return;
+        uint256 id = _find(seed, TaskBoard.Status.Ruled);
+        if (id == 0) return;
+        TaskBoard.Task memory task = board.get(id);
+        vm.prank(board.appealOf(id).pays ? poster : task.payee);
+        try board.appeal(id) {
+            bondSum += board.appealOf(id).bond;
+            appealsOpened += 1;
+        } catch {}
+    }
+
+    function ruleAppeal(uint256 seed, bool pay, uint16 confidence) external {
+        if (ids.length == 0) return;
+        uint256 id = _find(seed, TaskBoard.Status.Appealed);
+        if (id == 0) return;
+        uint256 d = _decide(DecisionLog.Kind.Ruling, id, pay ? YES : bytes32(0), uint16(bound(confidence, 0, 10_000)));
+        vm.prank(brain);
+        try board.ruleAppeal(id, d) {
+            bondSum -= board.appealOf(id).bond;
+            appealsRuled += 1;
+            ruledToPay[id] = board.get(id).status == TaskBoard.Status.Paid;
+            _afterSettle(id);
         } catch {}
     }
 
     function finalize(uint256 seed) external {
         if (ids.length == 0) return;
         uint256 id = _pick(seed);
+        bool appealed = board.get(id).status == TaskBoard.Status.Appealed;
         try board.finalize(id) {
-            _afterSettle(id, false);
+            if (appealed) bondSum -= board.appealOf(id).bond;
+            _afterSettle(id);
         } catch {}
     }
 
@@ -141,11 +202,14 @@ contract TaskBoardHandler is Test {
         vm.warp(block.timestamp + bound(seconds_, 1, 2 days));
     }
 
-    function _afterSettle(uint256 id, bool ruled) private {
+    function _afterSettle(uint256 id) private {
         TaskBoard.Task memory task = board.get(id);
+        if (task.status != TaskBoard.Status.Paid && task.status != TaskBoard.Status.Refunded) return;
         openSum -= task.bounty;
         // A payout needs an accepted grade, or a ruling (which has its own threshold).
-        if (task.status == TaskBoard.Status.Paid && !ruled && !everAccepted[id]) paidWithoutAcceptedGrade += 1;
+        if (task.status == TaskBoard.Status.Paid && !ruledToPay[id] && !everAccepted[id]) {
+            paidWithoutAcceptedGrade += 1;
+        }
     }
 }
 
@@ -182,12 +246,24 @@ contract TaskBoardInvariants is StdInvariant, Test {
                 minBounty: 1e6
             })
         );
+        board.setAppealConfig(TaskBoard.AppealConfig({window: 1 days, bondBps: 2_500}));
         handler = new TaskBoardHandler(board, decisionLog, usdg, brain, modelIds, accounts);
         targetContract(address(handler));
     }
 
-    function invariant_boardHoldsExactlyTheUnsettledBounties() public view {
-        assertEq(usdg.balanceOf(address(board)), handler.openSum());
+    function invariant_boardHoldsExactlyTheUnsettledBountiesAndBonds() public view {
+        assertEq(usdg.balanceOf(address(board)), handler.openSum() + handler.bondSum());
+    }
+
+    /// The handler reaches the appeal steps the invariants are meant to cover.
+    function test_handlerAppealsAndRulesAgain() public {
+        handler.disputeAndRule(5e6, 0, false, false, false, 9_000);
+        handler.appeal(0);
+        handler.ruleAppeal(0, true, 9_000);
+        assertEq(handler.appealsOpened(), 1);
+        assertEq(handler.appealsRuled(), 1);
+        invariant_boardHoldsExactlyTheUnsettledBountiesAndBonds();
+        invariant_noPayoutWithoutAnAcceptedGradeOrRuling();
     }
 
     function invariant_noPayoutWithoutAnAcceptedGradeOrRuling() public view {
