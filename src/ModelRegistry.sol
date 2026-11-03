@@ -13,6 +13,7 @@ contract ModelRegistry {
     error NotOwner();
     error ZeroAddress();
     error UnknownModel();
+    error AccountShapedId();
 
     event ModelSet(bytes32 indexed id, address indexed account, uint128 price, bool active);
     event OwnerSet(address indexed owner);
@@ -30,6 +31,8 @@ contract ModelRegistry {
     function setModel(bytes32 id, address account, uint128 price, bool active) external {
         if (msg.sender != owner) revert NotOwner();
         if (id == bytes32(0) || account == address(0)) revert ZeroAddress();
+        // Ids with the top 96 bits clear are staked workers' ids on the board.
+        if (uint256(id) >> 160 == 0) revert AccountShapedId();
         if (_models[id].account == address(0)) _ids.push(id);
         _models[id] = Model(account, price, active);
         emit ModelSet(id, account, price, active);

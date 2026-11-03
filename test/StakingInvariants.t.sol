@@ -287,7 +287,7 @@ contract StakingInvariants is StdInvariant, Test {
             TaskBoard.Config(1_500, 7_000, 7_000, 30 minutes, 3 days, 6 hours, 6 hours, 6 hours, 1e6)
         );
         vm.startPrank(admin);
-        staking.setSlasher(address(board));
+        staking.setSlasher(address(board), true);
         for (uint256 i; i < 3; i++) {
             board.setWorkerAllowed(workers[i], true);
         }

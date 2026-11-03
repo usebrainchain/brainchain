@@ -36,6 +36,7 @@ contract DeployMainnetTest is Test {
         vm.setEnv("WORKER_GEMINI", vm.toString(makeAddr("gemini")));
         vm.setEnv("WORKER_GROK", vm.toString(makeAddr("grok")));
         vm.setEnv("WORKER_DEEPSEEK", vm.toString(makeAddr("deepseek")));
+        vm.setEnv("WATCHER", vm.toString(makeAddr("watcher")));
 
         DeployMainnetHarness script = new DeployMainnetHarness();
         vm.setEnv("BRAIN_TOKEN", vm.toString(address(usdg)));
@@ -46,7 +47,7 @@ contract DeployMainnetTest is Test {
         DeployMainnet.Deployment memory d = script.deploy();
 
         assertEq(address(d.board.staking()), address(d.staking));
-        assertEq(d.staking.slasher(), address(d.board));
+        assertTrue(d.staking.slashers(address(d.board)));
         assertEq(d.staking.owner(), address(d.admin));
         assertEq(address(d.staking.token()), address(brainToken));
         assertEq(d.staking.minStake(), 1_000_000e18);
