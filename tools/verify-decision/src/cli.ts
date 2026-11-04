@@ -92,7 +92,7 @@ const outcome = (checks: Check[]): "mismatch" | "unverified" | "match" =>
 
 function verdict(failed: number, errors: number, skipped: number, many: boolean): string {
   if (failed > 0) return `Verdict: MISMATCH. ${failed} check${failed === 1 ? "" : "s"} failed; see the FAIL lines.`;
-  if (errors > 0) return "Verdict: UNVERIFIED. A record could not be fetched, so its checks did not run; see the ERROR lines and try again.";
+  if (errors > 0) return "Verdict: UNVERIFIED. A record could not be fetched, so its checks did not run; see the ERROR lines.";
   if (skipped > 0) return "Verdict: match. Every check that could run passed; the skip lines say what could not be checked.";
   return many
     ? "Verdict: match. The published records are exactly what the chain recorded, and the chain applied them as its contracts require."
