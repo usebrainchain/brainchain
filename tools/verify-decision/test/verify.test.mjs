@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { encodeAbiParameters, keccak256, toBytes, toHex } from "viem";
+import { createPublicClient, encodeAbiParameters, http, keccak256, toBytes, toHex } from "viem";
 
 import { canonicalStringify } from "../dist/canonical.js";
 import { clean, outcomeOf, verifyDecision } from "../dist/verify.js";
@@ -291,6 +291,17 @@ describe("briefs", () => {
     assert.equal(status(open, "brief"), "ok");
     assert.ok(hits.includes("/brief"));
 
+  });
+
+  it("take the --rpc rule from a real client's transport", async () => {
+    pages.set("/brief", { body: brief });
+    const { client: stub } = publicRecord(`${base}/brief`);
+    const real = (rpc) => Object.assign(createPublicClient({ transport: http(rpc) }), { readContract: stub.readContract, getContractEvents: stub.getContractEvents });
+    assert.equal(status(await verifyDecision({ client: real("http://127.0.0.1:1"), network, set, briefs: new Map() }, 1n), "brief"), "ok");
+    assert.equal(status(await verifyDecision({ client: real("http://localhost:1"), network, set, briefs: new Map() }, 1n), "brief"), "ok");
+    const remote = await verifyDecision({ client: real("https://rpc.usebrainchain.invalid"), network, set, briefs: new Map() }, 1n);
+    assert.equal(status(remote, "brief"), "skip");
+    assert.match(check(remote, "brief").message, /private address/);
   });
 
   it("refuses a private brief with a public RPC, by address and by name, and never connects", async () => {
