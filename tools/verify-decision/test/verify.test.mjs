@@ -314,6 +314,9 @@ describe("briefs", () => {
       assert.equal(status(report, "brief"), "skip", host);
       assert.match(check(report, "brief").message, /is on the private address/, host);
     }
+    // The same guard on the https path, which would otherwise fail later on the certificate.
+    client.brief = `https://localhost:${port}/brief`;
+    assert.match(check(await verifyDecision({ ...ctx, briefs: new Map() }, 1n), "brief").message, /localhost is on the private address/);
     assert.ok(!hits.includes("/brief"));
     client.brief = "file:///etc/passwd";
     assert.match(check(await verifyDecision({ ...ctx, briefs: new Map() }, 1n), "brief").message, /file: URIs are not supported/);

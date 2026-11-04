@@ -1,6 +1,6 @@
 import { lookup as dnsLookup, promises as dns, type LookupAddress } from "node:dns";
-import { request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
+import { Agent as HttpAgent, request as httpRequest } from "node:http";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { BlockList, isIP } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -246,6 +246,8 @@ function parseBrief(text: string | undefined): Brief {
 const ATTEMPT_MS = 15_000;
 // One slow try and most of another: a host cannot hold the tool longer, however slowly it sends.
 const FETCH_MS = 30_000;
+// A connection that stalls is given up on soon enough for all three tries to fit in FETCH_MS.
+const STALL_MS = 8_000;
 // A record holds a result of up to 100,000 bytes, quoted twice over, beside its brief and the graders' answers.
 const MAX_RECORD_BYTES = 4 * 1024 * 1024;
 // What a worker will read of a brief.
@@ -295,51 +297,54 @@ function allowsPrivate(client: PublicClient): Promise<boolean> {
   return known;
 }
 
-const privateAddress = (uri: string, address: string): Refused => new Refused(`${display(uri)} is on the private address ${address}, so it was not fetched`);
+const privateAddress = (where: string, address: string): Refused => new Refused(`${display(where)} is on the private address ${address}, so it was not fetched`);
 
 // Checked as the socket connects, so a name cannot pass here and then resolve somewhere else.
-function publicLookup(uri: string): (hostname: string, options: object, callback: (...args: unknown[]) => void) => void {
-  return (hostname, options, callback) => {
-    dnsLookup(hostname, { ...options, all: true }, (error, found: LookupAddress[]) => {
-      if (error) return callback(error);
-      const blocked = found.find((entry) => isPrivate(entry.address));
-      if (blocked) return callback(privateAddress(uri, blocked.address));
-      if ((options as { all?: boolean }).all) return callback(null, found);
-      return callback(null, found[0]?.address, found[0]?.family);
-    });
-  };
+function publicLookup(hostname: string, options: { all?: boolean }, callback: (...args: unknown[]) => void): void {
+  dnsLookup(hostname, { ...options, all: true }, (error, found: LookupAddress[]) => {
+    if (error) return callback(error);
+    const blocked = found.find((entry) => isPrivate(entry.address));
+    if (blocked) return callback(privateAddress(hostname, blocked.address));
+    if (options.all) return callback(null, found);
+    return callback(null, found[0]?.address, found[0]?.family);
+  });
+}
+
+// Connections are reused, as fetch does: new ones to a host are what stall.
+const agents = new Map<string, HttpAgent>();
+function agentFor(protocol: string, allowPrivate: boolean): HttpAgent {
+  const key = `${protocol}${allowPrivate}`;
+  let agent = agents.get(key);
+  if (!agent) {
+    const options = { keepAlive: true, ...(allowPrivate ? {} : { lookup: publicLookup as never }) };
+    agent = protocol === "https:" ? new HttpsAgent(options) : new HttpAgent(options);
+    agents.set(key, agent);
+  }
+  return agent;
 }
 
 function readOnce(uri: string, url: URL, wanted: Wanted, signal: AbortSignal): Promise<Fetched & { status: number }> {
   return new Promise((resolve, reject) => {
     const send = url.protocol === "https:" ? httpsRequest : httpRequest;
-    const request = send(
-      url,
-      {
-        signal,
-        // Redirects are not followed: the brain reads without following them, so the location on chain is the one read here too.
-        agent: false,
-        headers: { "user-agent": "brainchain-verify" },
-        ...(wanted.allowPrivate ? {} : { lookup: publicLookup(uri) as never }),
-      },
-      (response) => {
-        const chunks: Buffer[] = [];
-        let size = 0;
-        response.on("data", (chunk: Buffer) => {
-          size += chunk.length;
-          if (size > wanted.limit) request.destroy(new Refused(`${display(uri)} is larger than the ${Math.round(wanted.limit / 1024)} KB a ${wanted.what} may be, so it was not read`));
-          else chunks.push(chunk);
-        });
-        response.on("end", () =>
-          resolve({
-            status: response.statusCode ?? 0,
-            bytes: new Uint8Array(Buffer.concat(chunks)),
-            withheld: response.headers["x-brainchain-withheld"] === "result",
-          }),
-        );
-        response.on("error", reject);
-      },
-    );
+    // Redirects are not followed: the brain reads without following them, so the location on chain is the one read here too.
+    const request = send(url, { signal, agent: agentFor(url.protocol, wanted.allowPrivate), timeout: STALL_MS, headers: { "user-agent": "brainchain-verify" } }, (response) => {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      response.on("data", (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > wanted.limit) request.destroy(new Refused(`${display(uri)} is larger than the ${Math.round(wanted.limit / 1024)} KB a ${wanted.what} may be, so it was not read`));
+        else chunks.push(chunk);
+      });
+      response.on("end", () =>
+        resolve({
+          status: response.statusCode ?? 0,
+          bytes: new Uint8Array(Buffer.concat(chunks)),
+          withheld: response.headers["x-brainchain-withheld"] === "result",
+        }),
+      );
+      response.on("error", reject);
+    });
+    request.on("timeout", () => request.destroy(new Error(`${display(uri)} went ${STALL_MS / 1000} seconds without answering`)));
     request.on("error", reject);
     request.end();
   });
