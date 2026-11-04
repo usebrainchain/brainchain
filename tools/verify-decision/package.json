@@ -1,6 +1,6 @@
 {
   "name": "brainchain-verify",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Check a BrainChain decision against the chain: the published record, its hashes, its confidence and the thresholds the contracts applied.",
   "license": "MIT",
   "author": "BrainChain",

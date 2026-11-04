@@ -46,13 +46,13 @@ Decision 22 on BrainChain mainnet, contract set v3-1 (DecisionLog 0xbe8E68EbDEaf
   ok    the question quotes task 11's brief, as committed on chain
   ok    the levels Jev scored against are the brief's, lowest first
   ok    confidence recomputed: paid levels 1, 2 hold 0.46 + 0.34 = 0.8000, so accept at 0.8000
-  ok    threshold: accept at 80% is at or above the 70% grade threshold fixed when task 11 was posted, so the work is accepted, as the board recorded
+  ok    threshold: accept at 80% is at or above task 11's 70% grade threshold, so the work is accepted, as the board recorded
 
 Verdict: match. The published record is exactly what the chain recorded, and the chain applied it as its contracts require.
 Not checked: that Jev produced the answer. See https://docs.usebrainchain.com/trust-model
 ```
 
-Each line is one check. `ok` passed and `FAIL` means the record and the chain disagree. `skip` is a check that could not run, with the reason on the line. `ERROR` means the record could not be fetched, so the checks that need it did not run: the host did not answer after three tries, or it no longer has the record.
+Each line is one check. `ok` passed and `FAIL` means the record and the chain disagree. `skip` is a check that could not run, with the reason on the line. `ERROR` means the record could not be fetched, so the checks that need it did not run: the host did not answer in up to three tries and 30 seconds in all, or it no longer has the record.
 
 ## What it checks
 
@@ -72,7 +72,7 @@ Each line is one check. `ok` passed and `FAIL` means the record and the chain di
 | `second-grader` | On a decision graded twice: the second grader's probability of paying recomputes from its probabilities, and the receipt id it carries is shown. |
 | `brief` | The question quotes the task's brief, fetched from its `Posted` event and checked against `briefHash`. |
 | `levels` | A grade or ruling used the brief's own quality levels and pass level. |
-| `threshold` | The threshold fixed when the task was posted, applied as `TaskBoard.hire`, `grade`, `rule` and `ruleAppeal` do, gives the outcome the board emitted. A ruling on appeal (set 3.5.0 and later) is checked against the board's `AppealRuled` event. A change is queued only on a yes. |
+| `threshold` | The task's threshold, applied as `TaskBoard.hire`, `grade`, `rule` and `ruleAppeal` do, gives the outcome the board emitted. A poster can raise the grade and ruling thresholds while the task is open, so they can be higher than when it was posted; they cannot change after the hire. A ruling on appeal (set 3.5.0 and later) is checked against the board's `AppealRuled` event. A change is queued only on a yes. |
 | `change-subject`, `change-call` | A queued change is the call the decision names and the call Jev was shown. |
 
 Some checks skip by design:
