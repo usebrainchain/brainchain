@@ -29,6 +29,7 @@
     "BrainLaunchTreasury": "0x396003b5Ffb940466325622D05f1b59acCF894A2"
   },
   "release": "3.4.0",
+  "aliases": ["v4"],
   "retired": [
     {
       "release": "3.3.0",

@@ -1,9 +1,11 @@
 #!/usr/bin/env node
+import { createRequire } from "node:module";
+
 import { createPublicClient, http, isAddress } from "viem";
 
 import { decisionLogAbi, taskBoardAbi } from "./abi.js";
 import { NETWORKS } from "./deployments.js";
-import { clean, decisionsOf, errorMessage, outcomeOf, verifyDecision, WITHHELD_NOT_CHECKED, type Check, type Context, type DecisionReport, type Status } from "./verify.js";
+import { clean, decisionsOf, errorMessage, outcomeOf, verifyDecision, withheldNotChecked, type Check, type Context, type DecisionReport, type Status } from "./verify.js";
 
 const USAGE = `Usage:
   brainchain-verify <mainnet|testnet|chainId> <decisionId> [--set <TaskBoard>] [--rpc <url>] [--json]
@@ -20,6 +22,7 @@ the task's thresholds as the contracts do. Needs no keys.
   --rpc <url>    another RPC for the same chain; records and briefs on private
                  addresses are read only when this is on one too
   --json         one JSON object on stdout
+  --version      print the version
 
 Exit status: 0 when every check that could run matches, 1 on a mismatch or when
 a decision or its record cannot be read, 2 on bad arguments.`;
@@ -36,6 +39,10 @@ function usage(message: string): never {
 const args = process.argv.slice(2);
 if (args.includes("--help") || args.includes("-h")) {
   console.log(USAGE);
+  process.exit(0);
+}
+if (args.includes("--version") || args.includes("-v")) {
+  console.log((createRequire(import.meta.url)("../package.json") as { version: string }).version);
   process.exit(0);
 }
 const flag = (name: string): string | undefined => {
@@ -72,7 +79,7 @@ const network = foundNetwork;
 const foundSet =
   setArg === undefined
     ? network.sets[0]
-    : network.sets.find((s) => (isAddress(setArg) ? s.board.toLowerCase() === setArg.toLowerCase() : s.key === setArg || s.release === setArg));
+    : network.sets.find((s) => (isAddress(setArg) ? s.board.toLowerCase() === setArg.toLowerCase() : s.key === setArg || s.release === setArg || s.aliases?.includes(setArg)));
 if (!foundSet) {
   if (setArg !== undefined && BEFORE_3.test(setArg)) usage(`Contract set ${setArg} predates release 3.0.0, which this tool does not read: those boards named tasks by id alone.`);
   const sets = network.sets.map((s, i) => `${s.key} (TaskBoard ${s.board}${i === 0 ? ", active" : ""})`);
@@ -106,7 +113,7 @@ function verdict(reports: DecisionReport[]): string {
     case "unverified":
       return "Verdict: UNVERIFIED. A record could not be fetched, so its checks did not run; see the ERROR lines.";
     case "withheld":
-      return `Verdict: withheld, not a full match${many ? ` (decision${reports.filter((r) => r.withheld).length === 1 ? "" : "s"} ${reports.filter((r) => r.withheld).map((r) => r.id).join(", ")})` : ""}. ${WITHHELD_NOT_CHECKED}`;
+      return `Verdict: withheld, not a full match${many ? ` (decision${reports.filter((r) => r.withheld).length === 1 ? "" : "s"} ${reports.filter((r) => r.withheld).map((r) => r.id).join(", ")})` : ""}. ${withheldNotChecked(reports)}`;
     case "match":
       if (tally(all, "skip") > 0) return "Verdict: match. Every check that could run passed; the skip lines say what could not be checked.";
       return many
@@ -145,7 +152,7 @@ function report(reports: DecisionReport[], header: string, task?: number): never
       errors,
       skipped,
       decisions,
-      ...(overall === "withheld" ? { withheldNotChecked: WITHHELD_NOT_CHECKED } : {}),
+      ...(overall === "withheld" ? { withheldNotChecked: withheldNotChecked(reports) } : {}),
       notChecked: "That Jev produced the answer. BrainChain records Jev's answers, and the contracts bound what a recorded answer can do.",
       trustModel: TRUST_MODEL,
     };
