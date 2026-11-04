@@ -8,6 +8,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {DecisionLog} from "./DecisionLog.sol";
 import {ModelRegistry} from "./ModelRegistry.sol";
 import {WorkerStaking} from "./flywheel/WorkerStaking.sol";
+import {PayoutPreferences} from "./PayoutPreferences.sol";
 
 /// @notice Tasks with a bounty in escrow, settled only by Jev's recorded
 /// decisions. The board applies its own confidence thresholds: a decision below
@@ -104,6 +105,7 @@ contract TaskBoard is ReentrancyGuard {
     }
 
     error NotOwner();
+    error BadPayouts();
     error NotGuardian();
     error NotBrain();
     error NotWorker();
@@ -147,6 +149,7 @@ contract TaskBoard is ReentrancyGuard {
     event AppealConfigSet(AppealConfig config);
     event ConfigSet(Config config);
     event FeeSet(uint16 feeBps, address feeRouter);
+    event PayoutsSet(address indexed payouts, address indexed house);
     event PausedSet(bool paused);
     event OwnerSet(address indexed owner);
     event GuardianSet(address indexed guardian);
@@ -167,6 +170,9 @@ contract TaskBoard is ReentrancyGuard {
     /// @notice Share of each paid bounty sent to the fee router, in basis points.
     uint16 public feeBps;
     address public feeRouter;
+    /// @notice Workers that take their pay in stock are paid through the house, which pays the stock on the parent chain.
+    PayoutPreferences public payouts;
+    address public payoutHouse;
 
     address public owner;
     address public guardian;
@@ -301,7 +307,7 @@ contract TaskBoard is ReentrancyGuard {
         if (msg.sender != account) revert NotWorker();
         if (block.timestamp > task.deadline) revert TooLate();
 
-        task.payee = account;
+        task.payee = _payeeOf(account);
         task.resultHash = resultHash;
         task.submittedAt = uint64(block.timestamp);
         task.status = Status.Submitted;
@@ -329,11 +335,12 @@ contract TaskBoard is ReentrancyGuard {
     function dispute(uint256 id) external {
         Task storage task = _tasks[id];
         if (task.status != Status.Graded || task.disputed) revert BadStatus();
-        if (msg.sender != task.poster && msg.sender != task.payee) revert NotDisputant();
+        (address account,) = _worker(task.model);
+        if (msg.sender != task.poster && msg.sender != task.payee && msg.sender != account) revert NotDisputant();
         if (block.timestamp > uint256(task.gradedAt) + task.disputeWindow) revert TooLate();
 
         task.disputed = true;
-        task.disputedByModel = msg.sender == task.payee;
+        task.disputedByModel = msg.sender != task.poster;
         task.disputedAt = uint64(block.timestamp);
         task.status = Status.Disputed;
         emit GradeDisputed(id, msg.sender);
@@ -372,7 +379,8 @@ contract TaskBoard is ReentrancyGuard {
         Task storage task = _tasks[id];
         Appeal storage a = _appeals[id];
         if (task.status != Status.Ruled) revert BadStatus();
-        if (msg.sender != (a.pays ? task.poster : task.payee)) revert NotAppellant();
+        (address account,) = _worker(task.model);
+        if (a.pays ? msg.sender != task.poster : (msg.sender != task.payee && msg.sender != account)) revert NotAppellant();
         if (block.timestamp > uint256(a.ruledAt) + a.window) revert TooLate();
 
         uint128 bond = _bond(task, a);
@@ -491,6 +499,12 @@ contract TaskBoard is ReentrancyGuard {
     /// @dev House models live in the registry; staked workers are found by
     /// their account-shaped id and must also be allow-listed. A model that is
     /// no longer active can still deliver work it was already hired for.
+    /// @dev A worker that takes its pay in stock is paid through the house.
+    function _payeeOf(address account) private view returns (address) {
+        if (address(payouts) != address(0) && payouts.inStock(account)) return payoutHouse;
+        return account;
+    }
+
     function _worker(bytes32 id) private view returns (address account, bool active) {
         if (_isStaked(id)) {
             (account, active,) = staking.worker(id);
@@ -562,6 +576,15 @@ contract TaskBoard is ReentrancyGuard {
     }
 
     /// @notice Sets the protocol fee on bounties posted from now on, capped at 10%.
+    /// @notice The payout preferences the board reads at delivery, and the house paid in a worker's place.
+    function setPayouts(PayoutPreferences payouts_, address house_) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (address(payouts_) != address(0) && house_ == address(0)) revert BadPayouts();
+        payouts = payouts_;
+        payoutHouse = house_;
+        emit PayoutsSet(address(payouts_), house_);
+    }
+
     function setFee(uint16 feeBps_, address feeRouter_) external {
         if (msg.sender != owner) revert NotOwner();
         if (feeBps_ > MAX_FEE_BPS || (feeBps_ > 0 && feeRouter_ == address(0))) revert BadFee();
