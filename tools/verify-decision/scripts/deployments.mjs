@@ -4,10 +4,12 @@ import { readFile, writeFile } from "node:fs/promises";
 
 const root = new URL("../../../deployments/", import.meta.url);
 
-// The key a decision page uses for a set in its address, such as ?set=v3-1.
+// The key a decision page uses for a set in its address, such as ?set=v3-1. A patch release gets its own key, since
+// 3.4.0 and 3.4.1 are separate deployments with separate logs.
 const keyOf = (release) => {
-  const [major, minor] = release.split(".");
-  return minor === "0" ? `v${major}` : `v${major}-${minor}`;
+  const [major, minor, patch] = release.split(".");
+  const base = minor === "0" ? `v${major}` : `v${major}-${minor}`;
+  return patch === "0" ? base : `${base}-${patch}`;
 };
 
 function set(release, fromBlock, contracts, file) {

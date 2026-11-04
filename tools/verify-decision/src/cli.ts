@@ -14,8 +14,8 @@ fetches the published record, recomputes its hashes and confidence, and applies
 the task's thresholds as the contracts do. Needs no keys.
 
   --task <id>    check every decision about one task
-  --set <board>  a retired contract set, by TaskBoard address or by its key on
-                 the site (v3-1); without it, the active set
+  --set <board>  a retired contract set, by TaskBoard address, by its key on
+                 the site (v3-1) or by release (3.1.0); without it, the active set
   --rpc <url>    another RPC for the same chain
   --json         one JSON object on stdout
 
@@ -65,7 +65,7 @@ const network = foundNetwork;
 const foundSet =
   setArg === undefined
     ? network.sets[0]
-    : network.sets.find((s) => (isAddress(setArg) ? s.board.toLowerCase() === setArg.toLowerCase() : s.key === setArg));
+    : network.sets.find((s) => (isAddress(setArg) ? s.board.toLowerCase() === setArg.toLowerCase() : s.key === setArg || s.release === setArg));
 if (!foundSet) {
   const sets = network.sets.map((s, i) => `${s.key} (TaskBoard ${s.board}${i === 0 ? ", active" : ""})`);
   usage(`No contract set ${setArg} on ${network.name}. Sets: ${sets.join(", ")}`);

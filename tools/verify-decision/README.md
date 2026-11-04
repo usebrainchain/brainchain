@@ -22,7 +22,7 @@ brainchain-verify <mainnet|testnet|chainId> --task <taskId> [--set <TaskBoard>] 
 | `mainnet`, `testnet` or a chain id | `mainnet` is chain 274663 at `https://rpc.usebrainchain.com`; `testnet` is chain 274630 at `https://rpc.testnet.usebrainchain.com`. |
 | `<decisionId>` | The decision's number in its `DecisionLog`, from 1. |
 | `--task <id>` | Check every decision about one task, oldest first. |
-| `--set <TaskBoard>` | A retired contract set, by its TaskBoard address or by the key a decision page uses (`?set=v3-1`). Without it, the active set. Each set numbers its tasks and decisions from 1. |
+| `--set <TaskBoard>` | A retired contract set, by its TaskBoard address, by the key a decision page uses (`?set=v3-1`) or by release (`3.1.0`). Without it, the active set. Each set numbers its tasks and decisions from 1. |
 | `--rpc <url>` | Another RPC for the same chain. |
 | `--json` | One JSON object on stdout. |
 
@@ -79,6 +79,7 @@ Some checks skip by design:
 
 - A record for work Jev did not accept is served without the work, so `record-hash` and `input-hash` cannot match it. The answer, confidence and threshold are still checked.
 - A decision the board never applied, because a later decision or a closed window settled the task, skips `threshold`.
+- A grade of work delivered outside BrainChain has no task on the board, so it skips `threshold`. Its subject, levels and confidence are still checked.
 - A grade recorded before the chain gated on the paid levels skips `confidence-recomputed`: its confidence is Jev's score confidence, which the probabilities alone do not give.
 
 ## What it cannot check
