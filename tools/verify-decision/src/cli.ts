@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { createRequire } from "node:module";
+
 import { createPublicClient, http, isAddress } from "viem";
 
 import { decisionLogAbi, taskBoardAbi } from "./abi.js";
@@ -20,6 +22,7 @@ the task's thresholds as the contracts do. Needs no keys.
   --rpc <url>    another RPC for the same chain; records and briefs on private
                  addresses are read only when this is on one too
   --json         one JSON object on stdout
+  --version      print the version
 
 Exit status: 0 when every check that could run matches, 1 on a mismatch or when
 a decision or its record cannot be read, 2 on bad arguments.`;
@@ -36,6 +39,10 @@ function usage(message: string): never {
 const args = process.argv.slice(2);
 if (args.includes("--help") || args.includes("-h")) {
   console.log(USAGE);
+  process.exit(0);
+}
+if (args.includes("--version") || args.includes("-v")) {
+  console.log((createRequire(import.meta.url)("../package.json") as { version: string }).version);
   process.exit(0);
 }
 const flag = (name: string): string | undefined => {

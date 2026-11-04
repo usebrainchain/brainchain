@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -388,6 +389,15 @@ describe("the command line", () => {
       const { status, stderr } = run("mainnet", "2", "--set", set);
       assert.equal(status, 2);
       assert.match(stderr, /predates release 3\.0\.0, which this tool does not read/);
+    }
+  });
+
+  it("prints its version", () => {
+    const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+    for (const args of [["--version"], ["-v"], ["mainnet", "1", "--version"]]) {
+      const { status, stdout } = run(...args);
+      assert.equal(status, 0, args.join(" "));
+      assert.equal(stdout, `${version}\n`);
     }
   });
 
