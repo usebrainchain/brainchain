@@ -1,3 +1,5 @@
+import { setTimeout as sleep } from "node:timers/promises";
+
 import {
   BaseError,
   decodeFunctionData,
@@ -102,9 +104,25 @@ const utc = (seconds: bigint): string => new Date(Number(seconds) * 1000).toISOS
 const same = (a: unknown, b: unknown): boolean =>
   a !== undefined && b !== undefined && canonicalStringify(a) === canonicalStringify(b);
 const display = (uri: string): string => (uri.length > 120 ? `${uri.slice(0, 117)}…` : uri);
+
+// fetch says only "fetch failed" and keeps the reason, a refused connection or
+// a redirect, in its causes. viem's own errors carry theirs in `details`.
+function rootCause(error: Error): string | undefined {
+  let reason: string | undefined;
+  for (let next = error.cause; next instanceof Error; next = next.cause) {
+    if (!(next instanceof BaseError)) reason = next.message || (next as NodeJS.ErrnoException).code || reason;
+  }
+  return reason;
+}
+
 export function errorMessage(error: unknown): string {
-  if (error instanceof BaseError) return error.details ? `${error.shortMessage} (${error.details})` : error.shortMessage;
-  return error instanceof Error ? error.message : String(error);
+  if (!(error instanceof Error)) return String(error);
+  const reason = rootCause(error);
+  if (error instanceof BaseError) {
+    const detail = reason ?? error.details;
+    return detail ? `${error.shortMessage} (${detail})` : error.shortMessage;
+  }
+  return reason ? `${error.message}: ${reason}` : error.message;
 }
 
 function parseJson(text: string): unknown {
@@ -207,19 +225,33 @@ function parseBrief(text: string | undefined): Brief {
   return b as Brief;
 }
 
+const ATTEMPT_MS = 15_000;
+// One slow try and most of another: a host cannot hold the tool longer, however slowly it sends.
+const FETCH_MS = 30_000;
+
 // A records host answers 5xx while it restarts, so those get two more tries.
-async function get(url: URL): Promise<Response> {
+async function get(url: URL, deadline: AbortSignal): Promise<Response> {
   for (let attempt = 1; ; attempt++) {
     try {
       // The brain reads without following redirects, so the location on chain is the one read here too.
-      const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(15_000) });
+      const response = await fetch(url, { redirect: "error", signal: AbortSignal.any([deadline, AbortSignal.timeout(ATTEMPT_MS)]) });
       const transient = response.status === 408 || response.status === 429 || response.status >= 500;
       if (!transient || attempt === 3) return response;
     } catch (error) {
       if (attempt === 3) throw error;
     }
-    await new Promise((resolve) => setTimeout(resolve, attempt * 1_000));
+    await sleep(attempt * 1_000, undefined, { signal: deadline });
   }
+}
+
+async function readBytes(uri: string, url: URL, deadline: AbortSignal): Promise<{ bytes: Uint8Array; withheld: boolean }> {
+  const response = await get(url, deadline);
+  if (response.status === 404) throw new Error(`${display(uri)} answered with status 404: the host no longer has this record, so trying again will not help`);
+  if (!response.ok) throw new Error(`${display(uri)} answered with status ${response.status}`);
+  return {
+    bytes: new Uint8Array(await response.arrayBuffer()),
+    withheld: response.headers.get("x-brainchain-withheld") === "result",
+  };
 }
 
 async function fetchBytes(uri: string): Promise<{ bytes: Uint8Array; withheld: boolean }> {
@@ -230,13 +262,18 @@ async function fetchBytes(uri: string): Promise<{ bytes: Uint8Array; withheld: b
   }
   const url = new URL(uri);
   if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error(`${url.protocol} URIs are not supported`);
-  const response = await get(url);
-  if (response.status === 404) throw new Error(`${display(uri)} answered with status 404: the host no longer has this record, so trying again will not help`);
-  if (!response.ok) throw new Error(`${display(uri)} answered with status ${response.status}`);
-  return {
-    bytes: new Uint8Array(await response.arrayBuffer()),
-    withheld: response.headers.get("x-brainchain-withheld") === "result",
-  };
+  const started = Date.now();
+  const deadline = AbortSignal.timeout(FETCH_MS);
+  // Raced as well as passed down, so no stage of the transport can outlast the deadline.
+  const expired = new Promise<never>((_, reject) => deadline.addEventListener("abort", () => reject(deadline.reason), { once: true }));
+  try {
+    return await Promise.race([readBytes(uri, url, deadline), expired]);
+  } catch (error) {
+    if (deadline.aborted || (error as Error).name === "TimeoutError") {
+      throw new Error(`${display(uri)} did not finish answering within ${Math.round((Date.now() - started) / 1000)} seconds`);
+    }
+    throw error;
+  }
 }
 
 class Checks {
@@ -577,15 +614,18 @@ function checkPaying(c: Checks, record: Published, p: { jev: number; second?: nu
   );
 }
 
-// Applies each threshold the way TaskBoard.hire, grade and rule do, to the
-// terms fixed when the task was posted, then compares with what the board did.
+// Applies each threshold the way TaskBoard.hire, grade and rule do, then
+// compares with what the board did. raiseGradeBar can lift the grade and ruling
+// thresholds above what was posted, but only while the task is open, and a task
+// never reopens once hired, so the values read now are the ones any grade or
+// ruling was applied at.
 async function checkTaskThreshold(ctx: Context, c: Checks, id: bigint, task: bigint, decision: Decision, record: Published): Promise<void> {
   const { client, set } = ctx;
   const terms = await client.readContract({ address: set.board, abi: taskBoardAbi, functionName: "get", args: [task] });
   const filter = { address: set.board, abi: taskBoardAbi, args: { id: task, decisionId: id }, fromBlock: BigInt(set.fromBlock), strict: true } as const;
   const bps = decision.confidenceBps;
   const rule = (threshold: number, name: string): string =>
-    `threshold: ${named(record.answer)} at ${percent(bps)} is ${bps >= threshold ? "at or above" : "below"} the ${percent(threshold)} ${name} threshold fixed when task ${task} was posted`;
+    `threshold: ${named(record.answer)} at ${percent(bps)} is ${bps >= threshold ? "at or above" : "below"} task ${task}'s ${percent(threshold)} ${name} threshold`;
 
   if (decision.kind === Kind.Hire) {
     const hires = bps >= terms.hireThresholdBps && decision.answer !== NO;

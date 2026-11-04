@@ -47,8 +47,10 @@ if (json) args.splice(args.indexOf("--json"), 1);
 const taskArg = flag("--task");
 const setArg = flag("--set");
 const rpcArg = flag("--rpc");
-const unknown = args.find((arg) => arg.startsWith("-"));
+// -1 is a bad id, not an option; the id check below says so.
+const unknown = args.find((arg) => arg.startsWith("-") && !/^-\d/.test(arg));
 if (unknown) usage(`Unknown option ${unknown}`);
+if (rpcArg !== undefined && !(URL.canParse(rpcArg) && ["http:", "https:"].includes(new URL(rpcArg).protocol))) usage("--rpc needs an http or https URL");
 
 const [networkArg, idArg, ...extra] = args;
 if (networkArg === undefined) usage("Name a network: mainnet, testnet or a chain id");
