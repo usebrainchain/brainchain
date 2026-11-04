@@ -3,7 +3,7 @@ import { createPublicClient, http, isAddress } from "viem";
 
 import { decisionLogAbi, taskBoardAbi } from "./abi.js";
 import { NETWORKS } from "./deployments.js";
-import { decisionsOf, errorMessage, verifyDecision, type Check, type Context, type DecisionReport, type Status } from "./verify.js";
+import { clean, decisionsOf, errorMessage, outcomeOf, verifyDecision, WITHHELD_NOT_CHECKED, type Check, type Context, type DecisionReport, type Status } from "./verify.js";
 
 const USAGE = `Usage:
   brainchain-verify <mainnet|testnet|chainId> <decisionId> [--set <TaskBoard>] [--rpc <url>] [--json]
@@ -14,15 +14,19 @@ fetches the published record, recomputes its hashes and confidence, and applies
 the task's thresholds as the contracts do. Needs no keys.
 
   --task <id>    check every decision about one task
-  --set <board>  a retired contract set, by TaskBoard address, by its key on
-                 the site (v3-1) or by release (3.1.0); without it, the active set
-  --rpc <url>    another RPC for the same chain
+  --set <board>  a retired contract set from 3.0.0 on, by TaskBoard address, by
+                 its key on the site (v3-1) or by release (3.1.0); without it, the
+                 active set
+  --rpc <url>    another RPC for the same chain; records and briefs on private
+                 addresses are read only when this is on one too
   --json         one JSON object on stdout
 
 Exit status: 0 when every check that could run matches, 1 on a mismatch or when
 a decision or its record cannot be read, 2 on bad arguments.`;
 
 const TRUST_MODEL = "https://docs.usebrainchain.com/trust-model";
+// Sets before 3.0.0 named tasks by id alone, which the subject check does not model, so the package carries none.
+const BEFORE_3 = /^(v2(-|$)|2\.|0x83b31d99fa31a9e5257955a737ef34c40f1c57bf$)/i;
 
 function usage(message: string): never {
   console.error(`${message}\n\n${USAGE}`);
@@ -59,8 +63,9 @@ const target = taskArg ?? idArg;
 if (target === undefined) usage("Name a decision id, or a task with --task");
 if (!/^[1-9]\d*$/.test(target)) usage(`${taskArg === undefined ? "A decision" : "A task"} id is a whole number from 1`);
 
-const foundNetwork =
-  NETWORKS[networkArg as keyof typeof NETWORKS] ?? Object.values(NETWORKS).find((n) => String(n.chainId) === networkArg);
+const foundNetwork = Object.hasOwn(NETWORKS, networkArg)
+  ? NETWORKS[networkArg as keyof typeof NETWORKS]
+  : Object.values(NETWORKS).find((n) => String(n.chainId) === networkArg);
 if (!foundNetwork) usage(`Unknown network "${networkArg}": use mainnet, testnet, 274663 or 274630`);
 const network = foundNetwork;
 
@@ -69,6 +74,7 @@ const foundSet =
     ? network.sets[0]
     : network.sets.find((s) => (isAddress(setArg) ? s.board.toLowerCase() === setArg.toLowerCase() : s.key === setArg || s.release === setArg));
 if (!foundSet) {
+  if (setArg !== undefined && BEFORE_3.test(setArg)) usage(`Contract set ${setArg} predates release 3.0.0, which this tool does not read: those boards named tasks by id alone.`);
   const sets = network.sets.map((s, i) => `${s.key} (TaskBoard ${s.board}${i === 0 ? ", active" : ""})`);
   usage(`No contract set ${setArg} on ${network.name}. Sets: ${sets.join(", ")}`);
 }
@@ -82,23 +88,31 @@ const ctx: Context = {
 };
 
 function fail(message: string): never {
-  if (json) console.log(JSON.stringify({ error: message }, null, 2));
-  else console.error(message);
+  if (json) console.log(JSON.stringify({ error: clean(message) }, null, 2));
+  else console.error(clean(message));
   process.exit(1);
 }
 
 const TAGS = { ok: "ok", fail: "FAIL", skip: "skip", error: "ERROR" } as const;
 const tally = (checks: Check[], status: Status): number => checks.filter((c) => c.status === status).length;
-const outcome = (checks: Check[]): "mismatch" | "unverified" | "match" =>
-  tally(checks, "fail") > 0 ? "mismatch" : tally(checks, "error") > 0 ? "unverified" : "match";
 
-function verdict(failed: number, errors: number, skipped: number, many: boolean): string {
-  if (failed > 0) return `Verdict: MISMATCH. ${failed} check${failed === 1 ? "" : "s"} failed; see the FAIL lines.`;
-  if (errors > 0) return "Verdict: UNVERIFIED. A record could not be fetched, so its checks did not run; see the ERROR lines.";
-  if (skipped > 0) return "Verdict: match. Every check that could run passed; the skip lines say what could not be checked.";
-  return many
-    ? "Verdict: match. The published records are exactly what the chain recorded, and the chain applied them as its contracts require."
-    : "Verdict: match. The published record is exactly what the chain recorded, and the chain applied it as its contracts require.";
+function verdict(reports: DecisionReport[]): string {
+  const all = reports.flatMap((r) => r.checks);
+  const failed = tally(all, "fail");
+  const many = reports.length > 1;
+  switch (outcomeOf(reports)) {
+    case "mismatch":
+      return `Verdict: MISMATCH. ${failed} check${failed === 1 ? "" : "s"} failed; see the FAIL lines.`;
+    case "unverified":
+      return "Verdict: UNVERIFIED. A record could not be fetched, so its checks did not run; see the ERROR lines.";
+    case "withheld":
+      return `Verdict: withheld, not a full match${many ? ` (decision${reports.filter((r) => r.withheld).length === 1 ? "" : "s"} ${reports.filter((r) => r.withheld).map((r) => r.id).join(", ")})` : ""}. ${WITHHELD_NOT_CHECKED}`;
+    case "match":
+      if (tally(all, "skip") > 0) return "Verdict: match. Every check that could run passed; the skip lines say what could not be checked.";
+      return many
+        ? "Verdict: match. The published records are exactly what the chain recorded, and the chain applied them as its contracts require."
+        : "Verdict: match. The published record is exactly what the chain recorded, and the chain applied it as its contracts require.";
+  }
 }
 
 function report(reports: DecisionReport[], header: string, task?: number): never {
@@ -106,16 +120,19 @@ function report(reports: DecisionReport[], header: string, task?: number): never
   const failed = tally(all, "fail");
   const errors = tally(all, "error");
   const skipped = tally(all, "skip");
+  const overall = outcomeOf(reports);
   if (json) {
     const decisions = reports.map(({ checks, ...r }) => ({
       id: r.id,
       kind: r.kind,
       task: r.task,
+      ...(r.outside ? { outside: true } : {}),
+      ...(r.withheld ? { withheld: true } : {}),
       block: r.block,
       recordedAt: r.recordedAt,
       confidenceBps: r.confidenceBps,
       payloadURI: r.payloadURI,
-      verdict: outcome(checks),
+      verdict: outcomeOf([{ ...r, checks }]),
       checks,
     }));
     const out = {
@@ -123,11 +140,12 @@ function report(reports: DecisionReport[], header: string, task?: number): never
       chainId: network.chainId,
       set,
       ...(task === undefined ? {} : { task }),
-      verdict: outcome(all),
+      verdict: overall,
       failed,
       errors,
       skipped,
       decisions,
+      ...(overall === "withheld" ? { withheldNotChecked: WITHHELD_NOT_CHECKED } : {}),
       notChecked: "That Jev produced the answer. BrainChain records Jev's answers, and the contracts bound what a recorded answer can do.",
       trustModel: TRUST_MODEL,
     };
@@ -139,7 +157,7 @@ function report(reports: DecisionReport[], header: string, task?: number): never
     console.log(task === undefined ? "" : `\nDecision ${r.id}`);
     for (const c of r.checks) console.log(`  ${TAGS[c.status].padEnd(5)} ${c.message}`);
   }
-  console.log(`\n${verdict(failed, errors, skipped, reports.length > 1)}`);
+  console.log(`\n${verdict(reports)}`);
   console.log(`Not checked: that Jev produced the answer. See ${TRUST_MODEL}`);
   process.exit(failed + errors > 0 ? 1 : 0);
 }

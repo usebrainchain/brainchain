@@ -45,6 +45,7 @@
   "scripts": {
     "build": "node scripts/deployments.mjs && tsc -p tsconfig.json",
     "abi": "node scripts/abi.mjs",
+    "test": "npm run build && node --test",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
