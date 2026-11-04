@@ -1,6 +1,6 @@
 {
   "name": "brainchain-verify",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "Check a BrainChain decision against the chain: the published record, its hashes, its confidence and the thresholds the contracts applied.",
   "license": "MIT",
   "author": "BrainChain",
@@ -45,6 +45,7 @@
   "scripts": {
     "build": "node scripts/deployments.mjs && tsc -p tsconfig.json",
     "abi": "node scripts/abi.mjs",
+    "test": "npm run build && node --test",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
