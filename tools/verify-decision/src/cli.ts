@@ -5,7 +5,7 @@ import { createPublicClient, http, isAddress } from "viem";
 
 import { decisionLogAbi, taskBoardAbi } from "./abi.js";
 import { NETWORKS } from "./deployments.js";
-import { clean, decisionsOf, errorMessage, outcomeOf, verifyDecision, WITHHELD_NOT_CHECKED, type Check, type Context, type DecisionReport, type Status } from "./verify.js";
+import { clean, decisionsOf, errorMessage, outcomeOf, verifyDecision, withheldNotChecked, type Check, type Context, type DecisionReport, type Status } from "./verify.js";
 
 const USAGE = `Usage:
   brainchain-verify <mainnet|testnet|chainId> <decisionId> [--set <TaskBoard>] [--rpc <url>] [--json]
@@ -113,7 +113,7 @@ function verdict(reports: DecisionReport[]): string {
     case "unverified":
       return "Verdict: UNVERIFIED. A record could not be fetched, so its checks did not run; see the ERROR lines.";
     case "withheld":
-      return `Verdict: withheld, not a full match${many ? ` (decision${reports.filter((r) => r.withheld).length === 1 ? "" : "s"} ${reports.filter((r) => r.withheld).map((r) => r.id).join(", ")})` : ""}. ${WITHHELD_NOT_CHECKED}`;
+      return `Verdict: withheld, not a full match${many ? ` (decision${reports.filter((r) => r.withheld).length === 1 ? "" : "s"} ${reports.filter((r) => r.withheld).map((r) => r.id).join(", ")})` : ""}. ${withheldNotChecked(reports)}`;
     case "match":
       if (tally(all, "skip") > 0) return "Verdict: match. Every check that could run passed; the skip lines say what could not be checked.";
       return many
@@ -152,7 +152,7 @@ function report(reports: DecisionReport[], header: string, task?: number): never
       errors,
       skipped,
       decisions,
-      ...(overall === "withheld" ? { withheldNotChecked: WITHHELD_NOT_CHECKED } : {}),
+      ...(overall === "withheld" ? { withheldNotChecked: withheldNotChecked(reports) } : {}),
       notChecked: "That Jev produced the answer. BrainChain records Jev's answers, and the contracts bound what a recorded answer can do.",
       trustModel: TRUST_MODEL,
     };

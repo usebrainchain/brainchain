@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { createPublicClient, encodeAbiParameters, http, keccak256, toBytes, toHex } from "viem";
 
 import { canonicalStringify } from "../dist/canonical.js";
-import { clean, outcomeOf, verifyDecision } from "../dist/verify.js";
+import { clean, outcomeOf, verifyDecision, withheldNotChecked } from "../dist/verify.js";
 
 const YES = `0x${"0".repeat(63)}1`;
 const NO = `0x${"0".repeat(64)}`;
@@ -227,6 +227,13 @@ describe("the withheld header", () => {
     const acp = await verify({ subject: acpSubject(4663n, 7n), bps: 9000, publish: grade(), serve: redacted(grade()), withheld: true });
     assert.equal(acp.withheld, true);
     assert.match(check(acp, "withheld").message, /ACP evaluation is never published/);
+  });
+
+  it("says what it left unchecked in a task's terms only where there is a task", async () => {
+    const outside = await verify({ subject: paidSubject(7n), answer: NO, publish: rejected, serve: redacted(rejected), withheld: true });
+    assert.doesNotMatch(withheldNotChecked([outside]), /task|brief/);
+    assert.match(withheldNotChecked([outside]), /the question, its levels and the second grader, is the host's word/);
+    assert.match(withheldNotChecked([await verify(onRejected)]), /so do the task's brief, levels and threshold/);
   });
 });
 

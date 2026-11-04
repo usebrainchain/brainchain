@@ -920,5 +920,14 @@ export function outcomeOf(reports: DecisionReport[]): Outcome {
   return reports.some((r) => r.withheld) ? "withheld" : "match";
 }
 
-export const WITHHELD_NOT_CHECKED =
-  "This copy is served without the work, so its hashes could not be checked and nothing ties its text to the chain. Its answer and confidence agree with the chain, and for a task so do its brief, levels and threshold. The rest of it, such as the question and the second grader, is the host's word.";
+/** What a withheld copy leaves unchecked. A grade of outside work has no task here, so nothing on chain backs its brief or levels. */
+export function withheldNotChecked(reports: DecisionReport[]): string {
+  const withheld = reports.filter((r) => r.withheld);
+  const outside = withheld.length > 0 && withheld.every((r) => r.outside);
+  return (
+    "This copy is served without the work, so its hashes could not be checked and nothing ties its text to the chain. " +
+    (outside
+      ? "Its answer and confidence agree with the chain. The rest of it, such as the question, its levels and the second grader, is the host's word."
+      : "Its answer and confidence agree with the chain, and so do the task's brief, levels and threshold. The rest of it, such as the question and the second grader, is the host's word.")
+  );
+}
