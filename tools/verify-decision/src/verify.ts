@@ -231,6 +231,7 @@ async function fetchBytes(uri: string): Promise<{ bytes: Uint8Array; withheld: b
   const url = new URL(uri);
   if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error(`${url.protocol} URIs are not supported`);
   const response = await get(url);
+  if (response.status === 404) throw new Error(`${display(uri)} answered with status 404: the host no longer has this record, so trying again will not help`);
   if (!response.ok) throw new Error(`${display(uri)} answered with status ${response.status}`);
   return {
     bytes: new Uint8Array(await response.arrayBuffer()),

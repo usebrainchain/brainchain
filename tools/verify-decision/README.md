@@ -52,7 +52,7 @@ Verdict: match. The published record is exactly what the chain recorded, and the
 Not checked: that Jev produced the answer. See https://docs.usebrainchain.com/trust-model
 ```
 
-Each line is one check. `ok` passed and `FAIL` means the record and the chain disagree. `skip` is a check that could not run, with the reason on the line. `ERROR` means the record host did not answer after three tries, so the checks that need the record did not run.
+Each line is one check. `ok` passed and `FAIL` means the record and the chain disagree. `skip` is a check that could not run, with the reason on the line. `ERROR` means the record could not be fetched, so the checks that need it did not run: the host did not answer after three tries, or it no longer has the record.
 
 ## What it checks
 
