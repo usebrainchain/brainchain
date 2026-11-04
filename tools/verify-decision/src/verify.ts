@@ -9,6 +9,7 @@ import {
   type Address,
   type Hex,
   type PublicClient,
+  toHex,
 } from "viem";
 
 import { decisionExecutorAbi, decisionLogAbi, modelRegistryAbi, taskBoardAbi } from "./abi.js";
@@ -29,6 +30,8 @@ export interface DecisionReport {
   id: number;
   kind?: string;
   task?: number;
+  /** A grade of work delivered outside BrainChain, so no task here. */
+  outside?: boolean;
   block?: number;
   recordedAt?: string;
   confidenceBps?: number;
@@ -63,6 +66,8 @@ interface Published {
   probabilities: Record<string, number>;
   /** Grades and rulings graded twice: the second grader's answer, and the probability of paying from each. */
   jevPaid?: number;
+  /** The lowest level, counting from the bottom, that passes. */
+  passFrom?: number;
   second?: { model: string; probabilities: Record<string, number>; paid: number; receipt: { id: string } | null; requestHash: string };
   /** How the brief's checks ran on the delivered code; failed checks refund at full confidence. */
   checks?: "passed" | "failed";
@@ -116,6 +121,19 @@ function decodeText(bytes: Uint8Array): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Base and Base Sepolia, where ACP evaluations come from. */
+const ACP_CHAINS = [8453n, 84532n];
+
+/** Whether a grade's subject is the one the service derives for work delivered elsewhere: a paid grade by its id, or an ACP evaluation by its job. */
+function outsideGrade(recorded: string, subject: Hex): boolean {
+  if (!/^\d+$/.test(recorded)) return false;
+  const id = BigInt(recorded);
+  if (id >> 256n !== 0n) return false;
+  const paid = keccak256(encodeAbiParameters([{ type: "string" }, { type: "bytes32" }], ["x402-grade", toHex(id, { size: 32 })]));
+  if (paid === subject) return true;
+  return ACP_CHAINS.some((chain) => keccak256(encodeAbiParameters([{ type: "string" }, { type: "uint256" }, { type: "uint256" }], ["acp-evaluation", chain, id])) === subject);
 }
 
 /** TaskBoard.subjectOf(id): the task on this board on this chain. */
@@ -344,8 +362,10 @@ export async function verifyDecision(ctx: Context, id: bigint): Promise<Decision
 
   c.check("kind", record.kind === kind, `kind: ${record.kind}`, `the record is a ${record.kind}; the chain recorded a ${kind}`);
 
-  const task = decision.kind !== Kind.Change && /^\d+$/.test(record.subject) ? BigInt(record.subject) : undefined;
+  const outside = decision.kind === Kind.Grade && outsideGrade(record.subject, decision.subject);
+  const task = !outside && decision.kind !== Kind.Change && /^\d+$/.test(record.subject) ? BigInt(record.subject) : undefined;
   if (task !== undefined) report.task = Number(task);
+  if (outside) report.outside = true;
   if (decision.kind === Kind.Change) {
     c.check(
       "subject",
@@ -353,6 +373,8 @@ export async function verifyDecision(ctx: Context, id: bigint): Promise<Decision
       `subject: ${short(decision.subject)}, the exact call this change names`,
       "the record's subject differs from the one on chain",
     );
+  } else if (outside) {
+    c.add("subject", "ok", "subject: a grade of work delivered outside BrainChain, so no task on this board");
   } else {
     c.check(
       "subject",
@@ -430,6 +452,10 @@ export async function verifyDecision(ctx: Context, id: bigint): Promise<Decision
     await checkBrief(ctx, c, task, decision, record, state);
     await checkTaskThreshold(ctx, c, id, task, decision, record);
   }
+  if (outside) {
+    checkOutsideGrade(c, record);
+    c.add("threshold", "skip", "threshold: no task on this chain, so no board applied this grade; the caller received the verdict");
+  }
   if (decision.kind === Kind.Change) await checkChange(ctx, c, id, decision, record, state);
   return report;
 }
@@ -482,7 +508,20 @@ async function checkBrief(ctx: Context, c: Checks, task: bigint, decision: Decis
     );
     return;
   }
-  const paidKeys = ascending.map((_, i) => String(i)).slice(ascending.length - 1 - brief.passIndex);
+  checkGradeConfidence(c, record, ascending.map((_, i) => String(i)).slice(ascending.length - 1 - brief.passIndex));
+}
+
+// No brief on chain to compare with: the levels and the pass level are in the record, which inputHash commits to.
+function checkOutsideGrade(c: Checks, record: Published): void {
+  const levels = record.request.questions.decision.criteria;
+  if (!Array.isArray(levels) || record.passFrom === undefined) {
+    c.add("confidence-recomputed", "skip", "grade confidence: the record does not name its pass level");
+    return;
+  }
+  checkGradeConfidence(c, record, levels.map((_, i) => String(i)).slice(record.passFrom));
+}
+
+function checkGradeConfidence(c: Checks, record: Published, paidKeys: string[]): void {
   const parts = paidKeys.map((key) => record.probabilities[key] ?? 0);
   const jev = share(parts);
   const how = `paid levels ${paidKeys.join(", ")} hold ${parts.join(" + ")} = ${jev.toFixed(4)}`;
