@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -388,6 +388,36 @@ describe("the command line", () => {
       const { status, stderr } = run("mainnet", "2", "--set", set);
       assert.equal(status, 2);
       assert.match(stderr, /predates release 3\.0\.0, which this tool does not read/);
+    }
+  });
+
+  it("opens a set by a key the site published it under before, as the site's ?set= does", async () => {
+    // Answers as mainnet with an empty DecisionLog, so the CLI names the set it chose and stops.
+    const rpc = createServer((request, response) => {
+      let body = "";
+      request.on("data", (chunk) => (body += chunk));
+      request.on("end", () => {
+        const { id, method } = JSON.parse(body);
+        const result = method === "eth_chainId" ? "0x430e7" : `0x${"0".repeat(64)}`;
+        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id, result }));
+      });
+    });
+    await new Promise((resolve) => rpc.listen(0, "127.0.0.1", resolve));
+    try {
+      const url = `http://127.0.0.1:${rpc.address().port}`;
+      const { code, stderr } = await new Promise((resolve) =>
+        execFile(process.execPath, [cli, "mainnet", "1", "--set", "v4", "--rpc", url], (error, stdout, stderr) => resolve({ code: error?.code ?? 0, stderr })),
+      );
+      assert.equal(code, 1);
+      assert.match(stderr, /^DecisionLog 0xFdFEDb376c9632A4D6F15a1697E2b6853f12B4d7 \(set v3-4\) holds decisions 1 to 0/);
+    } finally {
+      rpc.close();
+    }
+    // The site matches names exactly, and publishes no testnet sets.
+    for (const [network, name] of [["mainnet", "V4"], ["testnet", "v4"]]) {
+      const { status, stderr } = run(network, "1", "--set", name);
+      assert.equal(status, 2);
+      assert.match(stderr, new RegExp(`^No contract set ${name} on `));
     }
   });
 

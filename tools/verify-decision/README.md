@@ -22,7 +22,7 @@ brainchain-verify <mainnet|testnet|chainId> --task <taskId> [--set <TaskBoard>] 
 | `mainnet`, `testnet` or a chain id | `mainnet` is chain 274663 at `https://rpc.usebrainchain.com`; `testnet` is chain 274630 at `https://rpc.testnet.usebrainchain.com`. |
 | `<decisionId>` | The decision's number in its `DecisionLog`, from 1. |
 | `--task <id>` | Check every decision about one task, oldest first. |
-| `--set <TaskBoard>` | A retired contract set from 3.0.0 on, by its TaskBoard address, by the key a decision page uses (`?set=v3-1`) or by release (`3.1.0`). Without it, the active set. Each set numbers its tasks and decisions from 1. The `v2` set is not supported: its board named tasks by id alone, which the subject check does not read. |
+| `--set <TaskBoard>` | A retired contract set from 3.0.0 on, by its TaskBoard address, by the key a decision page uses (`?set=v3-1`, or an older one the site still opens, such as `v4` for `v3-4`) or by release (`3.1.0`). Without it, the active set. Each set numbers its tasks and decisions from 1. The `v2` set is not supported: its board named tasks by id alone, which the subject check does not read. |
 | `--rpc <url>` | Another RPC for the same chain. Records and briefs on private addresses are read only when this RPC is on one too. |
 | `--json` | One JSON object on stdout. |
 

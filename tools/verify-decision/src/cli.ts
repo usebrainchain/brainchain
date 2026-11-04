@@ -72,7 +72,7 @@ const network = foundNetwork;
 const foundSet =
   setArg === undefined
     ? network.sets[0]
-    : network.sets.find((s) => (isAddress(setArg) ? s.board.toLowerCase() === setArg.toLowerCase() : s.key === setArg || s.release === setArg));
+    : network.sets.find((s) => (isAddress(setArg) ? s.board.toLowerCase() === setArg.toLowerCase() : s.key === setArg || s.release === setArg || s.aliases?.includes(setArg)));
 if (!foundSet) {
   if (setArg !== undefined && BEFORE_3.test(setArg)) usage(`Contract set ${setArg} predates release 3.0.0, which this tool does not read: those boards named tasks by id alone.`);
   const sets = network.sets.map((s, i) => `${s.key} (TaskBoard ${s.board}${i === 0 ? ", active" : ""})`);
