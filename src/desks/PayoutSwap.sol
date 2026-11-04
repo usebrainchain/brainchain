@@ -8,9 +8,13 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 
 interface IPayoutPool {
     function token0() external view returns (address);
-    function swap(address recipient, bool zeroForOne, int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes calldata data)
-        external
-        returns (int256 amount0, int256 amount1);
+    function swap(
+        address recipient,
+        bool zeroForOne,
+        int256 amountSpecified,
+        uint160 sqrtPriceLimitX96,
+        bytes calldata data
+    ) external returns (int256 amount0, int256 amount1);
 }
 
 /// @dev The DeskMandate's venue list and feed price: one allowlist for the desks and for payouts.
@@ -41,7 +45,14 @@ contract PayoutSwap is Ownable2Step, ReentrancyGuard {
 
     address private _expectedPool;
 
-    event Paid(bytes32 indexed taskRef, address indexed to, address indexed token, uint256 usdgIn, uint256 tokensOut, uint256 feedPrice);
+    event Paid(
+        bytes32 indexed taskRef,
+        address indexed to,
+        address indexed token,
+        uint256 usdgIn,
+        uint256 tokensOut,
+        uint256 feedPrice
+    );
     event OperatorSet(address operator);
     event BoundsSet(uint16 premiumBps, uint256 dailyCap);
     event PausedSet(bool paused);
@@ -56,9 +67,14 @@ contract PayoutSwap is Ownable2Step, ReentrancyGuard {
     error WrongPool(address caller);
     error BadBounds();
 
-    constructor(IERC20 usdg, IDeskVenues mandate, address owner_, address operator_, uint16 premiumBps_, uint256 dailyCap_)
-        Ownable(owner_)
-    {
+    constructor(
+        IERC20 usdg,
+        IDeskVenues mandate,
+        address owner_,
+        address operator_,
+        uint16 premiumBps_,
+        uint256 dailyCap_
+    ) Ownable(owner_) {
         if (premiumBps_ > 1_000) revert BadBounds();
         USDG = usdg;
         MANDATE = mandate;
@@ -90,7 +106,11 @@ contract PayoutSwap is Ownable2Step, ReentrancyGuard {
     }
 
     /// @notice `usdgIn` from the operator becomes `token` for `to`, at no worse than the feed less `premiumBps`.
-    function pay(address token, uint256 usdgIn, address to, bytes32 taskRef) external nonReentrant returns (uint256 out) {
+    function pay(address token, uint256 usdgIn, address to, bytes32 taskRef)
+        external
+        nonReentrant
+        returns (uint256 out)
+    {
         if (msg.sender != operator) revert NotOperator();
         if (paused) revert Paused();
         if (usdgIn == 0) revert ZeroAmount();
@@ -125,7 +145,11 @@ contract PayoutSwap is Ownable2Step, ReentrancyGuard {
         bool zeroForOne = pool.token0() == tokenIn;
         _expectedPool = address(pool);
         (int256 amount0, int256 amount1) = pool.swap(
-            address(this), zeroForOne, int256(amountIn), zeroForOne ? MIN_SQRT_RATIO + 1 : MAX_SQRT_RATIO - 1, abi.encode(tokenIn)
+            address(this),
+            zeroForOne,
+            int256(amountIn),
+            zeroForOne ? MIN_SQRT_RATIO + 1 : MAX_SQRT_RATIO - 1,
+            abi.encode(tokenIn)
         );
         _expectedPool = address(0);
         amountOut = uint256(-(zeroForOne ? amount1 : amount0));

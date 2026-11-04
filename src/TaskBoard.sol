@@ -380,7 +380,9 @@ contract TaskBoard is ReentrancyGuard {
         Appeal storage a = _appeals[id];
         if (task.status != Status.Ruled) revert BadStatus();
         (address account,) = _worker(task.model);
-        if (a.pays ? msg.sender != task.poster : (msg.sender != task.payee && msg.sender != account)) revert NotAppellant();
+        if (a.pays ? msg.sender != task.poster : (msg.sender != task.payee && msg.sender != account)) {
+            revert NotAppellant();
+        }
         if (block.timestamp > uint256(a.ruledAt) + a.window) revert TooLate();
 
         uint128 bond = _bond(task, a);
