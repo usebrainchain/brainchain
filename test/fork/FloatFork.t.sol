@@ -26,7 +26,16 @@ contract FloatForkTest is Test {
 
     function setUp() public {
         if (block.chainid != 4663) return;
-        float = new Float(IERC20(USDG), IMorpho(MORPHO), IERC20(WETH), IUniswapV3PoolLike(WETH_USDG_POOL), owner, operator, desk, 1_000e6);
+        float = new Float(
+            IERC20(USDG),
+            IMorpho(MORPHO),
+            IERC20(WETH),
+            IUniswapV3PoolLike(WETH_USDG_POOL),
+            owner,
+            operator,
+            desk,
+            1_000e6
+        );
         vm.prank(owner);
         float.allow(USDE_MARKET, true);
         vm.prank(WETH_USDG_POOL);

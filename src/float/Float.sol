@@ -42,9 +42,13 @@ interface IMorpho {
 
 interface IUniswapV3PoolLike {
     function token0() external view returns (address);
-    function swap(address recipient, bool zeroForOne, int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes calldata data)
-        external
-        returns (int256 amount0, int256 amount1);
+    function swap(
+        address recipient,
+        bool zeroForOne,
+        int256 amountSpecified,
+        uint160 sqrtPriceLimitX96,
+        bytes calldata data
+    ) external returns (int256 amount0, int256 amount1);
 }
 
 interface IWETH9 {
@@ -223,7 +227,9 @@ contract Float is Ownable2Step, ReentrancyGuard {
 
     /// @notice USDG lent across the allowed markets, at the last accrual.
     function supplied() public view returns (uint256 sum) {
-        for (uint256 i = 0; i < markets.length; i++) sum += suppliedIn(markets[i]);
+        for (uint256 i = 0; i < markets.length; i++) {
+            sum += suppliedIn(markets[i]);
+        }
     }
 
     function suppliedIn(bytes32 id) public view returns (uint256) {
@@ -254,7 +260,11 @@ contract Float is Ownable2Step, ReentrancyGuard {
         bool zeroForOne = pool.token0() == tokenIn;
         _expectedPool = address(pool);
         (int256 amount0, int256 amount1) = pool.swap(
-            address(this), zeroForOne, int256(amountIn), zeroForOne ? MIN_SQRT_RATIO + 1 : MAX_SQRT_RATIO - 1, abi.encode(tokenIn)
+            address(this),
+            zeroForOne,
+            int256(amountIn),
+            zeroForOne ? MIN_SQRT_RATIO + 1 : MAX_SQRT_RATIO - 1,
+            abi.encode(tokenIn)
         );
         _expectedPool = address(0);
         amountOut = uint256(-(zeroForOne ? amount1 : amount0));
