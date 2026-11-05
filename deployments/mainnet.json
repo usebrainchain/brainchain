@@ -26,7 +26,8 @@
     "ProofsIncome": "0xeb1b4168D4b87D3d9F0D64E13B7071251BBB63b7",
     "BrainChainProofs": "0xE6E6B7DBF1a66dFB25c6F6A87a916B3186113169",
     "BRAIN": "0xC80333bf7f4078e14Ce5b6e223aF607aDcA44418",
-    "BrainLaunchTreasury": "0x396003b5Ffb940466325622D05f1b59acCF894A2"
+    "BrainLaunchTreasury": "0x396003b5Ffb940466325622D05f1b59acCF894A2",
+    "ProofIndex": "0x0fb02559e704549794EdF3FBBBe91DB88bB849ee"
   },
   "release": "3.4.0",
   "aliases": ["v4"],
