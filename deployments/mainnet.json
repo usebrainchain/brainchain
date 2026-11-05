@@ -4,20 +4,22 @@
   "rpc": "https://rpc.usebrainchain.com",
   "parentChainId": 4663,
   "rollup": "0x6e116c6E439613e6c223b49D243B31160d074c1B",
-  "fromBlock": 839,
+  "fromBlock": 965,
   "contracts": {
-    "TaskBoard": "0x8385bb4b8990411CcdD8e851B2676da1A4C1f3C4",
-    "DecisionLog": "0xFdFEDb376c9632A4D6F15a1697E2b6853f12B4d7",
-    "ModelRegistry": "0x870B0BFB24aF2C06180FbEe266117305e0B0E00F",
-    "DecisionExecutor": "0x98BEA2E455539dB38b7337d81C673326128EA17F",
-    "WorkerStaking": "0x21Fe66c04da07f85D855E9920251Df7d584c3D9F",
-    "ProposalBonds": "0x1129435A110AB3Ffd3fFEE345A48f648DdE3D52c",
+    "TaskBoard": "0x44b8464342Bbfb9B565FAE494DfDefa37D33A211",
+    "DecisionLog": "0x2EF509bd9cA1e7C5FBe2C2FD7Ff25cE9F6f9cB68",
+    "ModelRegistry": "0xA7f8A21Cc9574DB049F525a4fd499DA49c0D51ed",
+    "DecisionExecutor": "0xFD268Ae2c1Ec0Db03C3C6b17E1AEDE973729FE29",
+    "WorkerStaking": "0xa4351E2b84eb634E93D9082907B2d0D3Aa91B98F",
+    "ProposalBonds": "0x33260Cd6b4F368031F5AF2B5413d0CE6bb2aFAA4",
     "AdminTimelock": "0xB23F49390061B1E7Faf0F99B146E491Ee1574B1e",
     "USDG": "0x8eBFEce96c0AeF7Fd23425D846a302a552c8c451",
     "BRAIN": "0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37",
     "AdminSafe": "0xdFeFbdBF680568e8DC44abbbd657c0701964cC8c",
-    "GuardianGate": "0x48c2Ed99Dc786ba667eFcFF721ff4cA92a1f344A"
+    "GuardianGate": "0x71B2dc3dEC1aEB000936380981DfC51E47AA4fb8",
+    "DcapAttestation": "0x94552cb7C8806fAD00c4EB59182E98C5Ba4bBfcb"
   },
+
   "robinhoodChain": {
     "FeeSplitter": "0x15Cf18dBA874EA0c77ED8Cecf38aDa64697102fb",
     "RewardDistributor": "0x686633c82F81b99B1Ae9bAAE458Aa8280F158367",
@@ -29,9 +31,26 @@
     "BrainLaunchTreasury": "0x396003b5Ffb940466325622D05f1b59acCF894A2",
     "ProofIndex": "0x0fb02559e704549794EdF3FBBBe91DB88bB849ee"
   },
-  "release": "3.4.0",
-  "aliases": ["v4"],
+  "release": "3.5.0",
   "retired": [
+    {
+      "release": "3.4.0",
+      "aliases": ["v4"],
+      "fromBlock": 839,
+      "contracts": {
+        "TaskBoard": "0x8385bb4b8990411CcdD8e851B2676da1A4C1f3C4",
+        "DecisionLog": "0xFdFEDb376c9632A4D6F15a1697E2b6853f12B4d7",
+        "ModelRegistry": "0x870B0BFB24aF2C06180FbEe266117305e0B0E00F",
+        "DecisionExecutor": "0x98BEA2E455539dB38b7337d81C673326128EA17F",
+        "WorkerStaking": "0x21Fe66c04da07f85D855E9920251Df7d584c3D9F",
+        "ProposalBonds": "0x1129435A110AB3Ffd3fFEE345A48f648DdE3D52c",
+        "AdminTimelock": "0xB23F49390061B1E7Faf0F99B146E491Ee1574B1e",
+        "USDG": "0x8eBFEce96c0AeF7Fd23425D846a302a552c8c451",
+        "BRAIN": "0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37",
+        "AdminSafe": "0xdFeFbdBF680568e8DC44abbbd657c0701964cC8c",
+        "GuardianGate": "0x48c2Ed99Dc786ba667eFcFF721ff4cA92a1f344A"
+      }
+    },
     {
       "release": "3.3.0",
       "fromBlock": 425,
