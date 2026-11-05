@@ -137,6 +137,12 @@ BrainChain is an Arbitrum Orbit chain with Robinhood Chain as its parent. Gas is
 | --- | --- |
 | [`Inscriptions`](src/Inscriptions.sol) | An append-only log in BrainChain's own blocks. BrainChain records each network upgrade, contract deployment and configuration change here as UTF-8 JSON, one `Inscribed(by, kind, data)` event per record, so the chain's history shows what changed and when. Anyone may write; readers filter by writer. Mainnet `0x770D6756CA8a1627FFf01B846383b13d6fa0c514`, read at [usebrainchain.com/operations](https://usebrainchain.com/operations). |
 
+### Delivery bonds (Robinhood Chain)
+
+| Contract | Responsibility |
+| --- | --- |
+| [`ProofIndex`](src/ProofIndex.sol) | Records which BrainChain Proof stands for which task, on Robinhood Chain next to the Proofs collection. BrainChain writes a task's Proof token id when the Proof is revealed; an entry is written once and never changed. Shipped reads it to settle delivery bonds: a worker that bonds its delivery on [shipped.bond](https://shipped.bond) names `proofOf(taskId)` as the bond's check, and the bond releases to the worker once the Proof exists or pays the poster when the deadline passes without one. |
+
 ### $BRAIN fee rewards (Robinhood Chain)
 
 | Contract | Responsibility |

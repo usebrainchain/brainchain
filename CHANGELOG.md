@@ -13,6 +13,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - `brainchain-verify` 0.2.0 checks grades and rulings graded twice (the lower of Jev's and the second grader's probability of paying) and refunds for failed brief checks.
 - Invariant suites for `DecisionExecutor`, `ProposalBonds` and `WorkerStaking` slashing, driven through decisions the brain records.
 - `brainchain-verify` 0.3.0 checks a ruling applied on appeal, and knows testnet set 3.5.0 (from block 2288; 3.4.1 retired).
+- `ProofIndex` on Robinhood Chain: the Proof token id per task, written once by the operator when a Proof is revealed. Shipped's `StaticCallCheck` reads `proofOf(taskId)` to settle delivery bonds on BrainChain tasks. Deployed by `script/DeployProofIndex.s.sol`.
 
 ### Fixed
 
