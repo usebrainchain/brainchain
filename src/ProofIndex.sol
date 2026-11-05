@@ -3,17 +3,18 @@ pragma solidity ^0.8.24;
 
 /// @title ProofIndex
 /// @notice Which BrainChain Proof stands for which task, kept on Robinhood
-/// Chain next to the Proofs collection. Tasks live on the BrainChain task
-/// board (chain `BOARD_CHAIN_ID`); a paid task's Proof is minted in
+/// Chain next to the Proofs collection. Tasks live on a BrainChain task board
+/// (chain `BOARD_CHAIN_ID`), and task ids start over with each board, so an
+/// entry is keyed by the board and the task. A paid task's Proof is minted in
 /// `COLLECTION` and the operator, the same key that records every decision,
 /// writes its token id here when the Proof is revealed. An entry is written
 /// once and can never be changed or removed.
 ///
 /// Shipped settles delivery bonds on BrainChain tasks from this index. Its
 /// `StaticCallCheck` (`0x2e7C4F0F2e6079C3B5F7Cd2440308234CBDc537D` on chain
-/// 4663) calls `proofOf(taskId)` and treats a value of 1 or more as delivered.
-/// Shipped accepts only check state that cannot be created and undone within
-/// one transaction; an entry here cannot be undone at all.
+/// 4663) calls `proofOf(board, taskId)` and treats a value of 1 or more as
+/// delivered. Shipped accepts only check state that cannot be created and
+/// undone within one transaction; an entry here cannot be undone at all.
 contract ProofIndex {
     error ZeroAddress();
     error ZeroToken();
@@ -22,7 +23,7 @@ contract ProofIndex {
     error NotOperator();
     error NotPendingOwner();
 
-    event ProofSet(uint256 indexed taskId, uint256 indexed tokenId);
+    event ProofSet(address indexed board, uint256 indexed taskId, uint256 indexed tokenId);
     event OperatorSet(address indexed operator);
     event OwnershipTransferStarted(address indexed owner, address indexed pendingOwner);
     event OwnerSet(address indexed owner);
@@ -35,8 +36,8 @@ contract ProofIndex {
     address public owner;
     address public pendingOwner;
     address public operator;
-    /// @notice The Proof token id of a task, zero until its Proof is revealed.
-    mapping(uint256 taskId => uint256 tokenId) public proofOf;
+    /// @notice The Proof token id of a task on a board, zero until its Proof is revealed.
+    mapping(address board => mapping(uint256 taskId => uint256 tokenId)) public proofOf;
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -58,12 +59,13 @@ contract ProofIndex {
         emit OperatorSet(operator_);
     }
 
-    /// @notice Records the Proof of a task, once.
-    function setProof(uint256 taskId, uint256 tokenId) external onlyOperator {
+    /// @notice Records the Proof of a task on a board, once.
+    function setProof(address board, uint256 taskId, uint256 tokenId) external onlyOperator {
+        if (board == address(0)) revert ZeroAddress();
         if (tokenId == 0) revert ZeroToken();
-        if (proofOf[taskId] != 0) revert AlreadySet();
-        proofOf[taskId] = tokenId;
-        emit ProofSet(taskId, tokenId);
+        if (proofOf[board][taskId] != 0) revert AlreadySet();
+        proofOf[board][taskId] = tokenId;
+        emit ProofSet(board, taskId, tokenId);
     }
 
     function setOperator(address operator_) external onlyOwner {

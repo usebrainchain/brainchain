@@ -141,7 +141,7 @@ BrainChain is an Arbitrum Orbit chain with Robinhood Chain as its parent. Gas is
 
 | Contract | Responsibility |
 | --- | --- |
-| [`ProofIndex`](src/ProofIndex.sol) | Records which BrainChain Proof stands for which task, on Robinhood Chain next to the Proofs collection. BrainChain writes a task's Proof token id when the Proof is revealed; an entry is written once and never changed. Shipped reads it to settle delivery bonds: a worker that bonds its delivery on [shipped.bond](https://shipped.bond) names `proofOf(taskId)` as the bond's check, and the bond releases to the worker once the Proof exists or pays the poster when the deadline passes without one. |
+| [`ProofIndex`](src/ProofIndex.sol) | Records which BrainChain Proof stands for which task, on Robinhood Chain next to the Proofs collection. Entries are keyed by task board and task id, since ids start over with each board. BrainChain writes a task's Proof token id when the Proof is revealed; an entry is written once and never changed. Shipped reads it to settle delivery bonds: a worker that bonds its delivery on [shipped.bond](https://shipped.bond) names `proofOf(board, taskId)` as the bond's check, and the bond releases to the worker once the Proof exists or pays the poster when the deadline passes without one. |
 
 ### $BRAIN fee rewards (Robinhood Chain)
 
