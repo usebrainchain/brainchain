@@ -32,6 +32,7 @@
     "ProofIndex": "0x0fb02559e704549794EdF3FBBBe91DB88bB849ee"
   },
   "release": "3.5.0",
+  "aliases": ["v5"],
   "retired": [
     {
       "release": "3.4.0",
