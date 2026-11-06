@@ -19,12 +19,13 @@ Please give us reasonable time to fix an issue before disclosing it, and do not 
 
 ## Scope
 
-In scope: the contracts in `src/` that are deployed on mainnet, as listed in `deployments/mainnet.json`, and their documented behaviour in `docs/`; the brain service and its API; the x402 desk and the payments it takes and returns; and any bug in BrainChain's tools that could take or lock funds or expose a key.
+In scope: the contracts in `src/` that are in use on mainnet, with their documented behaviour in `docs/`; the brain service and its API; the x402 desk and the payments it takes and returns; and any bug in BrainChain's tools that could take or lock funds or expose a key.
 
 Out of scope:
 
-- contracts and code that are not deployed on mainnet;
-- issues that require a compromised guardian key, or a compromised brain key (the key that records Jev's decisions) beyond what the contracts bound;
+- contracts and code that are not deployed on mainnet, and retired contract sets;
+- contracts whose source is not in this repository;
+- issues that need a key BrainChain holds, such as the admin, the guardian or a deployer key, or a compromised brain key (the key that records Jev's decisions) beyond what the contracts bound;
 - issues where the only funds at risk are the caller's own;
 - scanner findings without a demonstrated impact;
 - third-party services.
