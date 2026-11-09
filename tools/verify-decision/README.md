@@ -113,7 +113,7 @@ That Jev produced the answer. BrainChain records Jev's answers, and the contract
 
 ## JSON
 
-`--json` prints one object. `decisions` holds one entry, or one per decision with `--task`. `verdict` is `match`, `withheld`, `mismatch` or `unverified` (a record could not be fetched). With `withheld`, `withheldNotChecked` says what was left out, and the decision carries `withheld: true`. A grade of outside work carries `outside: true`. Each check keeps its `name` across releases, and its `status` is `ok`, `fail`, `skip` or `error`. When the tool cannot run, it prints `{ "error": "..." }` and exits 1. Trimmed to one check:
+`--json` prints one object. `decisions` holds one entry, or one per decision with `--task`. `verdict` is `match`, `withheld`, `mismatch` or `unverified` (a record could not be fetched). With `withheld`, `withheldNotChecked` says what was left out, and the decision carries `withheld: true`. A grade of outside work carries `outside: true`. Each check keeps its `name` across releases, and its `status` is `ok`, `fail`, `skip` or `error`. When the tool cannot run, it prints `{ "error": "..." }` and exits 1, or 2 for bad arguments or an RPC that serves another chain. Trimmed to one check:
 
 ```json
 {

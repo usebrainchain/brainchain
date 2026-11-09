@@ -8,11 +8,13 @@ import {
   BaseError,
   decodeFunctionData,
   encodeAbiParameters,
+  encodeFunctionData,
   keccak256,
   pad,
   toBytes,
   type Abi,
   type Address,
+  type EncodeFunctionDataParameters,
   type Hex,
   type PublicClient,
   toHex,
@@ -203,6 +205,7 @@ function decodeChange(target: Address, data: Hex): Record<string, unknown> {
   for (const abi of [taskBoardAbi, decisionExecutorAbi, modelRegistryAbi, decisionLogAbi] as readonly Abi[]) {
     try {
       const { functionName, args } = decodeFunctionData({ abi, data });
+      if (encodeFunctionData({ abi, functionName, args } as EncodeFunctionDataParameters).toLowerCase() !== data.toLowerCase()) continue;
       return { target, function: functionName, args: plain(args ?? []) };
     } catch {
       // Not this contract's interface; try the next one.
