@@ -430,6 +430,31 @@ describe("records", () => {
 describe("the command line", () => {
   const cli = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
   const run = (...args) => spawnSync(process.execPath, [cli, ...args], { encoding: "utf8" });
+  // spawnSync would block the stub RPC this process serves.
+  const runAsync = (...args) => new Promise((resolve) => execFile(process.execPath, [cli, ...args], (error, stdout, stderr) => resolve({ code: error?.code ?? 0, stdout, stderr })));
+  const MAINNET = 274663;
+  const urlOf = (rpc) => `http://127.0.0.1:${rpc.address().port}`;
+
+  /** Answers as `chainId` with an empty DecisionLog, so the CLI names the set it chose and stops. */
+  async function stubRpc(chainId) {
+    const rpc = createServer((request, response) => {
+      let body = "";
+      request.on("data", (chunk) => (body += chunk));
+      request.on("end", () => {
+        const { id, method } = JSON.parse(body);
+        const result = method === "eth_chainId" ? toHex(chainId) : `0x${"0".repeat(64)}`;
+        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id, result }));
+      });
+    });
+    await new Promise((resolve) => rpc.listen(0, "127.0.0.1", resolve));
+    return rpc;
+  }
+  const onlyError = (stdout) => {
+    const out = JSON.parse(stdout);
+    assert.deepEqual(Object.keys(out), ["error"]);
+    assert.doesNotMatch(out.error, /Usage:/);
+    return out.error;
+  };
 
   it("says a set from before 3.0.0 cannot be read", () => {
     for (const set of ["v2", "2.0.0", "0x83b31D99Fa31a9e5257955A737eF34c40f1c57bf"]) {
@@ -449,22 +474,9 @@ describe("the command line", () => {
   });
 
   it("opens a set by a key the site published it under before, as the site's ?set= does", async () => {
-    // Answers as mainnet with an empty DecisionLog, so the CLI names the set it chose and stops.
-    const rpc = createServer((request, response) => {
-      let body = "";
-      request.on("data", (chunk) => (body += chunk));
-      request.on("end", () => {
-        const { id, method } = JSON.parse(body);
-        const result = method === "eth_chainId" ? "0x430e7" : `0x${"0".repeat(64)}`;
-        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id, result }));
-      });
-    });
-    await new Promise((resolve) => rpc.listen(0, "127.0.0.1", resolve));
+    const rpc = await stubRpc(MAINNET);
     try {
-      const url = `http://127.0.0.1:${rpc.address().port}`;
-      const { code, stderr } = await new Promise((resolve) =>
-        execFile(process.execPath, [cli, "mainnet", "1", "--set", "v4", "--rpc", url], (error, stdout, stderr) => resolve({ code: error?.code ?? 0, stderr })),
-      );
+      const { code, stderr } = await runAsync("mainnet", "1", "--set", "v4", "--rpc", urlOf(rpc));
       assert.equal(code, 1);
       assert.match(stderr, /^DecisionLog 0xFdFEDb376c9632A4D6F15a1697E2b6853f12B4d7 \(set v3-4\) holds decisions 1 to 0/);
     } finally {
@@ -483,6 +495,44 @@ describe("the command line", () => {
       const { status, stderr } = run(name, "1");
       assert.equal(status, 2);
       assert.match(stderr, /Unknown network/);
+    }
+  });
+
+  it("reports bad arguments as one JSON object with --json, and as text without it", () => {
+    for (const args of [[], ["mainnet"], ["mainnet", "--task"], ["mainnet", "abc"], ["mainnet", "1", "2"], ["mainnet", "1", "--nope"], ["mainnet", "1", "--rpc", "ftp://x"], ["nowhere", "1"], ["mainnet", "1", "--set", "v2"], ["mainnet", "1", "--set", "nope"]]) {
+      const asJson = run(...args, "--json");
+      assert.equal(asJson.status, 2, args.join(" "));
+      assert.equal(asJson.stderr, "", args.join(" "));
+      onlyError(asJson.stdout);
+
+      const asText = run(...args);
+      assert.equal(asText.status, 2, args.join(" "));
+      assert.equal(asText.stdout, "", args.join(" "));
+      assert.match(asText.stderr, /\n\nUsage:\n/, args.join(" "));
+    }
+  });
+
+  it("reports an RPC on another chain as one JSON object with --json", async () => {
+    const rpc = await stubRpc(274630);
+    try {
+      const { code, stdout, stderr } = await runAsync("mainnet", "1", "--rpc", urlOf(rpc), "--json");
+      assert.equal(code, 2);
+      assert.equal(stderr, "");
+      assert.match(onlyError(stdout), /^The RPC serves chain 274630, not /);
+    } finally {
+      rpc.close();
+    }
+  });
+
+  it("reports a decision it cannot read as one JSON object with --json", async () => {
+    const rpc = await stubRpc(MAINNET);
+    try {
+      const { code, stdout, stderr } = await runAsync("mainnet", "1", "--rpc", urlOf(rpc), "--json");
+      assert.equal(code, 1);
+      assert.equal(stderr, "");
+      assert.match(onlyError(stdout), /holds decisions 1 to 0/);
+    } finally {
+      rpc.close();
     }
   });
 });

@@ -32,6 +32,7 @@ const TRUST_MODEL = "https://docs.usebrainchain.com/trust-model";
 const BEFORE_3 = /^(v2(-|$)|2\.|0x83b31d99fa31a9e5257955a737ef34c40f1c57bf$)/i;
 
 function usage(message: string): never {
+  if (json) fail(message, 2);
   console.error(`${message}\n\n${USAGE}`);
   process.exit(2);
 }
@@ -94,10 +95,10 @@ const ctx: Context = {
   briefs: new Map(),
 };
 
-function fail(message: string): never {
+function fail(message: string, status = 1): never {
   if (json) console.log(JSON.stringify({ error: clean(message) }, null, 2));
   else console.error(clean(message));
-  process.exit(1);
+  process.exit(status);
 }
 
 const TAGS = { ok: "ok", fail: "FAIL", skip: "skip", error: "ERROR" } as const;
