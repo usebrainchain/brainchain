@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createServer } from "node:http";
-import { after, before, describe, it } from "node:test";
+import { after, before, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { createPublicClient, encodeAbiParameters, encodeFunctionData, http, keccak256, toBytes, toHex } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 
 import { taskBoardAbi } from "../dist/abi.js";
 import { canonicalStringify } from "../dist/canonical.js";
-import { clean, outcomeOf, verifyDecision, withheldNotChecked } from "../dist/verify.js";
+import { clean, outcomeOf, readReceipt, receiptDecision, verifyDecision, withheldNotChecked } from "../dist/verify.js";
 
 const YES = `0x${"0".repeat(63)}1`;
 const NO = `0x${"0".repeat(64)}`;
@@ -24,6 +28,14 @@ const set = {
   executor: "0x3333333333333333333333333333333333333333",
 };
 const STRANGER = "0x4444444444444444444444444444444444444444";
+// Test keys: the brain key that records, and another.
+const BRAIN = privateKeyToAccount(`0x${"b1".repeat(32)}`);
+const OTHER = privateKeyToAccount(`0x${"c2".repeat(32)}`);
+const IMAGE = `0x${"1a".repeat(32)}`;
+const APP = `0x${"2b".repeat(32)}`;
+// From the brain's evidenceHash and receipts.issue (vr-3) for the paid grade below.
+const PINNED_EVIDENCE = "0x268e177e64120e2809a06f847cd3c51a51ec648b33764646502c5ba8c5aa7a00";
+const PINNED_SIGNATURE = "0x48656313d9ced258eed50e2e35e402d10721b3599f7350d212ca4dda5d97fdac7b87e4e9e3dc26aacee57ab9e270fad8df78f12eeb38d229a3b620cc064573991c";
 const Status = { Open: 1, Hired: 2, Delivered: 3, Graded: 4, Disputed: 5, Paid: 6, Refunded: 7, Ruled: 8, Appealed: 9 };
 
 const LEVELS = ["Best", "Fine", "Bad"];
@@ -88,7 +100,30 @@ after(() => server.close());
  * One decision against a stub chain and the local host. `publish` is the original
  * record, which the chain's hashes commit; `serve` is what the host sends.
  */
-async function verify({ kind = 2, subject = taskSubject(7n), answer = YES, bps = 9000, publish = grade(), serve, withheld = false, task = {}, bar = 7000, briefURI = dataUri(JSON.stringify(BRIEF)), briefHash, rpc = "http://127.0.0.1:1", graded = true, queued }) {
+async function verify({
+  kind = 2,
+  subject = taskSubject(7n),
+  answer = YES,
+  bps = 9000,
+  publish = grade(),
+  serve,
+  withheld = false,
+  task = {},
+  bar = 7000,
+  briefURI = dataUri(JSON.stringify(BRIEF)),
+  briefHash,
+  rpc = "http://127.0.0.1:1",
+  graded = true,
+  queued,
+  sender = BRAIN.address,
+  brain = sender,
+  attested = [{ image: IMAGE, app: APP, blockNumber: 800n }],
+  ruled = [],
+  balances,
+  offline,
+  receipt,
+  reads = [],
+}) {
   const original = JSON.stringify(publish);
   const served = serve === undefined ? original : typeof serve === "string" ? serve : JSON.stringify(serve);
   const name = `/record-${pages.size}.json`;
@@ -97,22 +132,30 @@ async function verify({ kind = 2, subject = taskSubject(7n), answer = YES, bps =
   const on = { poster: STRANGER, status: Status.Graded, accepted: false, hireThresholdBps: 5000, gradeThresholdBps: bar, ruleThresholdBps: 7000, ...task };
   const client = {
     transport: { url: rpc },
+    getTransaction: async ({ hash }) => {
+      reads.push(`getTransaction ${hash}`);
+      return { from: sender };
+    },
     readContract: async ({ functionName, address }) => {
+      if (functionName === "brain") return brain;
       if (functionName === "config") return [5000, bar, 7000, 0n, 0n, 0n, 0n, 0n, 0n];
       if (functionName === "changeThresholdBps") return 7000;
       if (functionName === "getChange") return { eta: 1793000000n, executed: false, vetoed: false };
       if (functionName === "get") return address === set.log ? decision : on;
       throw new Error(`unexpected read ${functionName}`);
     },
-    getContractEvents: async ({ eventName }) => {
-      if (eventName === "Recorded") return [{ args: { id: 1n, ...decision, payloadHash: keccak256(toBytes(original)), payloadURI: `${base}${name}` }, blockNumber: 900n }];
+    getContractEvents: async ({ eventName, args, toBlock }) => {
+      reads.push(eventName);
+      if (eventName === "Recorded") return [{ args: { id: 1n, ...decision, payloadHash: keccak256(toBytes(original)), payloadURI: `${base}${name}` }, blockNumber: 900n, transactionHash: `0x${"f0".repeat(32)}` }];
       if (eventName === "Posted") return [{ args: { briefURI, briefHash: briefHash ?? keccak256(toBytes(JSON.stringify(BRIEF))) } }];
-      if (eventName === "WorkGraded" && graded) return [{ args: { accepted: answer === YES && bps >= on.gradeThresholdBps } }];
+      if (eventName === "WorkGraded" && graded) return [{ args: { decisionId: 1n, accepted: answer === YES && bps >= on.gradeThresholdBps } }];
+      if (eventName === "Ruled") return ruled.map((decisionId) => ({ args: { decisionId, paid: false, confident: true } }));
       if (eventName === "Queued" && queued) return [{ args: { changeId: 1n, target: set.board, data: queued } }];
+      if (eventName === "BrainAttested") return attested.filter((a) => a.blockNumber <= toBlock && args.brain === sender).map((a) => ({ args: { brain: sender, image: a.image, app: a.app }, blockNumber: a.blockNumber }));
       return [];
     },
   };
-  return verifyDecision({ client, network, set, briefs: new Map() }, 1n);
+  return verifyDecision({ client, network, set, briefs: new Map(), offline, balances }, 1n, receipt);
 }
 
 const check = (report, name) => report.checks.find((c) => c.name === name);
@@ -645,6 +688,314 @@ describe("a panel of judges", () => {
   });
 });
 
+describe("evidence and receipts", () => {
+  // The brain's shapes (evidence.ts, receipts.ts, network.ts), copied. The brain's own evidenceHash and receipts.issue give the pinned values for these records.
+  const SECOND = "deepseek/deepseek-v4.1-flash-1017";
+  const THIRD = "qwen/qwen3-235b-a22b-instruct-2507";
+  const PAYER = "0x00000000000000000000000000000000000000a1";
+  const DESK = "0x00000000000000000000000000000000000000D5";
+  const USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+  const PAYMENT = { network: "eip155:8453", asset: USDC, amount: "1000000", payer: PAYER, transaction: `0x${"ab".repeat(32)}` };
+  const VERSIONS = { prompt: 1, brain: BRAIN.address, image: IMAGE, app: APP };
+  const RECEIPT_URL = () => `${base}/receipts/${set.log.toLowerCase()}/1.json`;
+  const RECEIPT_TYPES = {
+    Receipt: [
+      { name: "version", type: "uint256" },
+      { name: "chainId", type: "uint256" },
+      { name: "decisionLog", type: "address" },
+      { name: "decision", type: "uint256" },
+      { name: "brain", type: "address" },
+      { name: "evidence", type: "bytes32" },
+      { name: "job", type: "string" },
+      { name: "outcome", type: "string" },
+      { name: "network", type: "string" },
+      { name: "payer", type: "string" },
+      { name: "asset", type: "string" },
+      { name: "amount", type: "string" },
+      { name: "transaction", type: "string" },
+      { name: "issuedAt", type: "uint256" },
+    ],
+  };
+
+  const answered = (model, probabilities, paid, n, receipt = { id: `rcpt-${n}`, body: { signature: "0x5151" } }) => ({ model, probabilities, paid, receipt, requestHash: `sha256:${String(n).repeat(64)}` });
+  /** A grade on task 7 by a panel of three under lower-of: Jev puts 0.9 on the paid levels, the second grader 0.8 and the third 0.7, so accept at 0.7. */
+  const accepted = () =>
+    grade({
+      answer: "accept",
+      confidence: 0.7,
+      extra: {
+        model: "jev-1.14.0",
+        jevPaid: 0.9,
+        second: answered(SECOND, { 0: 0.2, 1: 0.4, 2: 0.4 }, 0.8, 2),
+        panel: { rule: "lower-of", rules: { "lower-of": 0.7, majority: 0.8, median: 0.8 }, judges: [answered(THIRD, { 0: 0.3, 1: 0.4, 2: 0.3 }, 0.7, 3, null)] },
+      },
+    });
+  /** The same panel putting 0.1, 0.2 and 0.3 on paying: reject at 0.9, whose work stays private. */
+  const rejected = () =>
+    grade({
+      answer: "reject",
+      confidence: 0.9,
+      extra: {
+        model: "jev-1.14.0",
+        jevPaid: 0.1,
+        second: answered(SECOND, { 0: 0.8, 1: 0.1, 2: 0.1 }, 0.2, 2),
+        panel: { rule: "lower-of", rules: { "lower-of": 0.1, majority: 0.2, median: 0.2 }, judges: [answered(THIRD, { 0: 0.7, 1: 0.2, 2: 0.1 }, 0.3, 3, null)] },
+      },
+    });
+  /** withEvidence: the versions, the payments when an agent paid, and the hash over them with inputHash and every judge's answer. */
+  function sealed(record, payments = [PAYMENT], versions = VERSIONS, input = keccak256(toBytes(canonicalStringify(record.request)))) {
+    const payload = { ...record, versions, ...(payments.length > 0 ? { payments } : {}) };
+    const judges = [payload.second, ...(payload.panel?.judges ?? [])].filter((judge) => judge !== undefined).map(({ model, probabilities, requestHash, receipt }) => ({ model, probabilities, requestHash, receipt }));
+    const evidence = { input, judges: [{ model: payload.model, probabilities: payload.probabilities }, ...judges], payments: payload.payments ?? [], versions };
+    return { ...payload, evidence: keccak256(toBytes(canonicalStringify(evidence))) };
+  }
+  const recorded = (publish) => ({ publish, answer: publish.answer === "accept" ? YES : NO, bps: Math.round(publish.confidence * 10_000) });
+  const paid = (publish, chain = {}) => verify({ ...recorded(publish), task: { status: Status.Paid, accepted: true }, balances: moved(), ...chain });
+
+  /** receipts.issue for decision 1 on this log, as a paid task settles on it. */
+  async function issued(record, fields = {}, key = BRAIN) {
+    const payload = { version: 1, chainId: network.chainId, decisionLog: set.log, brain: key.address, decision: "1", evidence: record.evidence, job: "task", outcome: "accepted", ...PAYMENT, issuedAt: 1_763_164_800, ...fields };
+    const message = { ...payload, version: BigInt(payload.version), chainId: BigInt(payload.chainId), decision: BigInt(payload.decision), issuedAt: BigInt(payload.issuedAt) };
+    const signature = await key.signTypedData({ domain: { name: "BrainChain receipt", version: "1", chainId: payload.chainId, verifyingContract: payload.decisionLog }, types: RECEIPT_TYPES, primaryType: "Receipt", message });
+    return { format: "eip712", payload, signature };
+  }
+  /** The extension's receipt in PAYMENT-RESPONSE, signed with the brain key. */
+  async function extension(fields = {}, key = BRAIN) {
+    const payload = { version: 1, network: PAYMENT.network, resourceUrl: "https://brain.usebrainchain.com/x402/grades", payer: PAYER, issuedAt: 1_763_164_800, transaction: PAYMENT.transaction, ...fields };
+    const types = { Receipt: [{ name: "version", type: "uint256" }, { name: "network", type: "string" }, { name: "resourceUrl", type: "string" }, { name: "payer", type: "string" }, { name: "issuedAt", type: "uint256" }, { name: "transaction", type: "string" }] };
+    const signature = await key.signTypedData({ domain: { name: "x402 receipt", version: "1", chainId: 1 }, types, primaryType: "Receipt", message: { ...payload, version: 1n, issuedAt: BigInt(payload.issuedAt) } });
+    return { format: "eip712", payload, signature };
+  }
+  /** GET /network.json: the manifest, the exact text signed, and its personal_sign signature. */
+  async function manifest(key = BRAIN, payees = [{ network: PAYMENT.network, asset: USDC, payTo: DESK }]) {
+    const document = { issuedAt: "2026-11-15T00:00:00.000Z", chainId: network.chainId, paymentChainId: 4663, brain: key.address, desk: DESK, formerDesks: [], payees, minClients: {} };
+    const signed = `BrainChain network manifest\n${canonicalStringify(document)}`;
+    pages.set("/network.json", { body: JSON.stringify({ manifest: document, signed, signature: await key.signMessage({ message: signed }) }) });
+  }
+  /** What the payment transaction did to each balance of USDC on Base. */
+  const moved = (amount = 1_000_000n, to = DESK) => async (network, transaction, asset) =>
+    network === PAYMENT.network && transaction === PAYMENT.transaction && asset === USDC ? new Map([[PAYER, -amount], [to.toLowerCase(), amount]]) : undefined;
+  const serveReceipt = (receipt) => pages.set(new URL(RECEIPT_URL()).pathname, { body: JSON.stringify(receipt) });
+  const lines = (report) => report.checks.map((c) => `${c.name} ${c.status}`);
+  const given = (value) => ({ from: "receipt.json", value });
+
+  before(() => manifest());
+  beforeEach(() => pages.delete(new URL(RECEIPT_URL()).pathname));
+
+  it("rebuilds the evidence hash as the brain does, and checks it on a copy served without the work", async () => {
+    const record = sealed(accepted());
+    assert.equal(record.evidence, PINNED_EVIDENCE);
+    const whole = await verify({ ...recorded(record), offline: true });
+    assert.deepEqual(failed(whole), []);
+    assert.match(check(whole, "evidence").message, /^evidence: the hash over inputHash, every judge's answer and receipt, the payments and the versions is 0x\w{4}…\w{4}, as recorded$/);
+
+    const kept = sealed(rejected());
+    const copy = await verify({ ...recorded(kept), serve: redacted(kept), withheld: true, offline: true });
+    assert.equal(copy.withheld, true);
+    assert.equal(status(copy, "record-hash"), "skip");
+    assert.equal(status(copy, "evidence"), "ok");
+    assert.deepEqual(failed(copy), []);
+
+    // A copy whose parts changed after the brain hashed them misses the hash.
+    for (const forged of [
+      { ...redacted(kept), second: { ...kept.second, receipt: { id: "rcpt-forged", body: {} } } },
+      { ...redacted(kept), panel: { ...kept.panel, judges: [{ ...kept.panel.judges[0], requestHash: "sha256:ff" }] } },
+      { ...redacted(kept), payments: [{ ...PAYMENT, amount: "1" }] },
+      { ...redacted(kept), versions: { ...VERSIONS, prompt: 2 } },
+    ]) {
+      const report = await verify({ ...recorded(kept), serve: forged, withheld: true, offline: true });
+      assert.deepEqual(failed(report), ["evidence"]);
+    }
+    const unbuilt = await verify({ ...recorded(kept), serve: { ...redacted(kept), versions: undefined }, withheld: true, offline: true });
+    assert.deepEqual(failed(unbuilt), ["evidence"]);
+    assert.match(check(unbuilt, "evidence").message, /cannot be rebuilt/);
+
+    // The hash is the record's, so a host can rebuild it over a forged copy. The receipt the brain key signed over the hash still tells them apart.
+    const { versions: _v, payments: _p, evidence: _e, ...parts } = redacted(kept);
+    const rebuilt = sealed({ ...parts, second: { ...kept.second, receipt: { id: "rcpt-forged", body: {} } } }, [PAYMENT], VERSIONS, keccak256(toBytes(canonicalStringify(kept.request))));
+    const refunded = { withheld: true, task: { status: Status.Refunded, accepted: false }, receipt: given(await issued(kept, { outcome: "rejected" })) };
+    assert.deepEqual(failed(await paid(kept, { ...refunded, serve: redacted(kept) })), []);
+    const caught = await paid(kept, { ...refunded, serve: rebuilt });
+    assert.equal(status(caught, "evidence"), "ok");
+    assert.deepEqual(failed(caught), ["receipt-decision"]);
+    assert.match(check(caught, "receipt-decision").message, /^receipt: names evidence \S+, not the record's \S+$/);
+  });
+
+  it("holds the versions to the key that sent the Recorded transaction and its attestation on the log before it", async () => {
+    const report = await verify({ ...recorded(sealed(accepted())), offline: true });
+    assert.equal(check(report, "versions").message, `versions: prompt version 1, brain ${BRAIN.address.slice(0, 6)}…${BRAIN.address.slice(-4)}, the key that sent this decision's Recorded transaction and that the log attested for image 0x1a1a…1a1a and app 0x2b2b…2b2b`);
+
+    const later = await verify({ ...recorded(sealed(accepted())), offline: true, attested: [{ image: IMAGE, app: APP, blockNumber: 800n }, { image: `0x${"3c".repeat(32)}`, app: APP, blockNumber: 950n }] });
+    assert.equal(status(later, "versions"), "ok");
+    const reattested = await verify({ ...recorded(sealed(accepted())), offline: true, attested: [{ image: IMAGE, app: APP, blockNumber: 800n }, { image: `0x${"3c".repeat(32)}`, app: APP, blockNumber: 850n }] });
+    assert.deepEqual(failed(reattested), ["versions"]);
+    assert.match(check(reattested, "versions").message, /last attested \S+ before this decision for image 0x3c3c…3c3c and app 0x2b2b…2b2b, and the record names image 0x1a1a…1a1a/);
+
+    const otherKey = await verify({ ...recorded(sealed(accepted())), offline: true, sender: OTHER.address });
+    assert.deepEqual(failed(otherKey), ["versions"]);
+    assert.match(check(otherKey, "versions").message, /the record names the brain \S+, but \S+ sent its Recorded transaction/);
+
+    const { image: _i, app: _a, ...named } = VERSIONS;
+    const ownerNamed = await verify({ ...recorded(sealed(accepted(), [PAYMENT], named)), offline: true, attested: [] });
+    assert.equal(status(ownerNamed, "versions"), "ok");
+    assert.match(check(ownerNamed, "versions").message, /The log had not attested it, so the owner named it and the record names no image or app$/);
+    assert.deepEqual(failed(await verify({ ...recorded(sealed(accepted())), offline: true, attested: [] })), ["versions"]);
+  });
+
+  it("checks a good receipt the brain host serves, and the same receipt kept from the reply", async () => {
+    const record = sealed(accepted());
+    const receipt = await issued(record);
+    assert.equal(receipt.signature, PINNED_SIGNATURE);
+    serveReceipt(receipt);
+    const report = await paid(record);
+    assert.deepEqual(failed(report), []);
+    assert.equal(outcomeOf([report]), "match");
+    assert.deepEqual(lines(report).slice(-6), ["evidence ok", "versions ok", "receipt ok", "receipt-decision ok", "receipt-outcome ok", "receipt-payment ok"]);
+    const brain = `${BRAIN.address.slice(0, 6)}…${BRAIN.address.slice(-4)}`;
+    assert.equal(check(report, "receipt").message, `receipt: BrainChain's receipt, signed by ${brain}, the key that sent this decision's Recorded transaction`);
+    assert.match(check(report, "receipt-decision").message, /^receipt: names decision 1 on DecisionLog 0x2222…2222, chain 274663, and the record's evidence hash 0x\w{4}…\w{4}$/);
+    assert.equal(check(report, "receipt-outcome").message, "outcome: accepted, as the board paid task 7 on this decision");
+    assert.equal(check(report, "receipt-payment").message, "payment: transaction 0xabab…abab on eip155:8453 moved 1000000 of 0x8335…2913 from 0x0000…00a1 to the desk's 0x0000…00D5, as the receipt and the record say");
+    assert.deepEqual(report.receipt, { from: RECEIPT_URL(), job: "task", outcome: "accepted" });
+
+    // An agent keeps the reply that carried the receipt, or the receipt alone.
+    const file = join(await mkdtemp(join(tmpdir(), "receipt-")), "reply.json");
+    await writeFile(file, JSON.stringify({ order: "o-1", state: "paid-out", receipt }));
+    pages.set("/kept.json", { body: JSON.stringify(receipt) });
+    const local = { transport: { url: "http://127.0.0.1:1" } };
+    for (const kept of [await readReceipt(local, file), await readReceipt(local, `${base}/kept.json`)]) {
+      assert.deepEqual(kept.value, receipt);
+      assert.deepEqual(receiptDecision(kept.value), { decision: "1", decisionLog: set.log });
+      const offline = await paid(record, { receipt: kept, offline: true });
+      assert.deepEqual(failed(offline), []);
+      assert.equal(offline.receipt.from, kept.from);
+    }
+    await assert.rejects(readReceipt(local, `${base}/no-such-receipt`), /answered with status 404/);
+  });
+
+  it("fails an amount the record and the chain do not show, signed so or changed after", async () => {
+    const record = sealed(accepted());
+    const signedWrong = await paid(record, { receipt: given(await issued(record, { amount: "2000000" })) });
+    assert.deepEqual(failed(signedWrong), ["receipt-payment"]);
+    assert.equal(check(signedWrong, "receipt-payment").message, "payment: the receipt says amount 2000000, where the record's payment says 1000000");
+
+    const changed = await issued(record);
+    changed.payload.amount = "2000000";
+    assert.deepEqual(failed(await paid(record, { receipt: given(changed) })), ["receipt", "receipt-payment"]);
+
+    const short = await paid(record, { receipt: given(await issued(record)), balances: moved(500_000n) });
+    assert.deepEqual(failed(short), ["receipt-payment"]);
+    assert.match(check(short, "receipt-payment").message, /moved 500000 of 0x8335…2913 from 0x0000…00a1 and 500000 to the desk's 0x0000…00D5, where the receipt says 1000000$/);
+    assert.deepEqual(failed(await paid(record, { receipt: given(await issued(record)), balances: moved(1_000_000n, STRANGER) })), ["receipt-payment"]);
+    assert.deepEqual(failed(await paid(record, { receipt: given(await issued(record)), balances: async () => undefined })), ["receipt-payment"]);
+  });
+
+  it("requires the key that sent the Recorded transaction, which outlasts a change of brain()", async () => {
+    const record = sealed(accepted());
+    const stranger = await paid(record, { receipt: given(await issued(record, {}, OTHER)) });
+    assert.deepEqual(failed(stranger), ["receipt"]);
+    assert.match(check(stranger, "receipt").message, /^receipt: signed by \S+, not by \S+, the key that sent this decision's Recorded transaction$/);
+
+    // A later release named another key: brain() and the manifest are its, and the decision and its receipt stay the old key's.
+    await manifest(OTHER);
+    try {
+      const rotated = await paid(record, { brain: OTHER.address, receipt: given(await issued(record)) });
+      assert.deepEqual(failed(rotated), []);
+      assert.deepEqual(failed(await paid(record, { brain: OTHER.address, receipt: given(await issued(record, {}, OTHER)) })), ["receipt"]);
+    } finally {
+      await manifest();
+    }
+    const misnamed = await issued(record, { brain: OTHER.address });
+    assert.deepEqual(failed(await paid(record, { receipt: given(misnamed) })), ["receipt"]);
+  });
+
+  it("fails a receipt for another decision", async () => {
+    const record = sealed(accepted());
+    const other = await paid(record, { receipt: given(await issued(record, { decision: "8" })) });
+    assert.deepEqual(failed(other), ["receipt-decision"]);
+    assert.equal(check(other, "receipt-decision").message, "receipt: names decision 8, not 1");
+    for (const fields of [{ evidence: `0x${"e7".repeat(32)}` }, { decisionLog: STRANGER }, { chainId: 274630 }]) {
+      assert.deepEqual(failed(await paid(record, { receipt: given(await issued(record, fields)) })), ["receipt-decision"], JSON.stringify(fields));
+    }
+    const before = await paid(grade(), { receipt: given(await issued(sealed(accepted()))) });
+    assert.ok(failed(before).includes("receipt-decision"));
+    assert.match(check(before, "receipt-decision").message, /an evidence hash, where the record holds none/);
+  });
+
+  it("holds the outcome to the board, and a paid grade's to the grade bar", async () => {
+    const record = sealed(accepted());
+    const refunded = { task: { status: Status.Refunded, accepted: true } };
+    assert.deepEqual(failed(await paid(record, { ...refunded, receipt: given(await issued(record, { outcome: "rejected" })) })), []);
+    const claimed = await paid(record, { ...refunded, receipt: given(await issued(record)) });
+    assert.deepEqual(failed(claimed), ["receipt-outcome"]);
+    assert.equal(check(claimed, "receipt-outcome").message, "outcome: the receipt says accepted, but the board refunded task 7");
+
+    const open = await paid(record, { task: { status: Status.Graded, accepted: true }, receipt: given(await issued(record)) });
+    assert.match(check(open, "receipt-outcome").message, /^outcome: task 7 is graded\. The board has neither paid nor refunded it/);
+    const overruled = await paid(record, { ruled: [2n], receipt: given(await issued(record)) });
+    assert.equal(check(overruled, "receipt-outcome").message, "outcome: the board settled task 7 on decision 2, not on this one");
+    assert.ok(failed(await paid(record, { receipt: given(await issued(record, { job: "grade" })) })).includes("receipt-outcome"));
+
+    const graded = (publish, outcome, chain = {}) => issued(publish, { job: "grade", outcome }).then((r) => paid(publish, { subject: paidSubject(7n), receipt: given(r), ...chain }));
+    const outside = sealed({ ...accepted(), subject: "7" });
+    const cleared = await graded(outside, "accepted");
+    assert.deepEqual(failed(cleared), []);
+    assert.equal(check(cleared, "receipt-outcome").message, "outcome: accepted, as accept at 70% is at or above the board's 70% grade bar");
+    assert.deepEqual(failed(await graded(outside, "rejected", { bar: 8000 })), []);
+    assert.deepEqual(failed(await graded(outside, "accepted", { bar: 8000 })), ["receipt-outcome"]);
+  });
+
+  it("reads the x402 extension's receipt from the same key, which names no decision", async () => {
+    const record = sealed(accepted());
+    const report = await paid(record, { receipt: given(await extension()) });
+    assert.deepEqual(failed(report), []);
+    assert.deepEqual(lines(report).slice(-3), ["receipt ok", "receipt-decision skip", "receipt-payment ok"]);
+    assert.match(check(report, "receipt").message, /^receipt: the x402 extension's receipt, signed by/);
+    assert.equal(receiptDecision(await extension()), undefined);
+    assert.deepEqual(failed(await paid(record, { receipt: given(await extension({}, OTHER)) })), ["receipt"]);
+    assert.deepEqual(failed(await paid(record, { receipt: given(await extension({ payer: STRANGER })) })), ["receipt-payment"]);
+  });
+
+  it("skips what it cannot read: no receipt yet, offline, or a network.json the brain did not sign", async () => {
+    const record = sealed(accepted());
+    const none = await paid(record);
+    assert.equal(status(none, "receipt"), "skip");
+    assert.match(check(none, "receipt").message, /^receipt: http:\S+\/receipts\/0x2222222222222222222222222222222222222222\/1\.json has none\. A task's receipt is signed once the board pays or refunds it/);
+    assert.equal(outcomeOf([none]), "match");
+    assert.equal(none.receipt, undefined);
+
+    serveReceipt(await issued(record));
+    hits.length = 0;
+    const offline = await paid(record, { offline: true });
+    assert.equal(check(offline, "receipt").message, "receipt: none was given, and none is fetched offline");
+    assert.ok(!hits.some((hit) => hit.startsWith("/receipts/")));
+
+    await manifest(OTHER);
+    try {
+      const unsigned = await paid(record);
+      assert.deepEqual(failed(unsigned), []);
+      assert.equal(status(unsigned, "receipt-payment"), "skip");
+      assert.match(check(unsigned, "receipt-payment").message, /^payment: the receipt's payment is the record's, and transaction 0xabab…abab on eip155:8453 was not checked: \S+\/network\.json is signed by \S+, not by \S+, the brain on DecisionLog 0x2222…2222$/);
+    } finally {
+      await manifest();
+    }
+    assert.equal(status(await paid(record, { receipt: given({ format: "eip712", payload: {}, signature: "0x" }) }), "receipt"), "fail");
+  });
+
+  it("leaves a record from before evidence was kept exactly as it was", async () => {
+    const reads = [];
+    hits.length = 0;
+    const report = await verify({ reads });
+    assert.deepEqual(lines(report), ["read ok", "fetch ok", "record-hash ok", "input-hash ok", "kind ok", "subject ok", "options ok", "answer ok", "confidence ok", "brief ok", "levels ok", "confidence-recomputed ok", "threshold ok"]);
+    assert.equal(report.receipt, undefined);
+    assert.deepEqual(reads, ["Recorded", "Posted", "WorkGraded"]);
+    assert.ok(!hits.some((hit) => hit.startsWith("/receipts/") || hit === "/network.json"));
+    // A hire on a paid task carries the payment in its evidence and settles nothing, so no receipt is looked for.
+    const hire = { ...sealed(accepted()), kind: "hire" };
+    assert.equal(check(await verify({ kind: 1, publish: hire }), "receipt"), undefined);
+  });
+});
+
 describe("briefs", () => {
   const brief = JSON.stringify(BRIEF);
 
@@ -829,7 +1180,7 @@ describe("the command line", () => {
   });
 
   it("reports bad arguments as one JSON object with --json, and as text without it", () => {
-    for (const args of [[], ["mainnet"], ["mainnet", "--task"], ["mainnet", "abc"], ["mainnet", "1", "2"], ["mainnet", "1", "--nope"], ["mainnet", "1", "--rpc", "ftp://x"], ["nowhere", "1"], ["mainnet", "1", "--set", "v2"], ["mainnet", "1", "--set", "nope"]]) {
+    for (const args of [[], ["mainnet"], ["mainnet", "--task"], ["mainnet", "abc"], ["mainnet", "1", "2"], ["mainnet", "1", "--nope"], ["mainnet", "1", "--rpc", "ftp://x"], ["nowhere", "1"], ["mainnet", "1", "--set", "v2"], ["mainnet", "1", "--set", "nope"], ["mainnet", "1", "--receipt"], ["mainnet", "--task", "1", "--receipt", "r.json"]]) {
       const asJson = run(...args, "--json");
       assert.equal(asJson.status, 2, args.join(" "));
       assert.equal(asJson.stderr, "", args.join(" "));
@@ -839,6 +1190,30 @@ describe("the command line", () => {
       assert.equal(asText.status, 2, args.join(" "));
       assert.equal(asText.stdout, "", args.join(" "));
       assert.match(asText.stderr, /\n\nUsage:\n/, args.join(" "));
+    }
+  });
+
+  it("reads a receipt first, and takes from it the decision and the set its log belongs to", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "receipt-cli-"));
+    const missing = run("mainnet", "--receipt", join(dir, "none.json"), "--json");
+    assert.equal(missing.status, 1);
+    assert.match(onlyError(missing.stdout), /no such file/);
+
+    const payload = { version: 1, network: "eip155:8453", resourceUrl: "https://brain.usebrainchain.com/x402/grades", payer: STRANGER, issuedAt: 1763164800, transaction: `0x${"ab".repeat(32)}` };
+    await writeFile(join(dir, "x402.json"), JSON.stringify({ format: "eip712", payload, signature: "0x00" }));
+    const unnamed = run("mainnet", "--receipt", join(dir, "x402.json"));
+    assert.equal(unnamed.status, 2);
+    assert.match(unnamed.stderr, /^The receipt names no decision; give the decision's id\n/);
+
+    const retired = { ...payload, resourceUrl: undefined, chainId: MAINNET, decisionLog: "0xFdFEDb376c9632A4D6F15a1697E2b6853f12B4d7", decision: "3", brain: STRANGER, evidence: `0x${"e7".repeat(32)}`, job: "grade", outcome: "accepted", asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", amount: "1000000" };
+    await writeFile(join(dir, "receipt.json"), JSON.stringify({ format: "eip712", payload: retired, signature: "0x00" }));
+    const rpc = await stubRpc(MAINNET);
+    try {
+      const { code, stderr } = await runAsync("mainnet", "--receipt", join(dir, "receipt.json"), "--rpc", urlOf(rpc));
+      assert.equal(code, 1);
+      assert.match(stderr, /^DecisionLog 0xFdFEDb376c9632A4D6F15a1697E2b6853f12B4d7 \(set v3-4\) holds decisions 1 to 0/);
+    } finally {
+      rpc.close();
     }
   });
 

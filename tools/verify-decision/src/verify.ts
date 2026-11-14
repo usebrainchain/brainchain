@@ -1,4 +1,5 @@
 import { lookup as dnsLookup, promises as dns, type LookupAddress } from "node:dns";
+import { readFile } from "node:fs/promises";
 import { Agent as HttpAgent, request as httpRequest } from "node:http";
 import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { BlockList, isIP } from "node:net";
@@ -6,12 +7,19 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import {
   BaseError,
+  createPublicClient,
   decodeFunctionData,
   encodeAbiParameters,
   encodeFunctionData,
+  http,
   keccak256,
   pad,
+  parseAbi,
+  parseEventLogs,
+  recoverMessageAddress,
+  recoverTypedDataAddress,
   toBytes,
+  TransactionReceiptNotFoundError,
   type Abi,
   type Address,
   type EncodeFunctionDataParameters,
@@ -66,14 +74,44 @@ export interface DecisionReport {
   recordedAt?: string;
   confidenceBps?: number;
   payloadURI?: string;
+  /** The receipt checked for the paid job this decision settled, with the job and outcome it states. */
+  receipt?: { from: string; job?: string; outcome?: string };
   checks: Check[];
 }
+
+/** A payment behind the job a decision is about, as its record and its receipt state it. */
+export interface Payment {
+  /** CAIP-2, such as eip155:8453. */
+  network: string;
+  asset: string;
+  /** In the asset's smallest units. */
+  amount: string;
+  payer: string;
+  transaction: string;
+}
+
+/**
+ * How a transaction changed each owner's balance of `asset`, by owner, in
+ * lowercase on EVM networks. Undefined when it is not on `network` or did not
+ * succeed.
+ */
+export type Balances = (network: string, transaction: string, asset: string) => Promise<Map<string, bigint> | undefined>;
 
 export interface Context {
   client: PublicClient;
   network: Network;
   set: ContractSet;
   briefs: Map<bigint, Promise<Brief>>;
+  /** Reads payment transactions; public RPCs for Base, Robinhood Chain and Solana when absent. */
+  balances?: Balances;
+  /** Fetches no receipt from the brain host, so only one given to verifyDecision is checked. */
+  offline?: boolean;
+}
+
+/** A receipt as an agent kept it, and where it was read. */
+export interface GivenReceipt {
+  from: string;
+  value: unknown;
 }
 
 interface Brief {
@@ -124,6 +162,18 @@ interface Published {
   panel?: unknown;
   /** How the brief's checks ran on the delivered code; failed checks refund at full confidence. */
   checks?: "passed" | "failed";
+  /** Records made before evidence was kept have none of these three. */
+  versions?: unknown;
+  payments?: unknown;
+  evidence?: unknown;
+}
+
+/** What decided, beside the models each answer names: the questions' version, the key that recorded, and the image and app the log attested it for. */
+interface Versions {
+  prompt: number;
+  brain: Address;
+  image?: Hex;
+  app?: Hex;
 }
 
 interface State {
@@ -137,7 +187,7 @@ type Decision = Awaited<ReturnType<typeof readDecision>>;
 
 const Kind = { Hire: 1, Grade: 2, Ruling: 3, Change: 4 } as const;
 const KINDS: Record<number, string> = { 1: "hire", 2: "grade", 3: "ruling", 4: "change" };
-const Status = { Graded: 4, Disputed: 5, Paid: 6 } as const;
+const Status = { Graded: 4, Disputed: 5, Paid: 6, Refunded: 7 } as const;
 const STATUS = ["none", "open", "hired", "delivered", "graded", "disputed", "paid", "refunded", "ruled", "appealed"];
 const YES: Hex = `0x${"0".repeat(63)}1`;
 const NO: Hex = `0x${"0".repeat(64)}`;
@@ -385,6 +435,8 @@ const STALL_MS = 8_000;
 const MAX_RECORD_BYTES = 4 * 1024 * 1024;
 // What a worker will read of a brief.
 const MAX_BRIEF_BYTES = 256 * 1024;
+const MAX_RECEIPT_BYTES = 64 * 1024;
+const MAX_MANIFEST_BYTES = 256 * 1024;
 
 interface Fetched {
   bytes: Uint8Array;
@@ -393,7 +445,7 @@ interface Fetched {
 
 /** What is being fetched: names it in messages, and caps it. */
 interface Wanted {
-  what: "record" | "brief";
+  what: "record" | "brief" | "receipt" | "network manifest";
   limit: number;
   /** The caller's RPC is on a private address, so what it names may be too. */
   allowPrivate: boolean;
@@ -401,6 +453,9 @@ interface Wanted {
 
 /** A location the tool will not read. Trying again would not help. */
 class Refused extends Error {}
+
+/** A host that answered 404, which for a receipt means it has not been signed yet. */
+class NotFound extends Error {}
 
 const PRIVATE = new BlockList();
 for (const [net, bits] of [["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.168.0.0", 16], ["224.0.0.0", 4], ["240.0.0.0", 4]] as const) {
@@ -499,7 +554,10 @@ async function get(uri: string, url: URL, wanted: Wanted, deadline: AbortSignal)
 
 async function readBytes(uri: string, url: URL, wanted: Wanted, deadline: AbortSignal): Promise<Fetched> {
   const response = await get(uri, url, wanted, deadline);
-  if (response.status === 404) throw new Error(`${display(uri)} answered with status 404: the host no longer has this ${wanted.what}, so trying again will not help`);
+  if (response.status === 404) {
+    const gone = wanted.what === "network manifest" ? "the host has none" : `the host no longer has this ${wanted.what}, so trying again will not help`;
+    throw new NotFound(`${display(uri)} answered with status 404: ${gone}`);
+  }
   if (response.status < 200 || response.status >= 300) throw new Error(`${display(uri)} answered with status ${response.status}`);
   return { bytes: response.bytes, withheld: response.withheld };
 }
@@ -578,7 +636,8 @@ export async function decisionsOf({ client, network, set }: Context, task: bigin
   return events.map((e) => e.args.id).sort((a, b) => (a < b ? -1 : 1));
 }
 
-export async function verifyDecision(ctx: Context, id: bigint): Promise<DecisionReport> {
+/** `receipt` is one the caller kept. Without it, the receipt of a paid grade or ruling is fetched from the host that serves its record, unless the context is offline. */
+export async function verifyDecision(ctx: Context, id: bigint, receipt?: GivenReceipt): Promise<DecisionReport> {
   const { client, network, set } = ctx;
   const c = new Checks();
   const decision = await readDecision(ctx, id);
@@ -769,6 +828,14 @@ export async function verifyDecision(ctx: Context, id: bigint): Promise<Decision
     c.add("threshold", "skip", "threshold: no task on this chain, so no board applied this grade; the caller received the verdict");
   }
   if (decision.kind === Kind.Change) await checkChange(ctx, c, id, decision, record, state);
+
+  let sent: Promise<Address> | undefined;
+  const sender = () => (sent ??= client.getTransaction({ hash: recorded.transactionHash }).then((tx) => tx.from));
+  const decided: Decided = { id, decision, record, task, outside, block: recorded.blockNumber, payloadURI: e.payloadURI, sender };
+  checkEvidence(c, record, decision.inputHash);
+  if (record.versions !== undefined) await checkVersions(ctx, c, record.versions, await sender(), recorded.blockNumber);
+  const kept = receipt ?? (await servedReceipt(ctx, c, decided));
+  if (kept) report.receipt = await checkReceipt(ctx, c, decided, kept);
   return report;
 }
 
@@ -794,8 +861,7 @@ async function withholding(ctx: Context, decision: Decision, record: Published, 
   if (outside?.rule === "acp-evaluation") return { allowed: true, why: "the delivery in an ACP evaluation is never published" };
   if (outside) {
     if (decision.answer !== YES) return { allowed: true, why: `a paid grade is published only once accepted, and Jev answered ${named(record.answer)}` };
-    const config = await client.readContract({ address: set.board, abi: taskBoardAbi, functionName: "config", blockNumber: block }).catch(() => client.readContract({ address: set.board, abi: taskBoardAbi, functionName: "config" }));
-    const bar = config[1];
+    const bar = await gradeBar(ctx, block);
     if (decision.confidenceBps >= bar) return refuse(`this paid grade cleared the ${percent(bar)} bar, so its record is public`);
     return { allowed: true, why: `a paid grade is published only once accepted, and ${percent(decision.confidenceBps)} is below the ${percent(bar)} bar` };
   }
@@ -806,6 +872,14 @@ async function withholding(ctx: Context, decision: Decision, record: Published, 
   const open = house ? on.status >= Status.Graded : on.status === Status.Paid || ((on.status === Status.Graded || on.status === Status.Disputed) && on.accepted);
   if (open) return refuse(`task ${task} is ${status}${on.accepted ? " and accepted" : ""}, so its record is public`);
   return { allowed: true, why: `task ${task} is ${status}${on.status >= Status.Graded && !on.accepted ? " and its work was not accepted" : ""}, so its work is not public` };
+}
+
+/** The board's grade bar when `block` was mined, or today's from an RPC that keeps no state that old. */
+async function gradeBar({ client, set }: Context, block: bigint): Promise<number> {
+  const config = await client
+    .readContract({ address: set.board, abi: taskBoardAbi, functionName: "config", blockNumber: block })
+    .catch(() => client.readContract({ address: set.board, abi: taskBoardAbi, functionName: "config" }));
+  return config[1];
 }
 
 async function checkBrief(ctx: Context, c: Checks, task: bigint, decision: Decision, record: Published, state: State): Promise<void> {
@@ -1192,6 +1266,450 @@ async function checkChange(ctx: Context, c: Checks, id: bigint, decision: Decisi
   } else {
     c.add("threshold", "skip", `threshold: ${at} clears today's ${percent(threshold)} change threshold; not queued yet, or a newer decision about the same call replaced it`);
   }
+}
+
+/** A decision as the chain and its record have it, which its receipt is held to. */
+interface Decided {
+  id: bigint;
+  decision: Decision;
+  record: Published;
+  task: bigint | undefined;
+  outside: Outside | undefined;
+  block: bigint;
+  payloadURI: string;
+  /** The account that sent the decision's Recorded transaction. Only the log's brain can record, so this is the key that recorded it. */
+  sender: () => Promise<Address>;
+}
+
+const BYTES32 = /^0x[0-9a-f]{64}$/i;
+const eq = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
+const hostOf = (uri: string): string | undefined => (/^https?:\/\//i.test(uri) && URL.canParse(uri) ? new URL(uri).origin : undefined);
+
+/**
+ * The brain's evidenceHash (evidence.ts): inputHash as the chain holds it, Jev's
+ * answer, each other judge's answer with the receipt its gateway signed, the
+ * payments and the versions. None of it is withheld with the work.
+ */
+function evidenceOf(record: Published, inputHash: Hex): Hex | undefined {
+  try {
+    const panel = record.panel as { judges?: Judge[] } | undefined;
+    const judges = [record.second, ...(panel?.judges ?? [])]
+      .filter((judge) => judge !== undefined)
+      .map(({ model, probabilities, requestHash, receipt }) => ({ model, probabilities, requestHash, receipt }));
+    const evidence = {
+      input: inputHash.toLowerCase(),
+      judges: [{ model: record.model, probabilities: record.probabilities }, ...judges],
+      payments: record.payments ?? [],
+      versions: record.versions,
+    };
+    return keccak256(toBytes(canonicalStringify(evidence)));
+  } catch (error) {
+    // A part the brain always records is missing, or is not JSON the brain could have written.
+    if (error instanceof TypeError) return undefined;
+    throw error;
+  }
+}
+
+function checkEvidence(c: Checks, record: Published, inputHash: Hex): void {
+  if (record.evidence === undefined) return;
+  const recomputed = evidenceOf(record, inputHash);
+  if (!recomputed) return c.add("evidence", "fail", "evidence: the record's judges, payments or versions are not as the brain records them, so its evidence hash cannot be rebuilt");
+  const over = "the hash over inputHash, every judge's answer and receipt, the payments and the versions";
+  c.check(
+    "evidence",
+    typeof record.evidence === "string" && recomputed === record.evidence.toLowerCase(),
+    `evidence: ${over} is ${short(recomputed)}, as recorded`,
+    `evidence: ${over} is ${short(recomputed)}, not the record's ${short(String(record.evidence))}`,
+  );
+}
+
+function isVersions(value: unknown): value is Versions {
+  const v = value as Partial<Versions> | null | undefined;
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    Number.isSafeInteger(v.prompt) &&
+    ADDRESS.test(String(v.brain)) &&
+    (v.image === undefined) === (v.app === undefined) &&
+    (v.image === undefined || (BYTES32.test(String(v.image)) && BYTES32.test(String(v.app))))
+  );
+}
+
+/** The key that sent the Recorded transaction, and the image and app of its latest attestation on the log at the decision's block, or none for a key the owner named. */
+async function checkVersions({ client, set }: Context, c: Checks, versions: unknown, sender: Address, block: bigint): Promise<void> {
+  if (!isVersions(versions)) return c.add("versions", "fail", "versions: not a prompt version, a brain key and the image and app it was attested for, as the brain records them");
+  const events = await client.getContractEvents({ address: set.log, abi: decisionLogAbi, eventName: "BrainAttested", args: { brain: sender }, fromBlock: BigInt(set.fromBlock), toBlock: block, strict: true });
+  const attested = events.at(-1)?.args;
+  const named = versions.image && versions.app ? `image ${short(versions.image)} and app ${short(versions.app)}` : "no image or app";
+  const wrong: string[] = [];
+  if (!eq(versions.brain, sender)) wrong.push(`the record names the brain ${short(versions.brain)}, but ${short(sender)} sent its Recorded transaction`);
+  if (attested && !(eq(versions.image ?? "", attested.image) && eq(versions.app ?? "", attested.app))) {
+    wrong.push(`the log last attested ${short(sender)} before this decision for image ${short(attested.image)} and app ${short(attested.app)}, and the record names ${named}`);
+  }
+  if (!attested && versions.image) wrong.push(`the record names ${named}, but the log had not attested ${short(sender)} before this decision`);
+  const bound = attested ? ` and that the log attested for ${named}` : ". The log had not attested it, so the owner named it and the record names no image or app";
+  c.check("versions", wrong.length === 0, `versions: prompt version ${versions.prompt}, brain ${short(sender)}, the key that sent this decision's Recorded transaction${bound}`, `versions: ${wrong.join("; ")}`);
+}
+
+interface ReceiptPayload extends Payment {
+  version: number;
+  chainId: number;
+  decisionLog: Address;
+  decision: string;
+  brain: Address;
+  evidence: Hex;
+  job: string;
+  outcome: string;
+  issuedAt: number;
+}
+
+/** The x402 offer-and-receipt extension's own receipt, which a paid reply carries in its PAYMENT-RESPONSE header. */
+interface X402Payload {
+  version: number;
+  network: string;
+  resourceUrl: string;
+  payer: string;
+  issuedAt: number;
+  transaction: string;
+}
+
+type Receipt = { x402: false; payload: ReceiptPayload; signature: Hex } | { x402: true; payload: X402Payload; signature: Hex };
+
+// The brain's RECEIPT_TYPES (receipts.ts), signed under the "BrainChain receipt" domain on the decision log.
+const RECEIPT_TYPES = {
+  Receipt: [
+    { name: "version", type: "uint256" },
+    { name: "chainId", type: "uint256" },
+    { name: "decisionLog", type: "address" },
+    { name: "decision", type: "uint256" },
+    { name: "brain", type: "address" },
+    { name: "evidence", type: "bytes32" },
+    { name: "job", type: "string" },
+    { name: "outcome", type: "string" },
+    { name: "network", type: "string" },
+    { name: "payer", type: "string" },
+    { name: "asset", type: "string" },
+    { name: "amount", type: "string" },
+    { name: "transaction", type: "string" },
+    { name: "issuedAt", type: "uint256" },
+  ],
+} as const;
+
+// x402 specs/extensions/extension-offer-and-receipt.md, version 0.6: a fixed domain and type.
+const X402_RECEIPT_TYPES = {
+  Receipt: [
+    { name: "version", type: "uint256" },
+    { name: "network", type: "string" },
+    { name: "resourceUrl", type: "string" },
+    { name: "payer", type: "string" },
+    { name: "issuedAt", type: "uint256" },
+    { name: "transaction", type: "string" },
+  ],
+} as const;
+
+const PAYMENT_FIELDS = ["network", "asset", "amount", "payer", "transaction"] as const;
+const AMOUNT = /^\d{1,78}$/;
+const uint = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+
+function parseReceipt(value: unknown): Receipt | undefined {
+  const r = value as { format?: unknown; payload?: Record<string, unknown> | null; signature?: unknown } | null | undefined;
+  if (typeof r !== "object" || r === null || r.format !== "eip712" || typeof r.signature !== "string" || !/^0x[0-9a-f]*$/i.test(r.signature)) return undefined;
+  const p = r.payload;
+  const signature = r.signature as Hex;
+  if (typeof p !== "object" || p === null || !uint(p.version) || !uint(p.issuedAt) || !["network", "payer", "transaction"].every((k) => typeof p[k] === "string")) return undefined;
+  if (typeof p.resourceUrl === "string" && p.decision === undefined) return { x402: true, payload: p as unknown as X402Payload, signature };
+  const ours =
+    uint(p.chainId) &&
+    ADDRESS.test(String(p.decisionLog)) &&
+    ADDRESS.test(String(p.brain)) &&
+    AMOUNT.test(String(p.decision)) &&
+    BYTES32.test(String(p.evidence)) &&
+    AMOUNT.test(String(p.amount)) &&
+    ["job", "outcome", "asset"].every((k) => typeof p[k] === "string");
+  return ours ? { x402: false, payload: p as unknown as ReceiptPayload, signature } : undefined;
+}
+
+function signerOf(receipt: Receipt): Promise<Address> {
+  if (receipt.x402) {
+    const p = receipt.payload;
+    return recoverTypedDataAddress({
+      domain: { name: "x402 receipt", version: "1", chainId: 1 },
+      types: X402_RECEIPT_TYPES,
+      primaryType: "Receipt",
+      message: { version: BigInt(p.version), network: p.network, resourceUrl: p.resourceUrl, payer: p.payer, issuedAt: BigInt(p.issuedAt), transaction: p.transaction },
+      signature: receipt.signature,
+    });
+  }
+  const p = receipt.payload;
+  return recoverTypedDataAddress({
+    domain: { name: "BrainChain receipt", version: "1", chainId: p.chainId, verifyingContract: p.decisionLog },
+    types: RECEIPT_TYPES,
+    primaryType: "Receipt",
+    message: { ...p, version: BigInt(p.version), chainId: BigInt(p.chainId), decision: BigInt(p.decision), issuedAt: BigInt(p.issuedAt) },
+    signature: receipt.signature,
+  });
+}
+
+/** Reads a receipt from a file or an http(s) URL: the receipt itself, or a reply that carries it as `receipt`. */
+export async function readReceipt(client: PublicClient, source: string): Promise<GivenReceipt> {
+  const bytes = /^https?:\/\//i.test(source)
+    ? (await fetchBytes(source, { what: "receipt", limit: MAX_RECEIPT_BYTES, allowPrivate: await allowsPrivate(client) })).bytes
+    : await readFile(source);
+  if (bytes.length > MAX_RECEIPT_BYTES) throw new Refused(`${display(source)} is larger than the ${MAX_RECEIPT_BYTES / 1024} KB a receipt may be, so it was not read`);
+  const text = decodeText(bytes);
+  const value = text === undefined ? undefined : parseJson(text);
+  if (value === undefined) throw new Error(`${display(source)} is not JSON`);
+  const carried = (value as { receipt?: unknown } | null)?.receipt;
+  return { from: clean(source), value: typeof carried === "object" && carried !== null ? carried : value };
+}
+
+/** The decision and log a BrainChain receipt names. The x402 extension's receipt names neither. */
+export function receiptDecision(value: unknown): { decision: string; decisionLog: Address } | undefined {
+  const receipt = parseReceipt(value);
+  return receipt && !receipt.x402 ? { decision: receipt.payload.decision, decisionLog: receipt.payload.decisionLog } : undefined;
+}
+
+/** The receipt the brain host serves for a paid grade or ruling. A hire or a change settles no paid job. */
+async function servedReceipt(ctx: Context, c: Checks, d: Decided): Promise<GivenReceipt | undefined> {
+  if (d.record.payments === undefined || (d.decision.kind !== Kind.Grade && d.decision.kind !== Kind.Ruling)) return undefined;
+  if (ctx.offline) {
+    c.add("receipt", "skip", "receipt: none was given, and none is fetched offline");
+    return undefined;
+  }
+  const origin = hostOf(d.payloadURI);
+  if (!origin) {
+    c.add("receipt", "skip", "receipt: the record is not served by a host, so no receipt was fetched");
+    return undefined;
+  }
+  const url = `${origin}/receipts/${ctx.set.log.toLowerCase()}/${d.id}.json`;
+  try {
+    return await readReceipt(ctx.client, url);
+  } catch (error) {
+    const why =
+      error instanceof NotFound
+        ? `${display(url)} has none. A task's receipt is signed once the board pays or refunds it, for the grade or ruling it settled on`
+        : `could not fetch one: ${errorMessage(error)}`;
+    c.add("receipt", "skip", `receipt: ${why}`);
+    return undefined;
+  }
+}
+
+async function checkReceipt(ctx: Context, c: Checks, d: Decided, given: GivenReceipt): Promise<NonNullable<DecisionReport["receipt"]>> {
+  const receipt = parseReceipt(given.value);
+  if (!receipt) {
+    c.add("receipt", "fail", `receipt: ${display(given.from)} is not a receipt as BrainChain or the x402 extension signs one`);
+    return { from: given.from };
+  }
+  const sender = await d.sender();
+  const signer = await signerOf(receipt).catch(() => undefined);
+  const brain = receipt.x402 ? undefined : receipt.payload.brain;
+  const what = receipt.x402 ? "the x402 extension's receipt" : "BrainChain's receipt";
+  if (!signer) c.add("receipt", "fail", `receipt: the signature on ${what} does not recover`);
+  else if (!eq(signer, sender)) c.add("receipt", "fail", `receipt: signed by ${short(signer)}, not by ${short(sender)}, the key that sent this decision's Recorded transaction`);
+  else if (brain && !eq(brain, signer)) c.add("receipt", "fail", `receipt: names the brain ${short(brain)}, but ${short(signer)} signed it`);
+  else c.add("receipt", "ok", `receipt: ${what}, signed by ${short(signer)}, the key that sent this decision's Recorded transaction`);
+
+  if (receipt.x402) {
+    c.add("receipt-decision", "skip", "receipt: the x402 extension's receipt names no decision, evidence hash, outcome or amount. BrainChain's own receipt, in the reply's receipt field, names them");
+    await checkPayment(ctx, c, d, receipt.payload, ["network", "payer", "transaction"]);
+    return { from: given.from };
+  }
+  const p = receipt.payload;
+  const { network, set } = ctx;
+  const evidence = typeof d.record.evidence === "string" ? d.record.evidence : undefined;
+  const wrong: string[] = [];
+  if (p.version !== 1) wrong.push(`version ${p.version}, where BrainChain signs version 1`);
+  if (p.chainId !== network.chainId) wrong.push(`chain ${p.chainId}, not ${network.chainId}`);
+  if (!eq(p.decisionLog, set.log)) wrong.push(`DecisionLog ${short(p.decisionLog)}, not ${short(set.log)}`);
+  if (p.decision !== d.id.toString()) wrong.push(`decision ${p.decision}, not ${d.id}`);
+  if (!evidence) wrong.push("an evidence hash, where the record holds none");
+  else if (!eq(p.evidence, evidence)) wrong.push(`evidence ${short(p.evidence)}, not the record's ${short(evidence)}`);
+  c.check(
+    "receipt-decision",
+    wrong.length === 0,
+    `receipt: names decision ${d.id} on DecisionLog ${short(set.log)}, chain ${network.chainId}, and the record's evidence hash ${short(p.evidence)}`,
+    `receipt: names ${list(wrong)}`,
+  );
+  await checkOutcome(ctx, c, d, p);
+  await checkPayment(ctx, c, d, p, PAYMENT_FIELDS);
+  return { from: given.from, job: clean(p.job), outcome: clean(p.outcome) };
+}
+
+/** A task's outcome is the board's: paid for accepted, refunded for rejected, on the last grade or ruling it applied. A paid grade's is its answer at the board's grade bar. */
+async function checkOutcome(ctx: Context, c: Checks, d: Decided, p: ReceiptPayload): Promise<void> {
+  const { client, set } = ctx;
+  if (d.task !== undefined) {
+    if (p.job !== "task") return c.add("receipt-outcome", "fail", `outcome: the receipt is for a ${p.job}, and this decision is about task ${d.task}`);
+    const on = await client.readContract({ address: set.board, abi: taskBoardAbi, functionName: "get", args: [d.task] });
+    const read = { address: set.board, abi: taskBoardAbi, args: { id: d.task }, fromBlock: BigInt(set.fromBlock), strict: true } as const;
+    const [graded, ruled, appealed] = await Promise.all([
+      client.getContractEvents({ ...read, eventName: "WorkGraded" }),
+      client.getContractEvents({ ...read, eventName: "Ruled" }),
+      client.getContractEvents({ ...read, eventName: "AppealRuled" }),
+    ]);
+    const last = [...graded, ...ruled, ...appealed].at(-1)?.args.decisionId;
+    const settled = on.status === Status.Paid ? "accepted" : on.status === Status.Refunded ? "rejected" : undefined;
+    if (!settled) {
+      return c.add("receipt-outcome", "fail", `outcome: task ${d.task} is ${STATUS[on.status] ?? `status ${on.status}`}. The board has neither paid nor refunded it, and a task's receipt is signed only once it has`);
+    }
+    if (last !== d.id) {
+      return c.add("receipt-outcome", "fail", `outcome: the board settled task ${d.task} on ${last === undefined ? "no grade or ruling" : `decision ${last}`}, not on this one`);
+    }
+    const done = settled === "accepted" ? "paid" : "refunded";
+    c.check("receipt-outcome", p.outcome === settled, `outcome: ${settled}, as the board ${done} task ${d.task} on this decision`, `outcome: the receipt says ${p.outcome}, but the board ${done} task ${d.task}`);
+    return;
+  }
+  if (d.outside?.rule !== "x402-grade") return c.add("receipt-outcome", "fail", "outcome: this decision settles no paid job. It is neither about a task on this board nor a paid grade");
+  if (p.job !== "grade") return c.add("receipt-outcome", "fail", `outcome: the receipt is for a ${p.job}, and this decision is a paid grade`);
+  const bar = await gradeBar(ctx, d.block);
+  const { answer, confidenceBps } = d.decision;
+  const accepted = answer === YES && confidenceBps >= bar;
+  const expected = accepted ? "accepted" : "rejected";
+  const why = answer === YES ? `accept at ${percent(confidenceBps)} is ${accepted ? "at or above" : "below"} the board's ${percent(bar)} grade bar` : `Jev answered ${named(d.record.answer)}`;
+  c.check("receipt-outcome", p.outcome === expected, `outcome: ${expected}, as ${why}`, `outcome: the receipt says ${p.outcome}, but ${why}, so the grade is ${expected}`);
+}
+
+const isPayments = (value: unknown): value is Payment[] =>
+  Array.isArray(value) &&
+  value.every((p: Record<string, unknown> | null) => typeof p === "object" && p !== null && PAYMENT_FIELDS.every((f) => typeof p[f] === "string") && AMOUNT.test(String(p.amount)));
+
+/** The receipt's payment is one the record names, and on its network the transaction moved the amount from the payer to the desk. */
+async function checkPayment(ctx: Context, c: Checks, d: Decided, claimed: Partial<Payment>, fields: readonly (keyof Payment)[]): Promise<void> {
+  const payments = d.record.payments;
+  if (!isPayments(payments)) return c.add("receipt-payment", "fail", payments === undefined ? "payment: the record names no payment for this job" : "payment: the record's payments are not as the brain records them");
+  const payment = payments.find((p) => p.network === claimed.network && p.transaction === claimed.transaction);
+  if (!payment) return c.add("receipt-payment", "fail", `payment: the record names no payment in transaction ${short(String(claimed.transaction))} on ${claimed.network}`);
+  const differ = fields.filter((f) => payment[f] !== claimed[f]);
+  if (differ.length > 0) return c.add("receipt-payment", "fail", `payment: the receipt says ${list(differ.map((f) => `${f} ${claimed[f]}`))}, where the record's payment says ${list(differ.map((f) => payment[f]))}`);
+
+  const { network, transaction, asset, payer } = payment;
+  const tx = `transaction ${short(transaction)} on ${network}`;
+  const origin = hostOf(d.payloadURI);
+  if (!origin) return c.add("receipt-payment", "skip", `payment: the receipt's payment is the record's. The record is not served by a host, so no network.json names the desk to check ${tx} against`);
+  let desk: Desk;
+  let moved: Map<string, bigint> | undefined;
+  try {
+    [desk, moved] = await Promise.all([deskOf(ctx, origin), (ctx.balances ?? balancesOnChain)(network, transaction, asset)]);
+  } catch (error) {
+    return c.add("receipt-payment", "skip", `payment: the receipt's payment is the record's, and ${tx} was not checked: ${errorMessage(error)}`);
+  }
+  if (!moved) return c.add("receipt-payment", "fail", `payment: ${tx} did not succeed, or is not on that network`);
+  const evm = network.startsWith("eip155:");
+  const key = (owner: string): string => (evm ? owner.toLowerCase() : owner);
+  const payTo = desk.payees.find((p) => p.network === network && key(p.asset) === key(asset))?.payTo;
+  if (!payTo) return c.add("receipt-payment", "skip", `payment: the receipt's payment is the record's, and network.json lists no payee for ${short(asset)} on ${network}, so ${tx} was not checked`);
+  const amount = BigInt(payment.amount);
+  const sent = -(moved.get(key(payer)) ?? 0n);
+  // A desk whose key changed still holds what was paid to it before.
+  const to = [payTo, ...(evm ? desk.formerDesks : [])].find((d) => moved.get(key(d)) === amount);
+  c.check(
+    "receipt-payment",
+    sent === amount && to !== undefined,
+    `payment: ${tx} moved ${amount} of ${short(asset)} from ${short(payer)} to the desk's ${short(to ?? payTo)}, as the receipt and the record say`,
+    `payment: ${tx} moved ${sent} of ${short(asset)} from ${short(payer)} and ${moved.get(key(payTo)) ?? 0n} to the desk's ${short(payTo)}, where the receipt says ${amount}`,
+  );
+}
+
+interface Desk {
+  payees: { network: string; asset: string; payTo: string }[];
+  formerDesks: string[];
+}
+
+const MANIFEST_PREFIX = "BrainChain network manifest\n";
+const desks = new WeakMap<Context, Map<string, Promise<Desk>>>();
+
+function deskOf(ctx: Context, origin: string): Promise<Desk> {
+  let known = desks.get(ctx);
+  if (!known) desks.set(ctx, (known = new Map()));
+  let desk = known.get(origin);
+  if (!desk) known.set(origin, (desk = readDesk(ctx, origin)));
+  return desk;
+}
+
+/** The desk's payees in the brain host's /network.json, believed only once the key brain() names on the active DecisionLog has signed it. */
+async function readDesk({ client, network, set }: Context, origin: string): Promise<Desk> {
+  const uri = `${origin}/network.json`;
+  const { bytes } = await fetchBytes(uri, { what: "network manifest", limit: MAX_MANIFEST_BYTES, allowPrivate: await allowsPrivate(client) });
+  const text = decodeText(bytes);
+  const body = (text === undefined ? undefined : parseJson(text)) as { signed?: unknown; signature?: unknown } | null | undefined;
+  const signed = typeof body?.signed === "string" && body.signed.startsWith(MANIFEST_PREFIX) ? body.signed : undefined;
+  if (!signed || typeof body?.signature !== "string") throw new Error(`${display(uri)} is not a signed network manifest`);
+  const log = (network.sets[0] ?? set).log;
+  const [signer, brain] = await Promise.all([
+    recoverMessageAddress({ message: signed, signature: body.signature as Hex }),
+    client.readContract({ address: log, abi: decisionLogAbi, functionName: "brain" }),
+  ]);
+  if (!eq(signer, brain)) throw new Error(`${display(uri)} is signed by ${short(signer)}, not by ${short(brain)}, the brain on DecisionLog ${short(log)}`);
+  const manifest = parseJson(signed.slice(MANIFEST_PREFIX.length)) as { chainId?: unknown; payees?: unknown; formerDesks?: unknown } | undefined;
+  const payees = manifest?.payees;
+  const valid = Array.isArray(payees) && payees.every((p: Record<string, unknown> | null) => typeof p === "object" && p !== null && ["network", "asset", "payTo"].every((k) => typeof p[k] === "string"));
+  if (manifest?.chainId !== network.chainId || !valid) throw new Error(`${display(uri)} does not list the payees of chain ${network.chainId}`);
+  const former = Array.isArray(manifest.formerDesks) ? manifest.formerDesks.filter((d): d is string => typeof d === "string") : [];
+  return { payees: payees as Desk["payees"], formerDesks: former };
+}
+
+// Public RPCs for the networks the desk takes payment on.
+const PAYMENT_RPCS: Record<string, string> = {
+  "eip155:8453": "https://mainnet.base.org",
+  "eip155:84532": "https://sepolia.base.org",
+  "eip155:4663": "https://rpc.mainnet.chain.robinhood.com",
+  "eip155:46630": "https://rpc.testnet.chain.robinhood.com",
+  "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": "https://api.mainnet-beta.solana.com",
+  "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1": "https://api.devnet.solana.com",
+};
+const TRANSFER = parseAbi(["event Transfer(address indexed from, address indexed to, uint256 value)"]);
+const paymentClients = new Map<string, PublicClient>();
+
+const balancesOnChain: Balances = async (network, transaction, asset) => {
+  const rpc = Object.hasOwn(PAYMENT_RPCS, network) ? PAYMENT_RPCS[network] : undefined;
+  if (!rpc) throw new Error(`the tool has no RPC for ${clean(network)}`);
+  if (network.startsWith("solana:")) return solanaBalances(rpc, transaction, asset);
+  if (!BYTES32.test(transaction)) return undefined;
+  let client = paymentClients.get(network);
+  if (!client) paymentClients.set(network, (client = createPublicClient({ transport: http(rpc) }) as PublicClient));
+  const receipt = await client.getTransactionReceipt({ hash: transaction as Hex }).catch((error: unknown) => {
+    if (error instanceof TransactionReceiptNotFoundError) return undefined;
+    throw error;
+  });
+  if (receipt?.status !== "success") return undefined;
+  const changes = new Map<string, bigint>();
+  const add = (owner: string, value: bigint) => changes.set(owner.toLowerCase(), (changes.get(owner.toLowerCase()) ?? 0n) + value);
+  for (const { address, args } of parseEventLogs({ abi: TRANSFER, logs: receipt.logs, eventName: "Transfer", strict: true })) {
+    if (!eq(address, asset)) continue;
+    add(args.from, -args.value);
+    add(args.to, args.value);
+  }
+  return changes;
+};
+
+interface TokenBalance {
+  mint?: unknown;
+  owner?: unknown;
+  uiTokenAmount?: { amount?: unknown };
+}
+
+/** A Solana transaction's change to each owner's balance of the mint, from its token balances before and after. */
+async function solanaBalances(rpc: string, signature: string, mint: string): Promise<Map<string, bigint> | undefined> {
+  const response = await fetch(rpc, {
+    method: "POST",
+    headers: { "content-type": "application/json", "user-agent": "brainchain-verify" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getTransaction", params: [signature, { encoding: "jsonParsed", commitment: "finalized", maxSupportedTransactionVersion: 0 }] }),
+    signal: AbortSignal.timeout(FETCH_MS),
+  });
+  if (!response.ok) throw new Error(`${rpc} answered with status ${response.status}`);
+  type Meta = { err?: unknown; preTokenBalances?: TokenBalance[]; postTokenBalances?: TokenBalance[] };
+  const { result, error } = (await response.json()) as { result?: { meta?: Meta } | null; error?: { message?: unknown } };
+  if (error) throw new Error(`${rpc} answered: ${clean(String(error.message))}`);
+  const meta = result?.meta;
+  if (!meta || meta.err !== null) return undefined;
+  const changes = new Map<string, bigint>();
+  for (const [sign, balances] of [[-1n, meta.preTokenBalances], [1n, meta.postTokenBalances]] as const) {
+    for (const { mint: of, owner, uiTokenAmount } of balances ?? []) {
+      if (of !== mint || typeof owner !== "string" || typeof uiTokenAmount?.amount !== "string" || !AMOUNT.test(uiTokenAmount.amount)) continue;
+      changes.set(owner, (changes.get(owner) ?? 0n) + sign * BigInt(uiTokenAmount.amount));
+    }
+  }
+  return changes;
 }
 
 export type Outcome = "match" | "withheld" | "unverified" | "mismatch";
