@@ -137,6 +137,7 @@ function report(reports: DecisionReport[], header: string, task?: number): never
       ...(r.outside ? { outside: true } : {}),
       ...(r.withheld ? { withheld: true } : {}),
       ...(r.run ? { run: r.run } : {}),
+      ...(r.panel ? { panel: r.panel } : {}),
       block: r.block,
       recordedAt: r.recordedAt,
       confidenceBps: r.confidenceBps,

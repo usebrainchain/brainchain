@@ -40,6 +40,17 @@ export interface Run {
   outcome: "passed" | "failed" | "timed out";
 }
 
+/** A grade or ruling decided by a panel, as its record states it. */
+export interface PanelReport {
+  rule: string;
+  /** Every member that answered, Jev first, with its probability of paying. */
+  judges: { model: string; paid: number }[];
+  degraded: boolean;
+  /** When degraded: the members the panel decided without, and what it then had to put on paying to pay. */
+  missing?: string[];
+  bar?: number;
+}
+
 export interface DecisionReport {
   id: number;
   kind?: string;
@@ -50,6 +61,7 @@ export interface DecisionReport {
   withheld?: boolean;
   /** On a grade or ruling whose request holds one. */
   run?: Run;
+  panel?: PanelReport;
   block?: number;
   recordedAt?: string;
   confidenceBps?: number;
@@ -73,10 +85,31 @@ interface Brief {
   passIndex: number;
 }
 
+/** A judge beside Jev, as a grade or ruling record keeps it. */
+interface Judge {
+  model: string;
+  probabilities: Record<string, number>;
+  /** Its probability of paying, measured as Jev's is. */
+  paid: number;
+  receipt: { id: string } | null;
+  requestHash: string;
+}
+
+interface Panel {
+  rule: string;
+  rules: Record<string, number>;
+  /** The judges after the second grader that answered. */
+  judges: Judge[];
+  degraded?: { missing: string[]; bar: number };
+}
+
+type Question = { type: string; instructions?: unknown; criteria: Record<string, string> | string[] };
+
 interface Published {
   kind: string;
   subject: string;
-  request: { state: string; questions: { decision: { type: string; instructions?: unknown; criteria: Record<string, string> | string[] } } };
+  request: { state: string; questions: { decision: Question } };
+  model?: unknown;
   answer: string;
   confidence: number;
   /** Grades recorded since the chain gates on the paid levels; older grades recorded this as their confidence. */
@@ -86,7 +119,9 @@ interface Published {
   jevPaid?: number;
   /** The lowest level, counting from the bottom, that passes. */
   passFrom?: unknown;
-  second?: { model: string; probabilities: Record<string, number>; paid: number; receipt: { id: string } | null; requestHash: string };
+  second?: Judge;
+  /** Grades and rulings asked of a third judge, or decided by a rule other than lower-of. */
+  panel?: unknown;
   /** How the brief's checks ran on the delivered code; failed checks refund at full confidence. */
   checks?: "passed" | "failed";
 }
@@ -113,7 +148,24 @@ const NO_ANSWERS = new Set(["reject", "refund", "keep", "refuse"]);
 const ROUNDING = 0.02;
 // The brain keeps a probability of paying to four decimals.
 const share = (parts: number[]): number => Math.min(1, Number(parts.reduce((sum, p) => sum + p, 0).toFixed(4)));
-const twice = (record: Published): boolean => record.second !== undefined || record.checks !== undefined;
+const twice = (record: Published): boolean => record.second !== undefined || record.checks !== undefined || record.panel !== undefined;
+const close = (value: unknown, expected: number): boolean => typeof value === "number" && Math.abs(value - expected) < 1e-6;
+const optionsOf = (question: Question): string[] => (Array.isArray(question.criteria) ? question.criteria.map((_, i) => String(i)) : Object.keys(question.criteria ?? {}));
+const list = (items: string[]): string => (items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`);
+
+// The brain's candidate rules and the bar of a panel short of a member (judges.ts).
+const PANEL_RULES = ["lower-of", "majority", "median"] as const;
+type PanelRule = (typeof PANEL_RULES)[number];
+const isRule = (rule: string): rule is PanelRule => (PANEL_RULES as readonly string[]).includes(rule);
+const DEGRADED_BAR = 0.9;
+
+/** Each candidate's probability of paying over the members that answered, as the brain's panelRules works it out. */
+function panelRules(paid: number[]): Record<PanelRule, number> {
+  const sure = [...paid].sort((a, b) => b - a);
+  const n = sure.length;
+  const median = n % 2 === 1 ? sure[(n - 1) / 2]! : (sure[n / 2 - 1]! + sure[n / 2]!) / 2;
+  return { "lower-of": sure[n - 1]!, majority: sure[Math.floor(n / 2)]!, median: Number(median.toFixed(4)) };
+}
 
 type Language = Run["language"];
 // A brief's checks are fenced blocks whose info string names the language and then "checks". The patterns are the brain's own (code-check.ts), so a brief reads the same here as there.
@@ -252,6 +304,48 @@ function isPublished(value: unknown): value is Published {
     typeof r.request.questions?.decision === "object" &&
     r.request.questions.decision !== null
   );
+}
+
+const isNumbers = (value: unknown): value is Record<string, number> =>
+  typeof value === "object" && value !== null && !Array.isArray(value) && Object.values(value).every((v) => typeof v === "number");
+
+function isJudge(value: unknown): value is Judge {
+  const j = value as Partial<Judge> | null | undefined;
+  return typeof j === "object" && j !== null && typeof j.model === "string" && isNumbers(j.probabilities) && typeof j.paid === "number";
+}
+
+function isPanel(value: unknown): value is Panel {
+  const p = value as Partial<Panel> | null | undefined;
+  const degraded = p?.degraded;
+  return (
+    typeof p === "object" &&
+    p !== null &&
+    typeof p.rule === "string" &&
+    isNumbers(p.rules) &&
+    Array.isArray(p.judges) &&
+    p.judges.every(isJudge) &&
+    (degraded === undefined || (Array.isArray(degraded.missing) && degraded.missing.length > 0 && degraded.missing.every((m) => typeof m === "string") && typeof degraded.bar === "number"))
+  );
+}
+
+type Paneled = Published & { model: string; panel: Panel };
+
+const hasPanel = (record: Published): record is Paneled =>
+  typeof record.model === "string" && isPanel(record.panel) && (record.second === undefined || isJudge(record.second));
+
+function panelReport(record: Paneled): PanelReport {
+  const { rule, judges, degraded } = record.panel;
+  const members = [
+    ...(typeof record.jevPaid === "number" ? [{ model: record.model, paid: record.jevPaid }] : []),
+    ...(record.second ? [record.second] : []),
+    ...judges,
+  ];
+  return {
+    rule: clean(rule),
+    judges: members.map(({ model, paid }) => ({ model: clean(model), paid })),
+    degraded: degraded !== undefined,
+    ...(degraded ? { missing: degraded.missing.map(clean), bar: degraded.bar } : {}),
+  };
 }
 
 /** The language of the checks a task's brief carries. Python wins when it has both: the sandbox runs one program. */
@@ -589,14 +683,19 @@ export async function verifyDecision(ctx: Context, id: bigint): Promise<Decision
     );
   }
 
-  const question = record.request.questions.decision;
-  const options = Array.isArray(question.criteria) ? question.criteria.map((_, i) => String(i)) : Object.keys(question.criteria ?? {});
-  c.check(
-    "options",
-    same(Object.keys(record.probabilities).sort(), [...options].sort()),
-    "probabilities cover exactly the options Jev was asked",
-    "the probabilities do not match the options in the question",
-  );
+  const judged = decision.kind === Kind.Grade || decision.kind === Kind.Ruling;
+  const options = optionsOf(record.request.questions.decision);
+  if (judged && record.panel !== undefined && Object.keys(record.probabilities).length === 0) {
+    c.add("options", "ok", "the record holds no probabilities of Jev's, as a panel that decided without Jev records it");
+  } else {
+    c.check(
+      "options",
+      same(Object.keys(record.probabilities).sort(), [...options].sort()),
+      "probabilities cover exactly the options Jev was asked",
+      "the probabilities do not match the options in the question",
+    );
+  }
+  if (judged && hasPanel(record)) report.panel = panelReport(record);
 
   let expectedAnswer: Hex | undefined;
   if (decision.kind === Kind.Hire) {
@@ -642,7 +741,7 @@ export async function verifyDecision(ctx: Context, id: bigint): Promise<Decision
     );
   }
   if (decision.kind === Kind.Ruling && twice(record)) {
-    checkPaying(c, record, { jev: record.probabilities.pay ?? 0, second: record.second?.probabilities.pay, yes: "pay", no: "refund" });
+    checkPaying(c, record, { paidOf: (probabilities) => probabilities.pay ?? 0, yes: "pay", no: "refund" });
   } else if (decision.kind === Kind.Ruling || decision.kind === Kind.Change) {
     c.check(
       "confidence-recomputed",
@@ -731,8 +830,9 @@ async function checkBrief(ctx: Context, c: Checks, task: bigint, decision: Decis
     `the question quotes task ${task}'s brief, as committed on chain`,
     `the brief in the question is not task ${task}'s brief`,
   );
-  // jevPaid came with the release that first ran a brief's checks, so a record without it is from before.
-  checkRun(c, decision, record, state, { checks: checksIn(brief.brief), notOwed: record.jevPaid === undefined ? "This record predates the rule that runs a brief's checks" : undefined });
+  // jevPaid came with the release that first ran a brief's checks, so a record without it is from before, unless a panel decided it without Jev.
+  const before = record.jevPaid === undefined && record.panel === undefined;
+  checkRun(c, decision, record, state, { checks: checksIn(brief.brief), notOwed: before ? "This record predates the rule that runs a brief's checks" : undefined });
   const question = record.request.questions.decision;
 
   if (decision.kind === Kind.Ruling) {
@@ -752,7 +852,7 @@ async function checkBrief(ctx: Context, c: Checks, task: bigint, decision: Decis
     "the levels Jev scored against are the brief's, lowest first",
     "the levels in the question are not the brief's",
   );
-  if (record.scoreConfidence === undefined) {
+  if (record.scoreConfidence === undefined && record.panel === undefined) {
     c.add(
       "confidence-recomputed",
       "skip",
@@ -846,43 +946,127 @@ function checkGradeConfidence(c: Checks, record: Published, paidKeys: string[]):
     );
     return;
   }
-  const second = record.second ? share(paidKeys.map((key) => record.second!.probabilities[key] ?? 0)) : undefined;
-  checkPaying(c, record, { jev, second, yes: "accept", no: "reject", how });
+  checkPaying(c, record, { paidOf: (probabilities) => share(paidKeys.map((key) => probabilities[key] ?? 0)), yes: "accept", no: "reject", how });
+}
+
+interface Paying {
+  /** A member's probability of paying, from its own probabilities. */
+  paidOf: (probabilities: Record<string, number>) => number;
+  yes: string;
+  no: string;
+  /** How Jev's probability of paying adds up, on a grade. */
+  how?: string;
 }
 
 /**
  * The rule grades and rulings share since they are graded twice: the
- * probability of paying is the lower of Jev's and the second grader's, zero
- * when the brief's checks failed, and the answer and confidence follow it.
+ * probability of paying is the lower of Jev's and the second grader's, or the
+ * panel's rule over every member when the record holds a panel, zero when the
+ * brief's checks failed, and the answer and confidence follow it.
  */
-function checkPaying(c: Checks, record: Published, p: { jev: number; second?: number; yes: string; no: string; how?: string }): void {
-  const steps: string[] = [p.how ?? `Jev puts ${p.jev} on ${p.yes}`];
-  let paying = p.jev;
+function checkPaying(c: Checks, record: Published, p: Paying): void {
+  if (record.panel !== undefined) return checkPanel(c, record, p);
+  const jev = p.paidOf(record.probabilities);
+  const steps: string[] = [p.how ?? `Jev puts ${jev} on ${p.yes}`];
+  let paying = jev;
   if (record.second) {
+    const second = p.paidOf(record.second.probabilities);
     c.check(
       "second-grader",
-      p.second !== undefined && Math.abs(p.second - record.second.paid) < 1e-6 && Math.abs((record.jevPaid ?? p.jev) - p.jev) < 1e-6,
-      `the second grader (${record.second.model}) puts ${p.second} on paying${record.second.receipt ? `, with receipt ${record.second.receipt.id}` : ", without a receipt"}`,
-      `the second grader's probability of paying recomputes to ${p.second}, not the recorded ${record.second.paid}`,
+      Math.abs(second - record.second.paid) < 1e-6 && Math.abs((record.jevPaid ?? jev) - jev) < 1e-6,
+      `the second grader (${record.second.model}) puts ${second} on paying${record.second.receipt ? `, with receipt ${record.second.receipt.id}` : ", without a receipt"}`,
+      `the second grader's probability of paying recomputes to ${second}, not the recorded ${record.second.paid}`,
     );
-    if (p.second !== undefined) {
-      paying = Math.min(paying, p.second);
-      steps.push(`the second grader holds ${p.second.toFixed(4)}, so the lower, ${paying.toFixed(4)}, counts`);
-    }
+    paying = Math.min(paying, second);
+    steps.push(`the second grader holds ${second.toFixed(4)}, so the lower, ${paying.toFixed(4)}, counts`);
   }
+  checkDecided(c, record, p, paying, steps, "the two-grader rule");
+}
+
+/**
+ * A record with a panel: every member's probability of paying recomputed from
+ * its own probabilities, every candidate rule's value from those, and the
+ * answer from the rule the record names, at the higher bar when the panel
+ * decided without a member. The brain never decides on one member alone.
+ */
+function checkPanel(c: Checks, record: Published, p: Paying): void {
+  if (!hasPanel(record)) {
+    c.add("panel", "fail", "panel: the record's panel is not a rule, its candidates' values and the judges' answers as the brain records them");
+    c.add("confidence-recomputed", "skip", "confidence: needs a panel as the brain records it");
+    return;
+  }
+  const { rule, rules, judges, degraded } = record.panel;
+  const options = optionsOf(record.request.questions.decision);
+  const jev = Object.keys(record.probabilities).length > 0 ? p.paidOf(record.probabilities) : undefined;
+  const members = jev === undefined ? [] : [{ name: "Jev", paid: jev }];
+  if (record.second) members.push({ name: record.second.model, paid: checkJudge(c, "second-grader", `the second grader (${record.second.model})`, record.second, p.paidOf, options) });
+  for (const judge of judges) members.push({ name: judge.model, paid: checkJudge(c, "judge", `the judge ${judge.model}`, judge, p.paidOf, options) });
+  if (members.length < 2) {
+    c.add("panel", "fail", `panel: ${members.length === 1 ? "one member" : "no member"} answered, and the brain never decides on one alone`);
+    c.add("confidence-recomputed", "skip", "confidence: needs at least two members' answers");
+    return;
+  }
+
+  const missing = degraded?.missing ?? [];
+  const recomputed = panelRules(members.map((m) => m.paid));
+  const wrong: string[] = [];
+  if (jev !== undefined && !close(record.jevPaid, jev)) wrong.push(`Jev's probability of paying recomputes to ${jev}, not the recorded ${record.jevPaid}`);
+  if (jev === undefined && record.jevPaid !== undefined) wrong.push("the record holds no probabilities of Jev's, yet states Jev's probability of paying");
+  if (jev === undefined && !missing.includes(record.model)) wrong.push(`the record holds no probabilities of Jev's, and the panel does not say it decided without Jev (${record.model})`);
+  if (!record.second && missing.length === 0) wrong.push("the record holds no second grader, and the panel does not say it decided without one");
+  if (degraded && degraded.bar !== DEGRADED_BAR) wrong.push(`the panel decided without ${list(missing)} at ${degraded.bar}, where the brain pays a panel short of a member only from ${DEGRADED_BAR}`);
+  for (const [name, value] of Object.entries(rules)) {
+    if (!isRule(name)) wrong.push(`the record puts ${value} on "${name}", which is not a candidate rule`);
+    else if (!close(value, recomputed[name])) wrong.push(`the record puts ${value} on ${name}, but the members' probabilities give ${recomputed[name]}`);
+  }
+  for (const name of PANEL_RULES) if (!Object.hasOwn(rules, name)) wrong.push(`the record gives no value for ${name}`);
+  if (!isRule(rule)) wrong.push(`the record names the rule "${rule}", which is none of ${list([...PANEL_RULES])}`);
+
+  const without = missing.map((name) => (jev === undefined && name === record.model ? `Jev (${name})` : name));
+  const bar = degraded ? `, without ${list(without)}, so it pays only from ${percent(Math.round(degraded.bar * 10_000))}` : "";
+  c.check(
+    "panel",
+    wrong.length === 0,
+    `panel: ${rule} decides over ${list(members.map((m) => `${m.name} at ${m.paid}`))}${bar}; the candidates are as recorded: ${PANEL_RULES.map((name) => `${name} ${recomputed[name]}`).join(", ")}`,
+    `panel: ${wrong.join("; ")}`,
+  );
+  if (!isRule(rule)) {
+    c.add("confidence-recomputed", "skip", "confidence: the panel names no rule the brain decides by");
+    return;
+  }
+  const steps = [jev === undefined ? "Jev did not answer" : (p.how ?? `Jev puts ${jev} on ${p.yes}`), `under ${rule} the panel puts ${recomputed[rule].toFixed(4)} on paying`];
+  checkDecided(c, record, p, recomputed[rule], steps, `the panel's ${rule} rule`, degraded?.bar);
+}
+
+/** A judge's probability of paying, recomputed from its own probabilities, with the receipt it carries named. */
+function checkJudge(c: Checks, name: string, who: string, judge: Judge, paidOf: Paying["paidOf"], options: string[]): number {
+  const paid = paidOf(judge.probabilities);
+  const covers = same(Object.keys(judge.probabilities).sort(), [...options].sort());
+  c.check(
+    name,
+    covers && close(judge.paid, paid),
+    `${who} puts ${paid} on paying${judge.receipt ? `, with receipt ${judge.receipt.id}` : ", without a receipt"}`,
+    covers ? `${who} puts ${paid} on paying by its probabilities, not the recorded ${judge.paid}` : `the probabilities of ${who} do not cover exactly the options Jev was asked`,
+  );
+  return paid;
+}
+
+/** The answer and confidence from a probability of paying: zero when the brief's checks failed, and an accept or pay from `bar`, a half unless the panel was short of a member. */
+function checkDecided(c: Checks, record: Published, p: Paying, paying: number, steps: string[], under: string, bar?: number): void {
   if (record.checks === "failed") {
     paying = 0;
     steps.push("the brief's checks failed on the delivered code, so the probability of paying is 0");
   } else if (record.checks === "passed") {
     steps.push("the brief's checks passed");
   }
-  const yes = paying >= 0.5;
+  if (bar !== undefined) steps.push(`a panel short of a member pays only from ${percent(Math.round(bar * 10_000))}`);
+  const yes = paying >= (bar ?? 0.5);
   const confidence = yes ? paying : 1 - paying;
   c.check(
     "confidence-recomputed",
     Math.abs(confidence - record.confidence) < 1e-6 && record.answer === (yes ? p.yes : p.no),
     `confidence recomputed: ${steps.join("; ")}, so ${yes ? p.yes : p.no} at ${confidence.toFixed(4)}`,
-    `recomputed under the two-grader rule, the decision is ${yes ? p.yes : p.no} at ${confidence.toFixed(4)}, not ${record.answer} at ${record.confidence}`,
+    `recomputed under ${under}, the decision is ${yes ? p.yes : p.no} at ${confidence.toFixed(4)}, not ${record.answer} at ${record.confidence}`,
   );
 }
 
