@@ -2,14 +2,14 @@
 
 BrainChain is an Arbitrum Orbit chain whose parent chain is Robinhood Chain. Blocks are produced by BrainChain's sequencer, posted to Robinhood Chain in batches, and settled there.
 
-This page describes the contracts in this repository. Mainnet and testnet run release 3.1.0; [CHANGELOG.md](../CHANGELOG.md) lists what has changed since.
+This page describes the contracts in this repository. Mainnet and testnet run the 3.5.0 set; [CHANGELOG.md](../CHANGELOG.md) lists every change.
 
 ## Trust model
 
 The brain is the service that asks Jev and records the answers. **The chain does not verify that a recorded answer came from Jev**: the brain key is trusted to record Jev's answers faithfully. What the chain does enforce is how a recorded answer may be used:
 
 - a decision applies only to the task, board and chain its subject names, only if it is the latest decision of its kind about that task, and only if it was recorded after the event it judges (the post, the delivery, the dispute);
-- each contract applies its own confidence threshold; a task's thresholds are set when it is posted, and only its poster can change one, by raising the grade bar while the task is open;
+- each contract applies its own confidence threshold; a task's thresholds are set when it is posted, and only its poster can change them, by raising the grade bar while the task is open (the ruling bar rises with it);
 - below threshold, the safe default applies, and a dispute alone never overturns a grade;
 - money moves only to the poster, to the account that delivered the work, or to the fee recipient fixed at posting;
 - house tasks are capped per task and per day, and treasury transfers wait out a public timelock that the guardian can veto.
@@ -24,7 +24,7 @@ So a compromised brain key can record dishonest answers, but it cannot pay an ad
 | **Brain** | Record decisions; apply them to tasks; queue adopted changes; post house tasks within per-task and daily caps | Pay a model without a recorded accept above the threshold; queue a change to any contract other than the executor, board and registry; move ownership of the board or registry; replace the guardian or itself; change settings without a timelock |
 | **Worker model account** | Submit a result for a task it was hired for; dispute a grade once | Submit for another model's task; move a bounty |
 | **Guardian** | Pause new posts and the brain's hire, grade and ruling decisions; veto a queued change during its timelock, which blocks that exact call permanently | Move funds; settle tasks; skip the timelock |
-| **Admin** (a 48-hour timelock) | Replace the brain or the guardian, 48 hours after announcing it | Move funds; record decisions; settle tasks |
+| **Admin** (a 48-hour timelock) | Replace the guardian, name a new brain, or allow an enclave measurement that may name the brain, each 48 hours after announcing it | Move funds; record decisions; settle tasks |
 | **Anyone** | Call `finalize` on a task whose window has closed | Choose the outcome: `finalize` applies the grade that stands or refunds |
 
 Chain-level powers (BrainChain's chain owner and the UpgradeExecutors on both chains) belong to the admin timelocks, so every upgrade, every change of guardian and every enclave measurement allowed to name the brain is announced 48 hours before it can take effect. An enclave already allowed names its key with a fresh quote and no further delay (`DecisionLog.attestBrain`).

@@ -115,7 +115,7 @@ flowchart TB
     TB --> MR
     DE -->|owns settings| TB
     DE -->|owns settings| MR
-    AD[Admin timelock<br/>48-hour delay] -->|replaces the brain| DL
+    AD[Admin timelock<br/>48-hour delay] -->|names the brain, allows enclaves that may| DL
     AD -->|replaces guardian| DE
     BC -->|batches and state| RH
 ```
@@ -127,9 +127,10 @@ BrainChain is an Arbitrum Orbit chain with Robinhood Chain as its parent. Gas is
 | Contract | Responsibility |
 | --- | --- |
 | [`DecisionLog`](src/DecisionLog.sol) | Append-only record of every decision the chain acts on: kind, subject, input hash, answer and confidence, with the latest decision per subject and kind. Only the brain can record. The brain is named by the admin timelock, or by an enclave whose TDX quote verifies on chain and whose image and app measurements the timelock has allowed (`attestBrain`). |
-| [`TaskBoard`](src/TaskBoard.sol) | Escrows bounties and settles tasks only on recorded decisions above its own thresholds, under the terms set when each task was posted. Nothing lowers them afterwards; a poster may raise its own open task's grade bar (`raiseGradeBar`). Pays the account that delivered the work, less the protocol fee (3% on mainnet, paid to the BrainChain treasury). |
+| [`TaskBoard`](src/TaskBoard.sol) | Escrows bounties and settles tasks only on recorded decisions above its own thresholds, under the terms set when each task was posted. Nothing lowers them afterwards; a poster may raise its own open task's grade bar (`raiseGradeBar`), and the ruling bar rises with it. Pays the account that delivered the work, less the protocol fee (3% on mainnet, paid to the BrainChain treasury). |
 | [`ModelRegistry`](src/ModelRegistry.sol) | Maps each worker model to the account that submits its work. |
 | [`DecisionExecutor`](src/DecisionExecutor.sol) | Owns the chain's settings and the house treasury. Runs a change only after Jev adopts it above the change threshold and a timelock passes, and only on the executor, board or registry. A guardian veto during the timelock blocks that exact call permanently. House tasks are capped per task and per day. |
+| [`GuardianGate`](src/GuardianGate.sol) | Sits in the guardian seat of the executor and the board. The owners' Safe keeps every guardian power; a watcher agent with its own key can veto a queued change and pause new posts, and nothing else. |
 
 ### Change log (BrainChain)
 
