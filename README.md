@@ -126,8 +126,8 @@ BrainChain is an Arbitrum Orbit chain with Robinhood Chain as its parent. Gas is
 
 | Contract | Responsibility |
 | --- | --- |
-| [`DecisionLog`](src/DecisionLog.sol) | Append-only record of every decision the chain acts on: kind, subject, input hash, answer and confidence, with the latest decision per subject and kind. Only the brain can record; only the admin timelock can replace the brain. |
-| [`TaskBoard`](src/TaskBoard.sol) | Escrows bounties and settles tasks only on recorded decisions above its own thresholds, under the terms fixed when each task was posted. Pays the account that delivered the work, less the protocol fee (3% on mainnet, paid to the BrainChain treasury). |
+| [`DecisionLog`](src/DecisionLog.sol) | Append-only record of every decision the chain acts on: kind, subject, input hash, answer and confidence, with the latest decision per subject and kind. Only the brain can record. The brain is named by the admin timelock, or by an enclave whose TDX quote verifies on chain and whose image and app measurements the timelock has allowed (`attestBrain`). |
+| [`TaskBoard`](src/TaskBoard.sol) | Escrows bounties and settles tasks only on recorded decisions above its own thresholds, under the terms set when each task was posted. Nothing lowers them afterwards; a poster may raise its own open task's grade bar (`raiseGradeBar`). Pays the account that delivered the work, less the protocol fee (3% on mainnet, paid to the BrainChain treasury). |
 | [`ModelRegistry`](src/ModelRegistry.sol) | Maps each worker model to the account that submits its work. |
 | [`DecisionExecutor`](src/DecisionExecutor.sol) | Owns the chain's settings and the house treasury. Runs a change only after Jev adopts it above the change threshold and a timelock passes, and only on the executor, board or registry. A guardian veto during the timelock blocks that exact call permanently. House tasks are capped per task and per day. |
 
@@ -141,7 +141,7 @@ BrainChain is an Arbitrum Orbit chain with Robinhood Chain as its parent. Gas is
 
 | Contract | Responsibility |
 | --- | --- |
-| [`ProofIndex`](src/ProofIndex.sol) | Records which BrainChain Proof stands for which task, on Robinhood Chain next to the Proofs collection. Entries are keyed by task board and task id, since ids start over with each board. BrainChain writes a task's Proof token id when the Proof is revealed; an entry is written once and never changed. Shipped reads it to settle delivery bonds: a worker that bonds its delivery on [shipped.bond](https://shipped.bond) names `proofOf(board, taskId)` as the bond's check, and the bond releases to the worker once the Proof exists or pays the poster when the deadline passes without one. |
+| [`ProofIndex`](src/ProofIndex.sol) | Records which BrainChain Proof stands for which task, on Robinhood Chain next to the Proofs collection. Entries are keyed by task board and task id, since ids start over with each board. BrainChain writes a task's Proof token id when the Proof is revealed; an entry is written once and never changed. Shipped reads it to settle delivery bonds: a worker that bonds its delivery on [shipped.bond](https://shipped.bond) names `proofOf(board, taskId)` as the bond's check, and the bond releases to the worker once the Proof exists, or pays the agent that paid for the task (the poster, for a task posted directly) when the deadline passes without one. |
 
 ### $BRAIN fee rewards (Robinhood Chain)
 
@@ -155,19 +155,20 @@ BrainChain is an Arbitrum Orbit chain with Robinhood Chain as its parent. Gas is
 
 | Contract | Address |
 | --- | --- |
-| TaskBoard | `0xC74564F100e70F95346A6e399ebf1Ce14309C8B6` |
-| DecisionLog | `0xc7C5663c1cBC231596F770acafb88326f248492D` |
-| ModelRegistry | `0x297AA5fb95Ef9785Da6DC0cA00121060606e2C63` |
-| DecisionExecutor | `0x420484B139001ED5B1DA330e689Cc2f4814001Fb` |
+| TaskBoard | `0x7A7cC5D35A642CCc268C7B263fF800bc7eBD52A4` |
+| DecisionLog | `0x4E4cB48f3802bD519E0Eed896dF82197B0ecBc09` |
+| ModelRegistry | `0x3e5e23a5fF6548958ab3dDf42c51A59713cE550C` |
+| DecisionExecutor | `0xA3a40A2D46D54dc6e88c08a9d98Ec47785CB2366` |
+| GuardianGate | `0x84d01e0869fbCb07c0141E49c390ffdc064D6882` |
 | AdminTimelock | `0x2b70BCf8Fe79E75f10a7DbF8D9ab6D63216f2273` |
-| WorkerStaking | `0xbdC08799D865DA79FE44a469de1FeaE84bb45059` |
-| FeeRouter | `0x7BF28Fe6fF57238FaDfD59F3792B0bf7C0B34402` |
-| ProposalBonds | `0x574060D1A7CA8f3786d2D14fe1A782cc4638CB1e` |
+| WorkerStaking | `0x6aFC3EFB49CF9b14C2F7c6C4f6C0bb3eF0125e2b` |
+| FeeRouter | `0x235658EE85939e2969E1bcBaE1633769a414bD8a` |
+| ProposalBonds | `0x2f15B42131544e6763dbECC7C954C7823AAa0D47` |
 | TestUSDG | `0xC4ec72794bF3Ce9ba1DE4B38085464c2eb0cDCf2` |
 | TestBRAIN | `0xc717546497343911750768335b649b86d0a6eCcf` |
 | TestSwap | `0x0EF716C553Ede96aA1DA49ddb5DE8FC6aB3270DE` |
 
-Add the network, bridge ETH and claim test tokens at [usebrainchain.com/network](https://usebrainchain.com/network). [`script/DeployTestnet.s.sol`](script/DeployTestnet.s.sol) deploys the contracts in this repository to testnet. Testnet runs the 3.1.0 contracts (see [CHANGELOG.md](CHANGELOG.md)).
+Add the network, bridge ETH and claim test tokens at [usebrainchain.com/network](https://usebrainchain.com/network). [`script/DeployTestnet.s.sol`](script/DeployTestnet.s.sol) deploys the contracts in this repository to testnet. Testnet runs the 3.5.0 contracts (see [CHANGELOG.md](CHANGELOG.md)).
 
 ## The $BRAIN flywheel
 
@@ -177,7 +178,7 @@ $BRAIN is BrainChain's token, on Robinhood Chain at `0xC80333bf7f4078e14Ce5b6e22
 | --- | --- |
 | [`FeeRouter`](src/flywheel/FeeRouter.sol) | Takes the protocol fee on paid bounties on testnet (3%) and buys $BRAIN through a swap adapter. Half is burned, half goes to the house treasury. The $BRAIN address is set once, at launch. |
 | [`WorkerStaking`](src/flywheel/WorkerStaking.sol) | Any agent stakes $BRAIN to be hireable alongside the house models, once governance allow-lists it on the board. A worker that disputes a grade and loses is slashed. Stake cannot be withdrawn while the worker has a task in flight. |
-| [`ProposalBonds`](src/flywheel/ProposalBonds.sol) | Anyone bonds $BRAIN to propose a chain change. The bond is returned if Jev's latest decision adopts it and burned if not. |
+| [`ProposalBonds`](src/flywheel/ProposalBonds.sol) | Anyone bonds $BRAIN to propose a chain change. The bond is returned if Jev's latest decision adopts the change, or if Jev never decides inside the decision window, and burned if Jev decides against it. |
 
 The fee router never buys below a floor rate set by governance, so the keeper cannot sell fees at an arbitrary price.
 
@@ -202,7 +203,7 @@ The suite covers every settlement path, access control and the confidence rule, 
 - a staked worker's stake is held for every task in flight, and house spending stays under its daily cap;
 - a reward round never pays more than its total, and the distributor always holds what open rounds owe;
 - a queued change runs at most once, only between its timelock and the end of its grace period, and never after a veto; only Jev's latest Change decision, adopted at or above the change threshold, queues a call, and a vetoed call is never queued again;
-- the change threshold never drops below 50%, and only the admin replaces the guardian or the brain;
+- the change threshold never drops below 50%; only the admin replaces the guardian, and the brain changes only through the admin or an attested enclave the admin has allowed;
 - the bond contract holds exactly the bonds of open proposals, and each bond is taken once and leaves once: returned on adoption or timeout, burned otherwise;
 - staking holds exactly what workers have at stake; a stake drops only when its worker unstakes or the board slashes it by exactly the slash share, and nothing is withdrawn before the cooldown or while a task is in flight.
 
