@@ -45,6 +45,14 @@ contract DeployMainnetTest is Test {
         script.deploy();
 
         vm.setEnv("BRAIN_TOKEN", vm.toString(address(brainToken)));
+        DeployMainnet.Deployment memory off = script.deploy();
+        assertEq(address(off.board.payouts()), address(0));
+        assertEq(off.board.payoutHouse(), address(0));
+
+        vm.setEnv("PAYOUT_PREFERENCES", vm.toString(makeAddr("no code")));
+        vm.expectRevert(bytes("PAYOUT_PREFERENCES has no code on this chain"));
+        script.deploy();
+
         PayoutPreferences preferences = new PayoutPreferences();
         vm.setEnv("PAYOUT_PREFERENCES", vm.toString(address(preferences)));
         DeployMainnet.Deployment memory d = script.deploy();

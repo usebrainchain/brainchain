@@ -123,6 +123,11 @@ contract DeployMainnet is Script {
         c.decideWithin = SafeCast.toUint64(vm.envOr("BOND_DECIDE_WITHIN", uint256(7 days)));
         c.watcher = vm.envAddress("WATCHER");
         c.payouts = PayoutPreferences(vm.envOr("PAYOUT_PREFERENCES", address(0)));
+        // A wrong address would make every delivery revert in TaskBoard.submit, and only a timelocked change repairs it.
+        if (address(c.payouts) != address(0)) {
+            require(address(c.payouts).code.length > 0, "PAYOUT_PREFERENCES has no code on this chain");
+            c.payouts.inStock(address(0));
+        }
         // Every USDG amount below is in 6-decimal units, every $BRAIN amount in 18.
         require(address(c.usdg).code.length > 0, "USDG has no code on this chain");
         require(IERC20Metadata(address(c.usdg)).decimals() == 6, "USDG is not a 6-decimal token");
