@@ -5,17 +5,34 @@ import { createPublicClient, http, isAddress } from "viem";
 
 import { decisionLogAbi, taskBoardAbi } from "./abi.js";
 import { NETWORKS } from "./deployments.js";
-import { clean, decisionsOf, errorMessage, outcomeOf, verifyDecision, withheldNotChecked, type Check, type Context, type DecisionReport, type Status } from "./verify.js";
+import {
+  clean,
+  decisionsOf,
+  errorMessage,
+  outcomeOf,
+  readReceipt,
+  receiptDecision,
+  verifyDecision,
+  withheldNotChecked,
+  type Check,
+  type Context,
+  type DecisionReport,
+  type Status,
+} from "./verify.js";
 
 const USAGE = `Usage:
-  brainchain-verify <mainnet|testnet|chainId> <decisionId> [--set <TaskBoard>] [--rpc <url>] [--json]
-  brainchain-verify <mainnet|testnet|chainId> --task <taskId> [--set <TaskBoard>] [--rpc <url>] [--json]
+  brainchain-verify <mainnet|testnet|chainId> <decisionId> [--set <TaskBoard>] [--rpc <url>] [--offline] [--json]
+  brainchain-verify <mainnet|testnet|chainId> --task <taskId> [--set <TaskBoard>] [--rpc <url>] [--offline] [--json]
+  brainchain-verify <mainnet|testnet|chainId> [<decisionId>] --receipt <file|url> [--set <TaskBoard>] [--rpc <url>] [--json]
 
 Checks a BrainChain decision against the chain: reads it from the DecisionLog,
 fetches the published record, recomputes its hashes and confidence, and applies
 the task's thresholds as the contracts do. Needs no keys.
 
   --task <id>    check every decision about one task
+  --receipt <r>  check the receipt for a paid job, from a file or a URL, against
+                 the decision it names, or the one given
+  --offline      fetch no receipt from the brain host
   --set <board>  a retired contract set from 3.0.0 on, by TaskBoard address, by
                  its key on the site (v3-1) or by release (3.1.0); without it, the
                  active set
@@ -54,11 +71,17 @@ const flag = (name: string): string | undefined => {
   args.splice(at, 2);
   return value;
 };
-const json = args.includes("--json");
-if (json) args.splice(args.indexOf("--json"), 1);
+const toggle = (name: string): boolean => {
+  const at = args.indexOf(name);
+  if (at >= 0) args.splice(at, 1);
+  return at >= 0;
+};
+const json = toggle("--json");
+const offline = toggle("--offline");
 const taskArg = flag("--task");
 const setArg = flag("--set");
 const rpcArg = flag("--rpc");
+const receiptArg = flag("--receipt");
 // -1 is a bad id, not an option; the id check below says so.
 const unknown = args.find((arg) => arg.startsWith("-") && !/^-\d/.test(arg));
 if (unknown) usage(`Unknown option ${unknown}`);
@@ -67,19 +90,28 @@ if (rpcArg !== undefined && !(URL.canParse(rpcArg) && ["http:", "https:"].includ
 const [networkArg, idArg, ...extra] = args;
 if (networkArg === undefined) usage("Name a network: mainnet, testnet or a chain id");
 if (extra.length > 0 || (taskArg !== undefined && idArg !== undefined)) usage("Too many arguments");
-const target = taskArg ?? idArg;
-if (target === undefined) usage("Name a decision id, or a task with --task");
-if (!/^[1-9]\d*$/.test(target)) usage(`${taskArg === undefined ? "A decision" : "A task"} id is a whole number from 1`);
+if (taskArg !== undefined && receiptArg !== undefined) usage("A receipt is for one decision: name it, not a task");
+if (taskArg === undefined && idArg === undefined && receiptArg === undefined) usage("Name a decision id, or a task with --task");
+const given = taskArg ?? idArg;
+if (given !== undefined && !/^[1-9]\d*$/.test(given)) usage(`${taskArg === undefined ? "A decision" : "A task"} id is a whole number from 1`);
 
 const foundNetwork = Object.hasOwn(NETWORKS, networkArg)
   ? NETWORKS[networkArg as keyof typeof NETWORKS]
   : Object.values(NETWORKS).find((n) => String(n.chainId) === networkArg);
 if (!foundNetwork) usage(`Unknown network "${networkArg}": use mainnet, testnet, 274663 or 274630`);
 const network = foundNetwork;
+const client = createPublicClient({ transport: http(rpcArg ?? network.rpc) });
+
+const receipt = receiptArg === undefined ? undefined : await readReceipt(client, receiptArg).catch((error: unknown) => fail(errorMessage(error)));
+const named = receipt && receiptDecision(receipt.value);
+const target = given ?? named?.decision;
+if (target === undefined || !/^[1-9]\d*$/.test(target)) usage("The receipt names no decision; give the decision's id");
+// A receipt names its log, so it opens a retired set on its own.
+const receiptSet = named && network.sets.find((s) => s.log.toLowerCase() === named.decisionLog.toLowerCase());
 
 const foundSet =
   setArg === undefined
-    ? network.sets[0]
+    ? (receiptSet ?? network.sets[0])
     : network.sets.find((s) => (isAddress(setArg) ? s.board.toLowerCase() === setArg.toLowerCase() : s.key === setArg || s.release === setArg || s.aliases?.includes(setArg)));
 if (!foundSet) {
   if (setArg !== undefined && BEFORE_3.test(setArg)) usage(`Contract set ${setArg} predates release 3.0.0, which this tool does not read: those boards named tasks by id alone.`);
@@ -88,12 +120,7 @@ if (!foundSet) {
 }
 const set = foundSet;
 
-const ctx: Context = {
-  client: createPublicClient({ transport: http(rpcArg ?? network.rpc) }),
-  network,
-  set,
-  briefs: new Map(),
-};
+const ctx: Context = { client, network, set, briefs: new Map(), offline };
 
 function fail(message: string, status = 1): never {
   if (json) console.log(JSON.stringify({ error: clean(message) }, null, 2));
@@ -136,6 +163,10 @@ function report(reports: DecisionReport[], header: string, task?: number): never
       task: r.task,
       ...(r.outside ? { outside: true } : {}),
       ...(r.withheld ? { withheld: true } : {}),
+      ...(r.run ? { run: r.run } : {}),
+      ...(r.panel ? { panel: r.panel } : {}),
+      ...(r.evidence ? { evidence: r.evidence } : {}),
+      ...(r.receipt ? { receipt: r.receipt } : {}),
       block: r.block,
       recordedAt: r.recordedAt,
       confidenceBps: r.confidenceBps,
@@ -193,7 +224,7 @@ try {
     const hint = others.length > 0 ? ` Each set numbers its own decisions; try --set ${others.join(" or ")}.` : "";
     fail(`DecisionLog ${set.log} (set ${set.key}) holds decisions 1 to ${decisions}.${hint}`);
   }
-  report([await verifyDecision(ctx, id)], `Decision ${id} ${where} (DecisionLog ${set.log})`);
+  report([await verifyDecision(ctx, id, receipt)], `Decision ${id} ${where} (DecisionLog ${set.log})`);
 } catch (error) {
   fail(errorMessage(error));
 }
