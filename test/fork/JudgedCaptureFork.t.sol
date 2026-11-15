@@ -20,7 +20,7 @@ interface ICollector {
 contract JudgedCaptureForkTest is JudgedCaptureBase {
     address constant USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
     uint120 constant AMOUNT = 20e6;
-    bytes32 constant TASK = keccak256("base order 1");
+    bytes24 constant TASK = bytes24(keccak256("base order 1"));
 
     JudgedCapture.Terms terms;
     IAuthCaptureEscrow.PaymentInfo p;
@@ -39,7 +39,7 @@ contract JudgedCaptureForkTest is JudgedCaptureBase {
         _;
     }
 
-    function test_theLocalTestsRunTheCodeDeployedOnBase() public onFork {
+    function test_theLocalTestsRunTheCodeDeployedOnBase() public view onFork {
         string memory json = vm.readFile("test/fixtures/commerce-payments-v1.1.0.json");
         assertEq(address(ESCROW).code, vm.parseJsonBytes(json, ".AuthCaptureEscrow.code"));
         assertEq(ERC3009_COLLECTOR.code, vm.parseJsonBytes(json, ".ERC3009PaymentCollector.code"));
@@ -57,10 +57,10 @@ contract JudgedCaptureForkTest is JudgedCaptureBase {
         JudgedCapture.Decision memory d = _decision(p, TASK, true, 9_100);
         bytes memory sig = _sign(brainKey, d);
         vm.expectRevert(JudgedCapture.WindowsOpen.selector);
-        judged.capture(p, terms, d, sig);
+        judged.capture(p, d, sig);
 
         vm.warp(terms.windowsClose);
-        judged.capture(p, terms, d, sig);
+        judged.capture(p, d, sig);
         uint256 fee = uint256(AMOUNT) * FEE_BPS / 10_000;
         assertEq(IERC20(USDC).balanceOf(payee), AMOUNT - fee);
         assertEq(IERC20(USDC).balanceOf(feeRecipient), fee);
@@ -73,10 +73,21 @@ contract JudgedCaptureForkTest is JudgedCaptureBase {
     function test_aRefusedTaskIsVoidedInFullAtOnce() public onFork {
         _authorize(payerKey, p);
         JudgedCapture.Decision memory d = _decision(p, TASK, false, 9_600);
-        judged.void(p, terms, d, _sign(brainKey, d));
+        judged.void(p, d, _sign(brainKey, d));
         assertEq(IERC20(USDC).balanceOf(payer), 100e6);
         assertEq(IERC20(USDC).balanceOf(payee), 0);
         assertEq(_held(p), 0);
+    }
+
+    function test_aPreliminaryDecisionMovesNothing() public onFork {
+        _authorize(payerKey, p);
+        vm.warp(terms.windowsClose);
+        JudgedCapture.Decision memory d = _decision(p, TASK, true, 9_900);
+        d.isFinal = false;
+        bytes memory sig = _sign(brainKey, d);
+        vm.expectRevert(JudgedCapture.NotFinal.selector);
+        judged.capture(p, d, sig);
+        assertEq(_held(p), AMOUNT);
     }
 
     function test_anUndecidedTaskIsReclaimedByThePayerAlone() public onFork {

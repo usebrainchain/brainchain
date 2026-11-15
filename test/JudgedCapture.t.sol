@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
+import {DeployJudgedCapture} from "../script/DeployJudgedCapture.s.sol";
 import {IAuthCaptureEscrow, JudgedCapture} from "../src/escrow/JudgedCapture.sol";
 import {MockERC3009} from "./MockERC3009.sol";
 
@@ -44,7 +45,7 @@ abstract contract JudgedCaptureBase is Test {
     uint256 internal payerKey = uint256(keccak256("payer key"));
     address internal payer = vm.addr(payerKey);
 
-    function _terms(bytes32 task) internal view returns (JudgedCapture.Terms memory) {
+    function _terms(bytes24 task) internal view returns (JudgedCapture.Terms memory) {
         return JudgedCapture.Terms({task: task, barBps: BAR, windowsClose: uint48(block.timestamp) + WINDOWS});
     }
 
@@ -101,7 +102,8 @@ abstract contract JudgedCaptureBase is Test {
         judged.authorize(p, p.maxAmount, ERC3009_COLLECTOR, _authorization(key, p));
     }
 
-    function _decision(IAuthCaptureEscrow.PaymentInfo memory p, bytes32 task, bool accepted, uint16 confidenceBps)
+    /// A final decision; tests that need a preliminary one clear `isFinal`.
+    function _decision(IAuthCaptureEscrow.PaymentInfo memory p, bytes24 task, bool accepted, uint16 confidenceBps)
         internal
         view
         returns (JudgedCapture.Decision memory)
@@ -110,6 +112,7 @@ abstract contract JudgedCaptureBase is Test {
             task: task,
             paymentInfoHash: ESCROW.getHash(p),
             accepted: accepted,
+            isFinal: true,
             confidenceBps: confidenceBps,
             decisionId: DECISION_ID,
             decisionLog: decisionLog
@@ -143,8 +146,8 @@ abstract contract JudgedCaptureSetup is JudgedCaptureBase {
 }
 
 contract JudgedCaptureTest is JudgedCaptureSetup {
-    bytes32 internal constant TASK = keccak256("order 1");
-    bytes32 internal constant OTHER_TASK = keccak256("order 2");
+    bytes24 internal constant TASK = bytes24(keccak256("order 1"));
+    bytes24 internal constant OTHER_TASK = bytes24(keccak256("order 2"));
     uint120 internal constant AMOUNT = 10e6;
 
     JudgedCapture.Terms internal terms;
@@ -169,6 +172,21 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         _authorize(payerKey, p);
     }
 
+    function _rejects(bytes4 error_) internal {
+        bytes memory sig = _authorization(payerKey, p);
+        vm.expectRevert(error_);
+        judged.check(p, p.maxAmount);
+        vm.expectRevert(error_);
+        judged.authorize(p, p.maxAmount, ERC3009_COLLECTOR, sig);
+    }
+
+    function _nameBrain(uint256 key) internal {
+        vm.prank(owner);
+        judged.queueBrain(vm.addr(key));
+        vm.warp(block.timestamp + 2 days);
+        judged.execute(JudgedCapture.Setting.Brain);
+    }
+
     // Construction
 
     function test_constructorRejectsZeroAddresses() public {
@@ -189,6 +207,7 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         assertEq(judged.brain(), brain);
         assertEq(judged.cap(), 25e6, "25 USDC in 6-decimal units");
         assertEq(judged.DELAY(), 2 days);
+        assertEq(judged.CAPTURE_MARGIN(), 1 days);
         (, string memory name, string memory version, uint256 chainId, address verifyingContract,,) =
             judged.eip712Domain();
         assertEq(name, "JudgedCapture");
@@ -197,16 +216,14 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         assertEq(verifyingContract, address(judged));
     }
 
-    function test_saltCommitsToEveryTerm() public view {
-        assertEq(judged.saltOf(terms), uint256(keccak256(abi.encode(judged.TERMS_TYPEHASH(), terms))));
-        JudgedCapture.Terms memory changed = terms;
-        changed.barBps = BAR - 1;
-        assertNotEq(judged.saltOf(changed), judged.saltOf(terms));
-        changed = _terms(TASK);
-        changed.windowsClose -= 1;
-        assertNotEq(judged.saltOf(changed), judged.saltOf(terms));
-        changed = _terms(OTHER_TASK);
-        assertNotEq(judged.saltOf(changed), judged.saltOf(terms));
+    function testFuzz_theSaltIsTheTermsAndBack(bytes24 task, uint16 bar, uint48 windowsClose) public view {
+        JudgedCapture.Terms memory t = JudgedCapture.Terms(task, bar, windowsClose);
+        uint256 salt = judged.saltOf(t);
+        assertEq(salt, uint256(bytes32(task)) | (uint256(bar) << 48) | windowsClose);
+        JudgedCapture.Terms memory back = judged.termsOf(salt);
+        assertEq(back.task, task);
+        assertEq(back.barBps, bar);
+        assertEq(back.windowsClose, windowsClose);
     }
 
     function test_digestIsTheEip712HashOfTheDecision() public view {
@@ -223,11 +240,12 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         bytes32 structHash = keccak256(
             abi.encode(
                 keccak256(
-                    "Decision(bytes32 task,bytes32 paymentInfoHash,bool accepted,uint16 confidenceBps,uint256 decisionId,address decisionLog)"
+                    "Decision(bytes24 task,bytes32 paymentInfoHash,bool accepted,bool isFinal,uint16 confidenceBps,uint256 decisionId,address decisionLog)"
                 ),
                 d.task,
                 d.paymentInfoHash,
                 d.accepted,
+                d.isFinal,
                 d.confidenceBps,
                 d.decisionId,
                 d.decisionLog
@@ -243,17 +261,33 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         assertEq(usdc.balanceOf(payer), 1_000e6 - AMOUNT);
         assertEq(usdc.balanceOf(ESCROW.getTokenStore(address(judged))), AMOUNT);
         assertEq(_held(p), AMOUNT);
+        assertEq(judged.brainOf(ESCROW.getHash(p)), brain, "bound to the key in force");
+    }
+
+    function test_checkReturnsTheTermsAuthorizeWouldHold() public view {
+        JudgedCapture.Terms memory t = judged.check(p, AMOUNT);
+        assertEq(t.task, TASK);
+        assertEq(t.barBps, BAR);
+        assertEq(t.windowsClose, terms.windowsClose);
+    }
+
+    function test_authorizeRejectsAnotherOperator() public {
+        p.operator = stranger;
+        _rejects(JudgedCapture.WrongOperator.selector);
     }
 
     function test_authorizeRejectsAnotherToken() public {
-        MockERC3009 other = new MockERC3009();
-        p.token = address(other);
+        p.token = address(new MockERC3009());
+        vm.expectRevert(JudgedCapture.WrongToken.selector);
+        judged.check(p, AMOUNT);
         vm.expectRevert(JudgedCapture.WrongToken.selector);
         judged.authorize(p, AMOUNT, ERC3009_COLLECTOR, "");
     }
 
     function test_authorizeRejectsAPartialHold() public {
         bytes memory sig = _authorization(payerKey, p);
+        vm.expectRevert(JudgedCapture.PartialHold.selector);
+        judged.check(p, AMOUNT - 1);
         vm.expectRevert(JudgedCapture.PartialHold.selector);
         judged.authorize(p, AMOUNT - 1, ERC3009_COLLECTOR, sig);
     }
@@ -264,23 +298,52 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         assertEq(_held(p), CAP);
 
         p = _payment(payer, uint120(CAP + 1), _terms(OTHER_TASK));
-        bytes memory sig = _authorization(payerKey, p);
-        vm.expectRevert(JudgedCapture.OverCap.selector);
-        judged.authorize(p, CAP + 1, ERC3009_COLLECTOR, sig);
+        _rejects(JudgedCapture.OverCap.selector);
     }
 
     function test_authorizeRejectsAFeeFloorWithNowhereToGo() public {
         p.feeReceiver = address(0);
-        bytes memory sig = _authorization(payerKey, p);
-        vm.expectRevert(JudgedCapture.NoFeeReceiver.selector);
-        judged.authorize(p, AMOUNT, ERC3009_COLLECTOR, sig);
+        _rejects(JudgedCapture.NoFeeReceiver.selector);
     }
 
-    function test_authorizeForAnotherOperatorFailsInTheEscrow() public {
-        p.operator = stranger;
-        bytes memory sig = _authorization(payerKey, p);
-        vm.expectPartialRevert(bytes4(keccak256("InvalidSender(address,address)")));
-        judged.authorize(p, AMOUNT, ERC3009_COLLECTOR, sig);
+    function test_authorizeRejectsAZeroTask() public {
+        terms.task = 0;
+        p.salt = judged.saltOf(terms);
+        _rejects(JudgedCapture.NoTask.selector);
+    }
+
+    function test_authorizeRejectsABarAboveCertainty() public {
+        terms.barBps = 10_001;
+        p.salt = judged.saltOf(terms);
+        _rejects(JudgedCapture.BadBar.selector);
+        terms.barBps = 10_000;
+        p.salt = judged.saltOf(terms);
+        judged.check(p, AMOUNT);
+    }
+
+    function test_authorizeLeavesTheMarginBeforeTheDeadline() public {
+        p.authorizationExpiry = terms.windowsClose + CAPTURE_MARGIN - 1;
+        p.refundExpiry = p.authorizationExpiry;
+        _rejects(JudgedCapture.DeadlineTooSoon.selector);
+        p.authorizationExpiry = terms.windowsClose + CAPTURE_MARGIN;
+        p.refundExpiry = p.authorizationExpiry;
+        _authorize(payerKey, p);
+    }
+
+    function test_authorizeRejectsARandomSalt() public {
+        // An x402 client's usual random salt, unpacked, sets a bar above 10,000 bps.
+        p.salt = uint256(keccak256("x402 client random bytes"));
+        assertGt(judged.termsOf(p.salt).barBps, 10_000);
+        _rejects(JudgedCapture.BadBar.selector);
+        // With a plausible bar, its windows close far past any deadline.
+        p.salt = (p.salt & ~(uint256(type(uint16).max) << 48)) | (uint256(BAR) << 48);
+        _rejects(JudgedCapture.DeadlineTooSoon.selector);
+    }
+
+    function test_authorizeNeedsALiveBrainKey() public {
+        vm.prank(owner);
+        judged.revokeBrain(brain);
+        _rejects(JudgedCapture.NoBrain.selector);
     }
 
     function test_anAuthorizationCollectsOnce() public {
@@ -297,6 +360,13 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         judged.authorize(p, AMOUNT, ERC3009_COLLECTOR, sig);
     }
 
+    function test_chargeIsExposedAndRefused() public {
+        bytes memory sig = _authorization(payerKey, p);
+        vm.expectRevert(JudgedCapture.NoCharge.selector);
+        judged.charge(p, AMOUNT, ERC3009_COLLECTOR, sig, 0, feeRecipient);
+        assertEq(usdc.balanceOf(payer), 1_000e6);
+    }
+
     // Capture
 
     function test_captureAfterTheWindowsPaysThePayeeLessTheFee() public {
@@ -308,7 +378,7 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         vm.expectEmit(address(judged));
         emit JudgedCapture.Captured(ESCROW.getHash(p), TASK, DECISION_ID, decisionLog, AMOUNT, fee);
         vm.prank(stranger);
-        judged.capture(p, terms, d, _sign(brainKey, d));
+        judged.capture(p, d, _sign(brainKey, d));
 
         assertEq(usdc.balanceOf(payee), AMOUNT - fee);
         assertEq(usdc.balanceOf(feeRecipient), fee);
@@ -320,7 +390,7 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         _authorized();
         vm.warp(terms.windowsClose);
         JudgedCapture.Decision memory d = _decision(p, TASK, true, BAR);
-        judged.capture(p, terms, d, _sign(brainKey, d));
+        judged.capture(p, d, _sign(brainKey, d));
         assertEq(_held(p), 0);
     }
 
@@ -330,7 +400,7 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         JudgedCapture.Decision memory d = _decision(p, TASK, true, BAR - 1);
         bytes memory sig = _sign(brainKey, d);
         vm.expectRevert(JudgedCapture.NotAccepted.selector);
-        judged.capture(p, terms, d, sig);
+        judged.capture(p, d, sig);
     }
 
     function test_captureRefusesARefusal() public {
@@ -339,7 +409,7 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         JudgedCapture.Decision memory d = _refuse();
         bytes memory sig = _sign(brainKey, d);
         vm.expectRevert(JudgedCapture.NotAccepted.selector);
-        judged.capture(p, terms, d, sig);
+        judged.capture(p, d, sig);
     }
 
     function test_captureWaitsForTheWindows() public {
@@ -348,9 +418,9 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         bytes memory sig = _sign(brainKey, d);
         vm.warp(terms.windowsClose - 1);
         vm.expectRevert(JudgedCapture.WindowsOpen.selector);
-        judged.capture(p, terms, d, sig);
+        judged.capture(p, d, sig);
         vm.warp(terms.windowsClose);
-        judged.capture(p, terms, d, sig);
+        judged.capture(p, d, sig);
     }
 
     function test_captureEndsAtTheCaptureDeadline() public {
@@ -359,28 +429,20 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         bytes memory sig = _sign(brainKey, d);
         vm.warp(p.authorizationExpiry);
         vm.expectPartialRevert(bytes4(keccak256("AfterAuthorizationExpiry(uint48,uint48)")));
-        judged.capture(p, terms, d, sig);
+        judged.capture(p, d, sig);
     }
 
-    function test_theBarCannotBeLoweredAtCapture() public {
+    function test_aConfidenceAboveCertaintyIsRefused() public {
         _authorized();
         vm.warp(terms.windowsClose);
-        JudgedCapture.Terms memory lowered = terms;
-        lowered.barBps = 5_000;
-        JudgedCapture.Decision memory d = _decision(p, TASK, true, 6_000);
+        JudgedCapture.Decision memory d = _decision(p, TASK, true, 10_001);
         bytes memory sig = _sign(brainKey, d);
-        vm.expectRevert(JudgedCapture.WrongTerms.selector);
-        judged.capture(p, lowered, d, sig);
-    }
-
-    function test_theWindowsCannotBeShortenedAtCapture() public {
-        _authorized();
-        JudgedCapture.Terms memory early = terms;
-        early.windowsClose = uint48(block.timestamp);
-        JudgedCapture.Decision memory d = _accept();
-        bytes memory sig = _sign(brainKey, d);
-        vm.expectRevert(JudgedCapture.WrongTerms.selector);
-        judged.capture(p, early, d, sig);
+        vm.expectRevert(JudgedCapture.BadConfidence.selector);
+        judged.capture(p, d, sig);
+        d.accepted = false;
+        sig = _sign(brainKey, d);
+        vm.expectRevert(JudgedCapture.BadConfidence.selector);
+        judged.void(p, d, sig);
     }
 
     function test_aDecisionForAnotherTaskDoesNotCapture() public {
@@ -389,7 +451,7 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         JudgedCapture.Decision memory d = _decision(p, OTHER_TASK, true, 9_000);
         bytes memory sig = _sign(brainKey, d);
         vm.expectRevert(JudgedCapture.WrongTask.selector);
-        judged.capture(p, terms, d, sig);
+        judged.capture(p, d, sig);
     }
 
     function test_aDecisionForAnotherPaymentDoesNotCapture() public {
@@ -402,25 +464,22 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         JudgedCapture.Decision memory d = _decision(second, TASK, true, 9_000);
         bytes memory sig = _sign(brainKey, d);
         vm.expectRevert(JudgedCapture.WrongPayment.selector);
-        judged.capture(p, terms, d, sig);
-        judged.capture(second, terms, d, sig);
+        judged.capture(p, d, sig);
+        judged.capture(second, d, sig);
         assertEq(_held(p), AMOUNT, "the first payment is untouched");
     }
 
     function test_aDecisionForAnotherTasksPaymentDoesNotCapture() public {
         _authorized();
-        JudgedCapture.Terms memory otherTerms = _terms(OTHER_TASK);
-        IAuthCaptureEscrow.PaymentInfo memory other = _payment(payer, 5e6, otherTerms);
+        IAuthCaptureEscrow.PaymentInfo memory other = _payment(payer, 5e6, _terms(OTHER_TASK));
         _authorize(payerKey, other);
         vm.warp(terms.windowsClose);
 
         // Even a brain that pairs this task with the other task's payment cannot move it.
         JudgedCapture.Decision memory d = _decision(other, TASK, true, 9_000);
         bytes memory sig = _sign(brainKey, d);
-        vm.expectRevert(JudgedCapture.WrongTerms.selector);
-        judged.capture(other, terms, d, sig);
         vm.expectRevert(JudgedCapture.WrongTask.selector);
-        judged.capture(other, otherTerms, d, sig);
+        judged.capture(other, d, sig);
         assertEq(_held(other), 5e6);
     }
 
@@ -430,7 +489,7 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         JudgedCapture.Decision memory d = _accept();
         bytes memory sig = _sign(payerKey, d);
         vm.expectRevert(JudgedCapture.NotBrain.selector);
-        judged.capture(p, terms, d, sig);
+        judged.capture(p, d, sig);
     }
 
     function test_aSignatureForAnotherDeploymentDoesNotCapture() public {
@@ -440,7 +499,7 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         JudgedCapture twin = new JudgedCapture(ESCROW, token, owner, brain, CAP);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(brainKey, twin.digestOf(d));
         vm.expectRevert(JudgedCapture.NotBrain.selector);
-        judged.capture(p, terms, d, abi.encodePacked(r, s, v));
+        judged.capture(p, d, abi.encodePacked(r, s, v));
     }
 
     function test_aChangedDecisionDoesNotVerify() public {
@@ -450,7 +509,7 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         bytes memory sig = _sign(brainKey, d);
         d.confidenceBps = 9_000;
         vm.expectRevert(JudgedCapture.NotBrain.selector);
-        judged.capture(p, terms, d, sig);
+        judged.capture(p, d, sig);
     }
 
     function test_aPaymentCapturesOnce() public {
@@ -458,9 +517,9 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         vm.warp(terms.windowsClose);
         JudgedCapture.Decision memory d = _accept();
         bytes memory sig = _sign(brainKey, d);
-        judged.capture(p, terms, d, sig);
+        judged.capture(p, d, sig);
         vm.expectRevert(bytes4(keccak256("ZeroAmount()")));
-        judged.capture(p, terms, d, sig);
+        judged.capture(p, d, sig);
     }
 
     function test_captureWithNoFeePaysThePayeeInFull() public {
@@ -470,7 +529,7 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         _authorized();
         vm.warp(terms.windowsClose);
         JudgedCapture.Decision memory d = _accept();
-        judged.capture(p, terms, d, _sign(brainKey, d));
+        judged.capture(p, d, _sign(brainKey, d));
         assertEq(usdc.balanceOf(payee), AMOUNT);
     }
 
@@ -480,20 +539,60 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         _authorized();
         vm.warp(terms.windowsClose);
         JudgedCapture.Decision memory d = _accept();
-        judged.capture(p, terms, d, _sign(brainKey, d));
+        judged.capture(p, d, _sign(brainKey, d));
         assertEq(usdc.balanceOf(feeRecipient), uint256(AMOUNT) / 100);
         assertEq(usdc.balanceOf(payee), AMOUNT - uint256(AMOUNT) / 100);
     }
 
+    // Final decisions only
+
+    function test_aPreliminaryAcceptanceCannotCaptureAfterTheWindows() public {
+        _authorized();
+        JudgedCapture.Decision memory early = _accept();
+        early.isFinal = false;
+        bytes memory earlySig = _sign(brainKey, early);
+        JudgedCapture.Decision memory ruling = _refuse();
+        ruling.decisionId = DECISION_ID + 1;
+        bytes memory rulingSig = _sign(brainKey, ruling);
+
+        vm.warp(terms.windowsClose);
+        vm.expectRevert(JudgedCapture.NotFinal.selector);
+        judged.capture(p, early, earlySig);
+        judged.void(p, ruling, rulingSig);
+        assertEq(usdc.balanceOf(payer), 1_000e6);
+        assertEq(usdc.balanceOf(payee), 0);
+    }
+
+    function test_aPreliminaryRefusalCannotVoid() public {
+        _authorized();
+        JudgedCapture.Decision memory grade = _refuse();
+        grade.isFinal = false;
+        bytes memory sig = _sign(brainKey, grade);
+        vm.expectRevert(JudgedCapture.NotFinal.selector);
+        judged.void(p, grade, sig);
+        assertEq(_held(p), AMOUNT, "the payee can still dispute and appeal");
+    }
+
+    function test_onlyOneFinalDecisionActs() public {
+        _authorized();
+        JudgedCapture.Decision memory refused = _refuse();
+        judged.void(p, refused, _sign(brainKey, refused));
+        vm.warp(terms.windowsClose);
+        JudgedCapture.Decision memory accepted = _accept();
+        bytes memory sig = _sign(brainKey, accepted);
+        vm.expectRevert(bytes4(keccak256("ZeroAmount()")));
+        judged.capture(p, accepted, sig);
+    }
+
     // Void
 
-    function test_aRefusalReturnsTheFullAmountAtOnce() public {
+    function test_aFinalRefusalReturnsTheFullAmountAtOnce() public {
         _authorized();
         JudgedCapture.Decision memory d = _refuse();
         vm.expectEmit(address(judged));
         emit JudgedCapture.Voided(ESCROW.getHash(p), TASK, DECISION_ID, decisionLog);
         vm.prank(stranger);
-        judged.void(p, terms, d, _sign(brainKey, d));
+        judged.void(p, d, _sign(brainKey, d));
         assertEq(usdc.balanceOf(payer), 1_000e6);
         assertEq(usdc.balanceOf(payee), 0);
         assertEq(usdc.balanceOf(feeRecipient), 0);
@@ -503,7 +602,7 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
     function test_anAcceptanceBelowTheBarVoids() public {
         _authorized();
         JudgedCapture.Decision memory d = _decision(p, TASK, true, BAR - 1);
-        judged.void(p, terms, d, _sign(brainKey, d));
+        judged.void(p, d, _sign(brainKey, d));
         assertEq(usdc.balanceOf(payer), 1_000e6);
     }
 
@@ -512,84 +611,66 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         JudgedCapture.Decision memory d = _decision(p, TASK, true, BAR);
         bytes memory sig = _sign(brainKey, d);
         vm.expectRevert(JudgedCapture.Accepted.selector);
-        judged.void(p, terms, d, sig);
-    }
-
-    function test_aRefusalDuringTheWindowsBeatsAnEarlierAcceptance() public {
-        _authorized();
-        JudgedCapture.Decision memory accepted = _accept();
-        bytes memory acceptance = _sign(brainKey, accepted);
-        JudgedCapture.Decision memory refused = _refuse();
-        judged.void(p, terms, refused, _sign(brainKey, refused));
-        vm.warp(terms.windowsClose);
-        vm.expectRevert(bytes4(keccak256("ZeroAmount()")));
-        judged.capture(p, terms, accepted, acceptance);
+        judged.void(p, d, sig);
     }
 
     function test_voidAfterCaptureFindsNothingHeld() public {
         _authorized();
         vm.warp(terms.windowsClose);
         JudgedCapture.Decision memory accepted = _accept();
-        judged.capture(p, terms, accepted, _sign(brainKey, accepted));
+        judged.capture(p, accepted, _sign(brainKey, accepted));
         JudgedCapture.Decision memory refused = _refuse();
         bytes memory sig = _sign(brainKey, refused);
         vm.expectPartialRevert(bytes4(keccak256("ZeroAuthorization(bytes32)")));
-        judged.void(p, terms, refused, sig);
+        judged.void(p, refused, sig);
     }
 
     function test_voidStillWorksAfterTheDeadline() public {
         _authorized();
         vm.warp(p.authorizationExpiry + 1 days);
         JudgedCapture.Decision memory d = _refuse();
-        judged.void(p, terms, d, _sign(brainKey, d));
+        judged.void(p, d, _sign(brainKey, d));
         assertEq(usdc.balanceOf(payer), 1_000e6);
     }
 
-    function test_voidChecksTheTermsTaskPaymentAndKey() public {
+    function test_voidChecksTheTaskPaymentAndKey() public {
         _authorized();
         JudgedCapture.Decision memory d = _refuse();
-        bytes memory sig = _sign(brainKey, d);
-
-        JudgedCapture.Terms memory wrong = terms;
-        wrong.barBps = 10_000;
-        vm.expectRevert(JudgedCapture.WrongTerms.selector);
-        judged.void(p, wrong, d, sig);
 
         JudgedCapture.Decision memory otherTask = _decision(p, OTHER_TASK, false, 9_000);
-        sig = _sign(brainKey, otherTask);
+        bytes memory sig = _sign(brainKey, otherTask);
         vm.expectRevert(JudgedCapture.WrongTask.selector);
-        judged.void(p, terms, otherTask, sig);
+        judged.void(p, otherTask, sig);
 
         JudgedCapture.Decision memory otherPayment = _refuse();
         otherPayment.paymentInfoHash = keccak256("another payment");
         sig = _sign(brainKey, otherPayment);
         vm.expectRevert(JudgedCapture.WrongPayment.selector);
-        judged.void(p, terms, otherPayment, sig);
+        judged.void(p, otherPayment, sig);
 
         sig = _sign(payerKey, d);
         vm.expectRevert(JudgedCapture.NotBrain.selector);
-        judged.void(p, terms, d, sig);
+        judged.void(p, d, sig);
     }
 
-    function testFuzz_aDecisionCapturesOrVoidsByTheBar(bool accepted, uint16 confidence, uint16 bar) public {
+    function testFuzz_aFinalDecisionCapturesOrVoidsByTheBar(bool accepted, uint16 confidence, uint16 bar) public {
         confidence = uint16(bound(confidence, 0, 10_000));
-        bar = uint16(bound(bar, 0, 10_000));
-        terms.barBps = bar;
+        terms.barBps = uint16(bound(bar, 0, 10_000));
         p = _payment(payer, AMOUNT, terms);
         _authorized();
         vm.warp(terms.windowsClose);
         JudgedCapture.Decision memory d = _decision(p, TASK, accepted, confidence);
         bytes memory sig = _sign(brainKey, d);
 
-        if (accepted && confidence >= bar) {
+        if (accepted && confidence >= terms.barBps) {
             vm.expectRevert(JudgedCapture.Accepted.selector);
-            judged.void(p, terms, d, sig);
-            judged.capture(p, terms, d, sig);
+            judged.void(p, d, sig);
+            judged.capture(p, d, sig);
             assertEq(usdc.balanceOf(payer), 1_000e6 - AMOUNT);
         } else {
             vm.expectRevert(JudgedCapture.NotAccepted.selector);
-            judged.capture(p, terms, d, sig);
-            judged.void(p, terms, d, sig);
+            judged.capture(p, d, sig);
+            judged.void(p, d, sig);
             assertEq(usdc.balanceOf(payer), 1_000e6);
         }
         assertEq(_held(p), 0);
@@ -611,13 +692,13 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         JudgedCapture.Decision memory d = _accept();
         bytes memory sig = _sign(brainKey, d);
         vm.expectRevert(bytes4(keccak256("ZeroAmount()")));
-        judged.capture(p, terms, d, sig);
+        judged.capture(p, d, sig);
     }
 
     function test_theOwnerCannotStopAReclaim() public {
         _authorized();
         vm.prank(owner);
-        judged.revokeBrain();
+        judged.revokeBrain(brain);
         vm.warp(p.authorizationExpiry);
         vm.prank(payer);
         ESCROW.reclaim(p);
@@ -653,11 +734,25 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         JudgedCapture.Decision memory d = _refuse();
         bytes memory old = _sign(brainKey, d);
         vm.expectRevert(JudgedCapture.NotBrain.selector);
-        judged.void(p, terms, d, old);
-        judged.void(p, terms, d, _sign(nextKey, d));
+        judged.void(p, d, old);
+        judged.void(p, d, _sign(nextKey, d));
     }
 
-    function test_onlyTheOwnerQueuesAndCancels() public {
+    function test_aNewKeyCannotDecidePaymentsHeldBeforeIt() public {
+        _authorized();
+        uint256 colluderKey = uint256(keccak256("owner's colluding key"));
+        _nameBrain(colluderKey);
+        vm.warp(terms.windowsClose);
+
+        JudgedCapture.Decision memory d = _accept();
+        bytes memory sig = _sign(colluderKey, d);
+        vm.expectRevert(JudgedCapture.NotBrain.selector);
+        judged.capture(p, d, sig);
+        judged.capture(p, d, _sign(brainKey, d));
+        assertEq(_held(p), 0, "the key bound at authorization still decides");
+    }
+
+    function test_onlyTheOwnerQueuesCancelsAndRevokes() public {
         vm.startPrank(stranger);
         vm.expectRevert(JudgedCapture.NotOwner.selector);
         judged.queueBrain(stranger);
@@ -666,7 +761,7 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         vm.expectRevert(JudgedCapture.NotOwner.selector);
         judged.cancel(JudgedCapture.Setting.Brain);
         vm.expectRevert(JudgedCapture.NotOwner.selector);
-        judged.revokeBrain();
+        judged.revokeBrain(brain);
         vm.stopPrank();
     }
 
@@ -712,7 +807,7 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         assertEq(judged.brain(), payee);
     }
 
-    function test_revokingTheBrainStopsCaptureAndVoidAtOnce() public {
+    function test_revokingTheCurrentKeyStopsItsPaymentsAndNewOnes() public {
         _authorized();
         vm.warp(terms.windowsClose);
         JudgedCapture.Decision memory accepted = _accept();
@@ -721,14 +816,45 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         bytes memory refusal = _sign(brainKey, refused);
 
         vm.expectEmit(address(judged));
+        emit JudgedCapture.BrainRevoked(brain);
+        vm.expectEmit(address(judged));
         emit JudgedCapture.BrainSet(address(0));
         vm.prank(owner);
-        judged.revokeBrain();
+        judged.revokeBrain(brain);
         assertEq(judged.brain(), address(0));
+        assertTrue(judged.revoked(brain));
         vm.expectRevert(JudgedCapture.NotBrain.selector);
-        judged.capture(p, terms, accepted, acceptance);
+        judged.capture(p, accepted, acceptance);
         vm.expectRevert(JudgedCapture.NotBrain.selector);
-        judged.void(p, terms, refused, refusal);
+        judged.void(p, refused, refusal);
+
+        uint256 nextKey = uint256(keccak256("next brain key"));
+        _nameBrain(nextKey);
+        vm.expectRevert(JudgedCapture.NotBrain.selector);
+        judged.void(p, refused, refusal);
+        bytes memory byNextKey = _sign(nextKey, refused);
+        vm.expectRevert(JudgedCapture.NotBrain.selector);
+        judged.void(p, refused, byNextKey);
+    }
+
+    function test_revokingAFormerKeyLeavesTheCurrentOne() public {
+        _authorized();
+        uint256 nextKey = uint256(keccak256("next brain key"));
+        _nameBrain(nextKey);
+        vm.prank(owner);
+        judged.revokeBrain(brain);
+        assertEq(judged.brain(), vm.addr(nextKey));
+
+        JudgedCapture.Decision memory refused = _refuse();
+        bytes memory refusal = _sign(brainKey, refused);
+        vm.expectRevert(JudgedCapture.NotBrain.selector);
+        judged.void(p, refused, refusal);
+
+        JudgedCapture.Terms memory fresh = _terms(OTHER_TASK);
+        IAuthCaptureEscrow.PaymentInfo memory later = _payment(payer, AMOUNT, fresh);
+        _authorize(payerKey, later);
+        JudgedCapture.Decision memory d = _decision(later, OTHER_TASK, false, 9_000);
+        judged.void(later, d, _sign(nextKey, d));
     }
 
     // Cap
@@ -743,15 +869,14 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         judged.execute(JudgedCapture.Setting.Cap);
         assertEq(judged.cap(), 5e6);
 
-        JudgedCapture.Terms memory next = _terms(OTHER_TASK);
-        IAuthCaptureEscrow.PaymentInfo memory big = _payment(payer, AMOUNT, next);
+        IAuthCaptureEscrow.PaymentInfo memory big = _payment(payer, AMOUNT, _terms(OTHER_TASK));
         bytes memory sig = _authorization(payerKey, big);
         vm.expectRevert(JudgedCapture.OverCap.selector);
         judged.authorize(big, AMOUNT, ERC3009_COLLECTOR, sig);
 
         vm.warp(terms.windowsClose);
         JudgedCapture.Decision memory d = _accept();
-        judged.capture(p, terms, d, _sign(brainKey, d));
+        judged.capture(p, d, _sign(brainKey, d));
         assertEq(_held(p), 0, "a payment held before the change still settles");
     }
 
@@ -797,7 +922,30 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         assertEq(IERC20(token).balanceOf(address(judged)), 0);
         vm.warp(terms.windowsClose);
         JudgedCapture.Decision memory d = _accept();
-        judged.capture(p, terms, d, _sign(brainKey, d));
+        judged.capture(p, d, _sign(brainKey, d));
         assertEq(IERC20(token).balanceOf(address(judged)), 0);
+    }
+}
+
+/// Runs the script's deployment without a broadcast, against the escrow code from Base.
+contract DeployJudgedCaptureHarness is DeployJudgedCapture {
+    function deploy(address owner, address brain) external returns (JudgedCapture) {
+        return _deploy(owner, brain);
+    }
+}
+
+contract DeployJudgedCaptureTest is JudgedCaptureSetup {
+    function test_theScriptDeploysWithTheCapOfTwentyFiveUsdc() public {
+        DeployJudgedCaptureHarness script = new DeployJudgedCaptureHarness();
+        vm.expectRevert(bytes("OWNER has no code: it should be the Base Safe"));
+        script.deploy(owner, brain);
+
+        vm.etch(owner, hex"00");
+        JudgedCapture deployed = script.deploy(owner, brain);
+        assertEq(deployed.cap(), 25e6);
+        assertEq(deployed.token(), 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913);
+        assertEq(address(deployed.escrow()), address(ESCROW));
+        assertEq(deployed.owner(), owner);
+        assertEq(deployed.brain(), brain);
     }
 }

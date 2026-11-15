@@ -10,6 +10,7 @@ contract JudgedCaptureHandler is JudgedCaptureBase {
         IAuthCaptureEscrow.PaymentInfo info;
         JudgedCapture.Terms terms;
         uint256 capAtAuthorization;
+        uint256 brainKey;
     }
 
     MockERC3009 internal immutable usdc;
@@ -17,6 +18,7 @@ contract JudgedCaptureHandler is JudgedCaptureBase {
     address[2] internal payees;
     uint256 internal currentBrainKey;
     uint256[] internal formerBrainKeys;
+    mapping(address => bool) internal revokedKey;
 
     Held[] internal payments;
     mapping(address => uint256) public expected;
@@ -25,9 +27,11 @@ contract JudgedCaptureHandler is JudgedCaptureBase {
     uint256 public capturedWithoutClearing;
     uint256 public capturedBeforeWindows;
     uint256 public voidedOnClearing;
-    uint256 public movedWithoutTheBrain;
+    uint256 public movedOnAnUnfitDecision;
+    uint256 public movedWithoutTheBoundKey;
     uint256 public movedAcrossPayments;
     uint256 public authorizedOverCap;
+    uint256 public heldUndecidable;
 
     constructor(JudgedCapture judged_, MockERC3009 usdc_, address owner_, uint256 brainKey_) {
         judged = judged_;
@@ -47,58 +51,61 @@ contract JudgedCaptureHandler is JudgedCaptureBase {
         uint16 bar,
         uint32 windows,
         uint32 margin,
-        uint16 feeBps
+        uint16 feeBps,
+        uint256 unfitSeed
     ) external {
         uint256 key = payerKeys[payerSeed % 3];
-        address from = vm.addr(key);
         // A fifth of the range is above the starting cap.
         amount = bound(amount, 1, CAP + CAP / 4);
-        JudgedCapture.Terms memory terms = JudgedCapture.Terms({
-            task: keccak256(abi.encode("task", taskSeed % 4)),
-            barBps: uint16(bound(bar, 0, 10_000)),
-            windowsClose: uint48(block.timestamp + bound(windows, 0, 3 days))
-        });
-        IAuthCaptureEscrow.PaymentInfo memory p = _payment(from, uint120(amount), terms);
+        (JudgedCapture.Terms memory terms, uint48 deadline) = _draft(taskSeed, bar, windows, margin, unfitSeed);
+        IAuthCaptureEscrow.PaymentInfo memory p = _payment(vm.addr(key), uint120(amount), terms);
         p.receiver = payees[payeeSeed % 2];
-        p.authorizationExpiry = terms.windowsClose + uint48(bound(margin, 1 hours, 3 days));
-        p.refundExpiry = p.authorizationExpiry;
+        p.authorizationExpiry = deadline;
+        p.refundExpiry = deadline;
         p.minFeeBps = uint16(bound(feeBps, 0, 1_000));
         p.maxFeeBps = p.minFeeBps;
         if (p.minFeeBps == 0 && feeBps % 2 == 0) p.feeReceiver = address(0);
 
-        usdc.mint(from, amount);
-        expected[from] += amount;
+        usdc.mint(p.payer, amount);
+        expected[p.payer] += amount;
         bytes memory sig = _authorization(key, p);
         uint256 capNow = judged.cap();
         vm.prank(stranger);
         try judged.authorize(p, amount, ERC3009_COLLECTOR, sig) {
             if (amount > capNow) authorizedOverCap++;
-            expected[from] -= amount;
+            if (
+                terms.task == 0 || terms.barBps > 10_000 || terms.windowsClose + judged.CAPTURE_MARGIN() > deadline
+                    || revokedKey[vm.addr(currentBrainKey)]
+            ) heldUndecidable++;
+            expected[p.payer] -= amount;
             heldSum += amount;
-            payments.push(Held(p, terms, capNow));
+            payments.push(Held(p, terms, capNow, currentBrainKey));
         } catch {}
     }
 
-    function decide(uint256 index, bool accepted, uint16 confidence, bool capture, bool waitForWindows) external {
+    function decide(
+        uint256 index,
+        bool accepted,
+        uint16 confidence,
+        bool capture,
+        bool waitForWindows,
+        bool preliminary
+    ) external {
         if (payments.length == 0) return;
         Held memory h = payments[index % payments.length];
         if (waitForWindows && block.timestamp < h.terms.windowsClose) vm.warp(h.terms.windowsClose);
-        _apply(
-            h,
-            h.terms,
-            _decision(h.info, h.terms.task, accepted, uint16(bound(confidence, 0, 10_000))),
-            currentBrainKey,
-            capture
-        );
+        JudgedCapture.Decision memory d =
+            _decision(h.info, h.terms.task, accepted, uint16(bound(confidence, 0, 10_500)));
+        d.isFinal = !preliminary;
+        _apply(h, d, h.brainKey, capture);
     }
 
-    /// A brain-signed decision about one payment, tried on another.
-    function decideAcross(uint256 from, uint256 to, bool useTheirTerms, bool capture) external {
+    /// A decision about one payment, signed by the key bound to another, tried on that other.
+    function decideAcross(uint256 from, uint256 to, bool capture) external {
         if (payments.length == 0) return;
         Held memory a = payments[from % payments.length];
         Held memory b = payments[to % payments.length];
-        JudgedCapture.Decision memory d = _decision(a.info, a.terms.task, true, 10_000);
-        _apply(b, useTheirTerms ? a.terms : b.terms, d, currentBrainKey, capture);
+        _apply(b, _decision(a.info, a.terms.task, capture, 10_000), b.brainKey, capture);
     }
 
     /// A brain that pairs one payment's task with another payment.
@@ -106,25 +113,32 @@ contract JudgedCaptureHandler is JudgedCaptureBase {
         if (payments.length == 0) return;
         Held memory a = payments[from % payments.length];
         Held memory b = payments[to % payments.length];
-        _apply(b, b.terms, _decision(b.info, a.terms.task, true, 10_000), currentBrainKey, capture);
+        _apply(b, _decision(b.info, a.terms.task, capture, 10_000), b.brainKey, capture);
     }
 
-    function decideWithLooserTerms(uint256 index, uint16 bar, uint48 windowsClose) external {
-        if (payments.length == 0) return;
-        Held memory h = payments[index % payments.length];
-        JudgedCapture.Terms memory looser = JudgedCapture.Terms({
-            task: h.terms.task, barBps: uint16(bound(bar, 0, 10_000)), windowsClose: windowsClose
-        });
-        _apply(h, looser, _decision(h.info, h.terms.task, true, looser.barBps), currentBrainKey, true);
-    }
-
+    /// The owner's current key, a former key or a payer's key, on a payment bound to another key.
     function decideWithAnotherKey(uint256 index, uint256 keySeed, bool capture) external {
         if (payments.length == 0) return;
         Held memory h = payments[index % payments.length];
-        uint256 key = formerBrainKeys.length > 0 && keySeed % 2 == 0
-            ? formerBrainKeys[keySeed % formerBrainKeys.length]
-            : payerKeys[keySeed % 3];
-        _apply(h, h.terms, _decision(h.info, h.terms.task, capture, 10_000), key, capture);
+        uint256 key = keySeed % 3 == 0
+            ? currentBrainKey
+            : formerBrainKeys.length > 0 && keySeed % 3 == 1
+                ? formerBrainKeys[keySeed % formerBrainKeys.length]
+                : payerKeys[keySeed % 3];
+        _apply(h, _decision(h.info, h.terms.task, capture, 10_000), key, capture);
+    }
+
+    /// Rare, so most of a run has a live key: one call in sixteen revokes, half of those the current key.
+    function revoke(uint256 index, uint256 seed) external {
+        // Hashed, since the fuzzer favours zero and would revoke on most calls.
+        uint256 roll = uint256(keccak256(abi.encode(seed)));
+        if (roll % 16 != 0) return;
+        bool current = roll % 32 == 0;
+        if (payments.length == 0 && !current) return;
+        uint256 key = current ? currentBrainKey : payments[index % payments.length].brainKey;
+        vm.prank(owner);
+        judged.revokeBrain(vm.addr(key));
+        revokedKey[vm.addr(key)] = true;
     }
 
     function reclaim(uint256 index) external {
@@ -162,8 +176,8 @@ contract JudgedCaptureHandler is JudgedCaptureBase {
         return payments.length;
     }
 
-    function payment(uint256 i) external view returns (IAuthCaptureEscrow.PaymentInfo memory, uint256) {
-        return (payments[i].info, payments[i].capAtAuthorization);
+    function payment(uint256 i) external view returns (IAuthCaptureEscrow.PaymentInfo memory, uint256, address) {
+        return (payments[i].info, payments[i].capAtAuthorization, vm.addr(payments[i].brainKey));
     }
 
     function actors() external view returns (address[] memory list) {
@@ -177,37 +191,56 @@ contract JudgedCaptureHandler is JudgedCaptureBase {
         list[6] = stranger;
     }
 
-    function _apply(
-        Held memory target,
-        JudgedCapture.Terms memory termsUsed,
-        JudgedCapture.Decision memory d,
-        uint256 key,
-        bool capture
-    ) internal {
+    /// Terms and a capture deadline. One draft in eight breaks a term so that nothing
+    /// could ever capture the payment: a zero task, a bar above 10,000 or too little margin.
+    function _draft(uint8 taskSeed, uint16 bar, uint32 windows, uint32 margin, uint256 unfitSeed)
+        internal
+        view
+        returns (JudgedCapture.Terms memory terms, uint48 deadline)
+    {
+        terms = JudgedCapture.Terms({
+            task: bytes24(keccak256(abi.encode("task", taskSeed % 4))),
+            barBps: uint16(bound(bar, 0, 10_000)),
+            windowsClose: uint48(block.timestamp + bound(windows, 0, 3 days))
+        });
+        uint256 afterWindows = bound(margin, 1 days, 4 days);
+        uint256 unfit = uint256(keccak256(abi.encode(unfitSeed)));
+        if (unfit % 8 == 0) {
+            if (unfit % 3 == 0) terms.task = 0;
+            else if (unfit % 3 == 1) terms.barBps = uint16(bound(bar, 10_001, type(uint16).max));
+            else afterWindows = bound(margin, 1 hours, 1 days - 1);
+        }
+        deadline = terms.windowsClose + uint48(afterWindows);
+    }
+
+    function _apply(Held memory target, JudgedCapture.Decision memory d, uint256 key, bool capture) internal {
         IAuthCaptureEscrow.PaymentInfo memory p = target.info;
         bytes memory sig = _sign(key, d);
         uint256 held = _held(p);
         bool clears = d.accepted && d.confidenceBps >= target.terms.barBps;
+        bool fit = d.isFinal && d.confidenceBps <= 10_000;
         bool sameTarget = d.task == target.terms.task && d.paymentInfoHash == ESCROW.getHash(p);
-        bool byBrain = vm.addr(key) == judged.brain();
+        bool boundKey = key == target.brainKey && !revokedKey[vm.addr(key)];
 
         vm.prank(stranger);
         if (capture) {
-            try judged.capture(p, termsUsed, d, sig) {
+            try judged.capture(p, d, sig) {
                 if (!clears) capturedWithoutClearing++;
                 if (block.timestamp < target.terms.windowsClose) capturedBeforeWindows++;
+                if (!fit) movedOnAnUnfitDecision++;
                 if (!sameTarget) movedAcrossPayments++;
-                if (!byBrain) movedWithoutTheBrain++;
+                if (!boundKey) movedWithoutTheBoundKey++;
                 uint256 fee = held * p.minFeeBps / 10_000;
                 expected[p.receiver] += held - fee;
                 expected[p.feeReceiver] += fee;
                 heldSum -= held;
             } catch {}
         } else {
-            try judged.void(p, termsUsed, d, sig) {
+            try judged.void(p, d, sig) {
                 if (clears) voidedOnClearing++;
+                if (!fit) movedOnAnUnfitDecision++;
                 if (!sameTarget) movedAcrossPayments++;
-                if (!byBrain) movedWithoutTheBrain++;
+                if (!boundKey) movedWithoutTheBoundKey++;
                 expected[p.payer] += held;
                 heldSum -= held;
             } catch {}
@@ -224,12 +257,13 @@ contract JudgedCaptureInvariants is JudgedCaptureSetup {
         targetContract(address(handler));
     }
 
-    /// Funds leave the escrow only to the payee on an acceptance at or above the bar, or back to the payer.
+    /// Funds leave the escrow only to the payee on a final acceptance at or above the bar, or back to the payer.
     function invariant_fundsMoveOnlyByTheRules() public view {
         assertEq(handler.capturedWithoutClearing(), 0, "captured without an acceptance at the bar");
         assertEq(handler.capturedBeforeWindows(), 0, "captured inside the windows");
         assertEq(handler.voidedOnClearing(), 0, "voided an acceptance at the bar");
-        assertEq(handler.movedWithoutTheBrain(), 0, "moved on a signature that is not the brain's");
+        assertEq(handler.movedOnAnUnfitDecision(), 0, "moved on a preliminary or out-of-range decision");
+        assertEq(handler.movedWithoutTheBoundKey(), 0, "moved without the key bound at authorization");
 
         address[] memory actors = handler.actors();
         for (uint256 i; i < actors.length; ++i) {
@@ -248,10 +282,19 @@ contract JudgedCaptureInvariants is JudgedCaptureSetup {
         assertEq(handler.authorizedOverCap(), 0);
         uint256 capturable;
         for (uint256 i; i < handler.paymentCount(); ++i) {
-            (IAuthCaptureEscrow.PaymentInfo memory p, uint256 capAtAuthorization) = handler.payment(i);
+            (IAuthCaptureEscrow.PaymentInfo memory p, uint256 capAtAuthorization,) = handler.payment(i);
             assertLe(p.maxAmount, capAtAuthorization, "a payment above the cap in force");
             capturable += _held(p);
         }
         assertEq(capturable, handler.heldSum(), "the escrow's own balances agree");
+    }
+
+    /// Every held payment has terms it can be captured under and a live key bound to it when it was taken.
+    function invariant_everyPaymentCanBeDecided() public view {
+        assertEq(handler.heldUndecidable(), 0);
+        for (uint256 i; i < handler.paymentCount(); ++i) {
+            (IAuthCaptureEscrow.PaymentInfo memory p,, address key) = handler.payment(i);
+            assertEq(judged.brainOf(ESCROW.getHash(p)), key, "bound to the key in force at authorization");
+        }
     }
 }
