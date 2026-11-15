@@ -9,9 +9,10 @@ interface ISafeModuleCall {
         returns (bool success, bytes memory returnData);
 }
 
-/// @notice A Safe module with one power: the operator sends the token from the Safe to the recipient, up to a daily
-/// cap. The Safe, the token and the operator are fixed at deployment. Only the Safe sets the recipient and the cap.
-/// A day is a UTC day. A lower cap applies at once, to what is left of the current day as well.
+/// @notice A Safe module with one power: the operator sends the token from the Safe to the recipient, up to the cap
+/// per UTC day. The Safe, the token and the operator are fixed at deployment. Only the Safe sets the recipient and the
+/// cap. Days are calendar days, so across midnight the operator can send up to twice the cap within seconds. A lower
+/// cap applies at once, to what is left of the current day as well.
 contract CappedTransferModule {
     uint8 private constant CALL = 0;
 
@@ -29,7 +30,10 @@ contract CappedTransferModule {
     event CapSet(uint256 cap);
 
     error ZeroAddress();
+    error NotASafe(address safe);
     error NotAToken(address token);
+    error SafeIsToken();
+    error SafeIsOperator();
     error NotSafe();
     error NotOperator();
     error NoRecipient();
@@ -44,8 +48,11 @@ contract CappedTransferModule {
 
     constructor(ISafeModuleCall safe, IERC20 token, address operator) {
         if (address(safe) == address(0) || operator == address(0)) revert ZeroAddress();
+        if (address(safe).code.length == 0) revert NotASafe(address(safe));
         // A token without code would make every transfer look successful.
         if (address(token).code.length == 0) revert NotAToken(address(token));
+        if (address(token) == address(safe)) revert SafeIsToken();
+        if (operator == address(safe)) revert SafeIsOperator();
         SAFE = safe;
         TOKEN = token;
         OPERATOR = operator;

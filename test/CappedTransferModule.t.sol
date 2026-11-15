@@ -90,6 +90,21 @@ contract CappedTransferModuleTest is Test {
         new CappedTransferModule(ISafeModuleCall(address(safe)), IERC20(stranger), operator);
     }
 
+    function test_constructorRefusesASafeWithoutCode() public {
+        vm.expectRevert(abi.encodeWithSelector(CappedTransferModule.NotASafe.selector, stranger));
+        new CappedTransferModule(ISafeModuleCall(stranger), IERC20(address(usdg)), operator);
+    }
+
+    function test_constructorRefusesTheSafeAsToken() public {
+        vm.expectRevert(CappedTransferModule.SafeIsToken.selector);
+        new CappedTransferModule(ISafeModuleCall(address(safe)), IERC20(address(safe)), operator);
+    }
+
+    function test_constructorRefusesTheSafeAsOperator() public {
+        vm.expectRevert(CappedTransferModule.SafeIsOperator.selector);
+        new CappedTransferModule(ISafeModuleCall(address(safe)), IERC20(address(usdg)), address(safe));
+    }
+
     function test_onlyTheSafeSetsRecipientAndCap() public {
         address[3] memory others = [operator, stranger, desk];
         for (uint256 i; i < others.length; i++) {

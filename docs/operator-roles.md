@@ -6,7 +6,7 @@ BrainChain's operator key, `0x70C665780E43BA1496a4E691e408F24844dB58eC`, runs ro
 
 [`CappedTransferModule`](../src/safe/CappedTransferModule.sol) is a Safe module. One copy serves each Safe that funds the desk: the treasury Safe on Robinhood Chain and the admin Safe on BrainChain. Each copy's address is added to `deployments/mainnet.json` when it is deployed.
 
-The operator can call `send(amount)`, which moves USDG from the Safe to the module's recipient, the desk. All sends in one UTC day together stay within the daily cap.
+The operator can call `send(amount)`, which moves USDG from the Safe to the module's recipient, the desk. All sends in one UTC day together stay within the cap. Days are calendar days, so across midnight the operator can send up to twice the cap within seconds: the full cap at 23:59:59 and again at 00:00:00.
 
 The operator cannot:
 
@@ -39,15 +39,17 @@ The operator cannot:
 - cancel one, which needs the canceller role;
 - grant or revoke a role, or change the delay, which only the timelock itself can do through an operation the Safe scheduled.
 
-One thing does change. The owners no longer pick the moment a ready operation runs: anything the Safe schedules may run as soon as its delay is over. To hold an operation back, the Safe cancels it and schedules it again when it should run.
+One thing does change. The owners no longer pick the moment a ready operation runs: anything the Safe schedules may run as soon as its delay is over. To hold an operation back, the Safe cancels it before it becomes ready and schedules it again when it should run.
 
 | To | Transaction | Takes effect |
 | --- | --- | --- |
-| Stop one operation | `cancel(id)` on the timelock, from the Safe | At once |
+| Stop one operation | `cancel(id)` on the timelock, from the Safe, before the operation becomes ready | At once |
 | Remove the role | `revokeRole(EXECUTOR_ROLE, operator)` scheduled on the timelock by the Safe, then executed | After 48 hours |
 
-While a revoke waits out its delay, the Safe cancels any operation it does not want run. The operator can also give the role up at once with `renounceRole`.
+A cancel holds only while the operation is still waiting. Once it is ready, the operator can execute it first. While a revoke waits out its delay, the Safe cancels any operation it does not want run before that operation becomes ready. The operator can also give the role up at once with `renounceRole`.
+
+An operation that is never executed or cancelled stays pending for good. Before the role is granted, the Safe cancels every pending operation it does not mean to run, so an old operation cannot run after a newer one.
 
 ## Watching
 
-BrainChain's monitor reports every send and every execution by the operator. It raises an alert on a send above the cap, on any other module enabled on either Safe, and on an execution the owners have not reviewed.
+BrainChain's monitor reports every send and every execution by the operator. It raises an alert on a day's sends above the cap, on any other module enabled on either Safe, and on an execution the owners have not reviewed.
