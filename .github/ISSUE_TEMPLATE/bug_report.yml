@@ -1,10 +1,20 @@
 name: Bug report
-description: Something in the contracts or docs does not behave as described.
+description: Something in the contracts, brainchain-verify or the docs does not behave as described.
 labels: [bug]
 body:
   - type: markdown
     attributes:
       value: "Security issues go to the private form instead: https://github.com/usebrainchain/brainchain/security/advisories/new"
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Contracts
+        - brainchain-verify
+        - Docs
+    validations:
+      required: true
   - type: textarea
     id: what
     attributes:
@@ -16,10 +26,9 @@ body:
     id: repro
     attributes:
       label: How to reproduce
-      description: A failing Foundry test is ideal.
-      render: solidity
+      description: A failing Foundry test, or the brainchain-verify command and its output.
   - type: input
     id: version
     attributes:
-      label: Commit
-      description: The commit hash you tested against.
+      label: Version
+      description: The commit hash, or the brainchain-verify version (`npx brainchain-verify --version`).

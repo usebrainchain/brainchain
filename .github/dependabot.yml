@@ -4,6 +4,13 @@ updates:
     directory: /
     schedule:
       interval: weekly
+  - package-ecosystem: npm
+    directory: /tools/verify-decision
+    schedule:
+      interval: weekly
+    groups:
+      dev:
+        dependency-type: development
   - package-ecosystem: gitsubmodule
     directory: /
     schedule:

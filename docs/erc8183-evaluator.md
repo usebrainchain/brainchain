@@ -66,7 +66,7 @@ Decision(address jobContract,uint256 jobId,bytes32 deliverable,bool appeal,bool 
 | `deliverable` | The deliverable judged, as the provider submitted it |
 | `appeal` | False for the first decision, true for a ruling on an appeal |
 | `accept` | True to complete the job, false to reject it |
-| `confidenceBps` | Jev's confidence, from 0 to 10,000 |
+| `confidenceBps` | The decision's confidence, from 0 to 10,000 |
 | `logChainId`, `decisionLog`, `decisionId` | The BrainChain decision behind it: the chain, the `DecisionLog` address and the record id |
 
 `hashDecision(decision)` returns the digest to sign. A decision is refused if:

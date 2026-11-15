@@ -5,46 +5,52 @@
 <h1 align="center">BrainChain</h1>
 
 <p align="center">
-  A blockchain run by an AI agent, settled on Robinhood Chain.
+  Smart contracts and the decision verifier for BrainChain, settled on Robinhood Chain.
 </p>
 
 <p align="center">
   <a href="https://github.com/usebrainchain/brainchain/actions/workflows/ci.yml"><img src="https://github.com/usebrainchain/brainchain/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://www.npmjs.com/package/brainchain-verify"><img src="https://img.shields.io/npm/v/brainchain-verify?label=brainchain-verify" alt="brainchain-verify on npm" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-f386a1" alt="MIT license" /></a>
-  <img src="https://img.shields.io/badge/solidity-0.8.24-1d1d1d" alt="Solidity 0.8.24" />
-  <a href="https://usebrainchain.com"><img src="https://img.shields.io/badge/site-usebrainchain.com-f8f7f4" alt="Website" /></a>
-  <a href="https://usebrainchain.com/docs"><img src="https://img.shields.io/badge/docs-usebrainchain.com%2Fdocs-f386a1" alt="Documentation" /></a>
 </p>
 
 ---
 
-BrainChain is a network where one AI agent makes every decision the chain acts on. **Jev**, a decision model from TypeSafe, hires one of five frontier models for each task, grades the delivered work, rules on disputes and decides on changes to the chain's own settings. The bounty sits in escrow throughout, and a model is paid only when Jev accepts its work.
+BrainChain is a blockchain where every payout follows a recorded decision. For each task, the brain in the chain hires one of five frontier models, grades the delivered work and rules on any dispute. It also decides on changes to the chain's own settings. The bounty waits in escrow throughout, and a model is paid only when its work is accepted.
 
-Every decision carries a confidence score. **When Jev is unsure, the chain takes the safe default**: no hire, no payment for ungraded or rejected work, and a grade that stands when a dispute ruling is unsure. The contracts in this repository enforce that rule. The brain service that records Jev's answers is trusted to record them faithfully; the contracts bound what a recorded answer can do (see [docs/architecture.md](docs/architecture.md#trust-model)).
+This repository holds the Solidity contracts that keep the money and enforce those rules, and [`brainchain-verify`](tools/verify-decision), a command-line tool that checks any decision against the chain. Product documentation lives at [docs.usebrainchain.com](https://docs.usebrainchain.com).
 
-> **Status:** BrainChain mainnet (chain ID `274663`, RPC `https://rpc.usebrainchain.com`) is an Arbitrum Orbit chain that settles to Robinhood Chain and runs the v3 contracts, with bounties in USDG. Tasks are paid for in USDC on Base or USDG on Robinhood Chain. BrainChain testnet (chain ID `274630`, RPC `https://rpc.testnet.usebrainchain.com`) settles to Robinhood Chain testnet and runs on test tokens. Addresses are in [`deployments/`](deployments) and the [contracts reference](https://docs.usebrainchain.com/contracts). The contracts have not had an external audit.
-
-## Contents
-
-Full documentation: **[docs.usebrainchain.com](https://docs.usebrainchain.com)**.
-
-
+- [Status](#status)
 - [How it works](#how-it-works)
-- [The confidence rule](#the-confidence-rule)
-- [Architecture](#architecture)
 - [Contracts](#contracts)
-- [Getting started](#getting-started)
-- [Verifying a decision](#verifying-a-decision)
+- [Build and test](#build-and-test)
+- [Verify a decision](#verify-a-decision)
+- [Repository layout](#repository-layout)
 - [Security](#security)
 - [Contributing](#contributing)
 - [License](#license)
+
+## Status
+
+Mainnet runs contract set **3.5.0**, active since 7 November 2026. Its core contracts are on BrainChain (chain ID `274663`, RPC `https://rpc.usebrainchain.com`), an Arbitrum Orbit chain that settles to Robinhood Chain. Its payout and fee contracts are on Robinhood Chain (chain ID `4663`). Testnet (chain ID `274630`, RPC `https://rpc.testnet.usebrainchain.com`) runs 3.5.0 with test tokens.
+
+Each deployed set's source is tagged (`v3.5.0` for the current one), and `main` can be ahead of it. Addresses are in [`deployments/`](deployments) and in the tables below.
+
+These contracts are merged and not deployed yet:
+
+- [`JudgedCapture`](src/escrow/JudgedCapture.sol), an escrow operator for x402 payments on Base ([docs/escrow.md](docs/escrow.md));
+- [`Erc8183Evaluator`](src/evaluators/Erc8183Evaluator.sol) and [`Erc8183AppealHook`](src/evaluators/Erc8183AppealHook.sol), which let an ERC-8183 job name BrainChain as its evaluator ([docs/erc8183-evaluator.md](docs/erc8183-evaluator.md));
+- [`CappedTransferModule`](src/safe/CappedTransferModule.sol), a Safe module for capped desk top-ups ([docs/operator-roles.md](docs/operator-roles.md));
+- the `TaskBoard` payout change (`setPayouts`), which the next set carries.
+
+The contracts have not had an external audit.
 
 ## How it works
 
 ```mermaid
 flowchart LR
     P([Poster]) -->|bounty in USDG| B[TaskBoard<br/>escrow]
-    J{{Jev}} -->|hire| B
+    J{{BrainChain brain}} -->|hire| B
     B -->|task| M[Hired model<br/>Claude · GPT · Gemini · Grok · DeepSeek]
     M -->|result hash| B
     J -->|grade| B
@@ -52,107 +58,65 @@ flowchart LR
     B -->|not accepted| P
 ```
 
-1. **A task is posted** with a bounty in USDG and a deadline. The `TaskBoard` holds the bounty.
-2. **Jev hires** one of the registered models, weighing fit, price and track record. The decision is recorded in the `DecisionLog` and applied to the task.
-3. **The model delivers.** It commits a hash of its result on chain before the deadline.
-4. **Jev grades** the result against the quality levels in the brief. After a short dispute window, accepted work is paid to the model and anything else is refunded.
-5. **Disputes.** The poster or the model can dispute a grade once. Jev rules to pay or refund.
+1. **A task is posted** with a bounty in USDG and a deadline. `TaskBoard` holds the bounty.
+2. **BrainChain hires** one of the registered models. The decision is recorded in `DecisionLog` and applied to the task.
+3. **The model delivers** by committing a hash of its result before the deadline.
+4. **BrainChain grades** the result against the quality levels in the brief. After the dispute window, accepted work is paid and anything else is refunded.
+5. **Disputes and appeals.** The poster or the model can dispute a grade once, and BrainChain rules to pay or refund. The side a ruling goes against can appeal once, with a bond.
 
-A full task, end to end:
+### The confidence rule
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Poster
-    participant Board as TaskBoard
-    participant Log as DecisionLog
-    participant Brain as Brain (calls Jev)
-    participant Model as Hired model
+The brain asks Jev, a decision model served by TypeSafe, and records each answer on chain with its confidence. Every contract that acts on a decision applies its own threshold. Below it, no money moves toward a model, and every path that stalls ends in a refund.
 
-    Poster->>Board: post(bounty, deadline, brief)
-    Brain->>Log: record(Hire, task, model, confidence)
-    Brain->>Board: hire(task, decision)
-    Board-->>Model: task assigned
-    Model->>Board: submit(task, resultHash, resultURI)
-    Brain->>Log: record(Grade, task, accept, confidence)
-    Brain->>Board: grade(task, decision)
-    Note over Board: dispute window
-    Board->>Model: bounty paid (or refunded to the poster)
-```
-
-## The confidence rule
-
-Each contract that acts on a decision applies its own threshold. A decision below it never moves funds toward a model, and every path that stalls ends in a refund.
-
-| Decision | Jev answers with | Below the threshold |
+| Decision | Answer | Below the threshold |
 | --- | --- | --- |
-| Hire | A choice among the models | No one is hired; the task stays open and refunds at its deadline |
+| Hire | One of the models | No one is hired; the task refunds at its deadline |
 | Grade | A score against the brief's quality levels | The poster is refunded |
-| Ruling | A choice of pay or refund | The grade stands |
-| Chain change | A choice of adopt or keep | The current setting stays |
+| Ruling | Pay or refund | The grade stands |
+| Chain change | Adopt or keep | The current setting stays |
 
-If no decision arrives at all, anyone can call `finalize` once the step's window has closed: an ungraded or unhired task returns the bounty to the poster, and a grade, disputed or not, stands. A decision counts only if it names this task, board and chain, is the latest of its kind for that task, and was recorded after the event it judges.
+If no decision arrives, anyone can call `finalize` once the step's window has closed: an unhired or ungraded task refunds the poster, and a grade stands. A decision counts only if it names this task, board and chain, is the latest of its kind for the task, and was recorded after the event it judges.
 
-## Architecture
-
-```mermaid
-flowchart TB
-    subgraph RH[Robinhood Chain]
-        S[(Settlement and bridge)]
-    end
-    subgraph BC[BrainChain]
-        DL[DecisionLog]
-        TB[TaskBoard]
-        MR[ModelRegistry]
-        DE[DecisionExecutor<br/>timelock · guardian veto]
-    end
-    BR[Brain service] -->|records decisions| DL
-    BR -->|applies decisions| TB
-    BR -->|queues adopted changes| DE
-    BR <-->|typed questions| JEV[(Jev API)]
-    W[Worker services] <-->|official APIs| LLM[(Model providers)]
-    W -->|submit results| TB
-    TB --> MR
-    DE -->|owns settings| TB
-    DE -->|owns settings| MR
-    AD[Admin timelock<br/>48-hour delay] -->|names the brain, allows enclaves that may| DL
-    AD -->|replaces guardian| DE
-    BC -->|batches and state| RH
-```
-
-BrainChain is an Arbitrum Orbit chain with Robinhood Chain as its parent. Gas is paid in ETH and bounties in USDG. See [docs/architecture.md](docs/architecture.md) for roles, trust boundaries and what each party can and cannot do.
+The chain does not check that a recorded answer came from the model. The brain key is trusted to record answers faithfully, and the contracts bound what a recorded answer can do. [docs/architecture.md](docs/architecture.md) sets out the trust model, the roles and what each party can and cannot do.
 
 ## Contracts
 
-| Contract | Responsibility |
-| --- | --- |
-| [`DecisionLog`](src/DecisionLog.sol) | Append-only record of every decision the chain acts on: kind, subject, input hash, answer and confidence, with the latest decision per subject and kind. Only the brain can record. The brain is named by the admin timelock, or by an enclave whose TDX quote verifies on chain and whose image and app measurements the timelock has allowed (`attestBrain`). |
-| [`TaskBoard`](src/TaskBoard.sol) | Escrows bounties and settles tasks only on recorded decisions above its own thresholds, under the terms set when each task was posted. Nothing lowers them afterwards; a poster may raise its own open task's grade bar (`raiseGradeBar`), and the ruling bar rises with it. Pays the account that delivered the work, less the protocol fee (3% on mainnet, paid to the BrainChain treasury). |
-| [`ModelRegistry`](src/ModelRegistry.sol) | Maps each worker model to the account that submits its work. |
-| [`DecisionExecutor`](src/DecisionExecutor.sol) | Owns the chain's settings and the house treasury. Runs a change only after Jev adopts it above the change threshold and a timelock passes, and only on the executor, board or registry. A guardian veto during the timelock blocks that exact call permanently. House tasks are capped per task and per day. |
-| [`GuardianGate`](src/GuardianGate.sol) | Sits in the guardian seat of the executor and the board. The owners' Safe keeps every guardian power; a watcher agent with its own key can veto a queued change and pause new posts, and nothing else. |
+### BrainChain mainnet
 
-### Change log (BrainChain)
+Explorer: [usebrainchain.com/explorer](https://usebrainchain.com/explorer).
 
-| Contract | Responsibility |
-| --- | --- |
-| [`Inscriptions`](src/Inscriptions.sol) | An append-only log in BrainChain's own blocks. BrainChain records each network upgrade, contract deployment and configuration change here as UTF-8 JSON, one `Inscribed(by, kind, data)` event per record, so the chain's history shows what changed and when. Anyone may write; readers filter by writer. Mainnet `0x770D6756CA8a1627FFf01B846383b13d6fa0c514`, read at [usebrainchain.com/operations](https://usebrainchain.com/operations). |
+| Contract | Address | Role |
+| --- | --- | --- |
+| [`TaskBoard`](src/TaskBoard.sol) | [`0x44b8464342Bbfb9B565FAE494DfDefa37D33A211`](https://usebrainchain.com/address?a=0x44b8464342Bbfb9B565FAE494DfDefa37D33A211) | Escrows bounties and settles each task on recorded decisions above its thresholds |
+| [`DecisionLog`](src/DecisionLog.sol) | [`0x2EF509bd9cA1e7C5FBe2C2FD7Ff25cE9F6f9cB68`](https://usebrainchain.com/address?a=0x2EF509bd9cA1e7C5FBe2C2FD7Ff25cE9F6f9cB68) | Append-only record of every decision the chain acts on |
+| [`ModelRegistry`](src/ModelRegistry.sol) | [`0xA7f8A21Cc9574DB049F525a4fd499DA49c0D51ed`](https://usebrainchain.com/address?a=0xA7f8A21Cc9574DB049F525a4fd499DA49c0D51ed) | Maps each worker model to the account that submits its work |
+| [`DecisionExecutor`](src/DecisionExecutor.sol) | [`0xFD268Ae2c1Ec0Db03C3C6b17E1AEDE973729FE29`](https://usebrainchain.com/address?a=0xFD268Ae2c1Ec0Db03C3C6b17E1AEDE973729FE29) | Owns the chain's settings; runs adopted changes after a timelock, subject to a guardian veto |
+| [`GuardianGate`](src/GuardianGate.sol) | [`0x71B2dc3dEC1aEB000936380981DfC51E47AA4fb8`](https://usebrainchain.com/address?a=0x71B2dc3dEC1aEB000936380981DfC51E47AA4fb8) | The guardian seat: the owners' Safe keeps every power, a watcher key may only veto and pause |
+| [`WorkerStaking`](src/flywheel/WorkerStaking.sol) | [`0xa4351E2b84eb634E93D9082907B2d0D3Aa91B98F`](https://usebrainchain.com/address?a=0xa4351E2b84eb634E93D9082907B2d0D3Aa91B98F) | Outside agents stake $BRAIN to be hired; a worker that disputes and loses is slashed |
+| [`ProposalBonds`](src/flywheel/ProposalBonds.sol) | [`0x33260Cd6b4F368031F5AF2B5413d0CE6bb2aFAA4`](https://usebrainchain.com/address?a=0x33260Cd6b4F368031F5AF2B5413d0CE6bb2aFAA4) | Anyone bonds $BRAIN to propose a chain change; the bond burns if the change is refused |
+| AdminTimelock | [`0xB23F49390061B1E7Faf0F99B146E491Ee1574B1e`](https://usebrainchain.com/address?a=0xB23F49390061B1E7Faf0F99B146E491Ee1574B1e) | OpenZeppelin `TimelockController` with a 48-hour delay; the admin Safe is its only proposer |
+| [`Inscriptions`](src/Inscriptions.sol) | [`0x770D6756CA8a1627FFf01B846383b13d6fa0c514`](https://usebrainchain.com/address?a=0x770D6756CA8a1627FFf01B846383b13d6fa0c514) | The operations log: upgrades, deployments and configuration changes, one event each |
+| [`PayoutPreferences`](src/PayoutPreferences.sol) | [`0x2b0d01f5D25F5894590b3281705a48db8740946F`](https://usebrainchain.com/address?a=0x2b0d01f5D25F5894590b3281705a48db8740946F) | A worker's choice of payout asset; the 3.5.0 board does not read it yet |
 
-### Delivery bonds (Robinhood Chain)
+Bounties are in USDG and stakes in $BRAIN, both bridged from Robinhood Chain (USDG `0x8eBFEce96c0AeF7Fd23425D846a302a552c8c451`, $BRAIN `0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37`). The protocol fee is 3%, paid to the BrainChain treasury.
 
-| Contract | Responsibility |
-| --- | --- |
-| [`ProofIndex`](src/ProofIndex.sol) | Records which BrainChain Proof stands for which task, on Robinhood Chain next to the Proofs collection. Entries are keyed by task board and task id, since ids start over with each board. BrainChain writes a task's Proof token id when the Proof is revealed; an entry is written once and never changed. Shipped reads it to settle delivery bonds: a worker that bonds its delivery on [shipped.bond](https://shipped.bond) names `proofOf(board, taskId)` as the bond's check, and the bond releases to the worker once the Proof exists, or pays the agent that paid for the task (the poster, for a task posted directly) when the deadline passes without one. |
+### Robinhood Chain
 
-### $BRAIN fee rewards (Robinhood Chain)
+Explorer: [robinhoodchain.blockscout.com](https://robinhoodchain.blockscout.com).
 
-| Contract | Responsibility |
-| --- | --- |
-| [`FeeSplitter`](src/rewards/FeeSplitter.sol) | Receives a quarter of $BRAIN's launch income through `ProofsIncome`. Splits the ETH it receives 50/50 between the reward distributor and the treasury and sends any ERC-20 to the treasury. It can also be bound once to a Pons curve that names it as fee recipient, and then sweeps that curve's fees. The admin can move the fee stream or change the buyback setting three days after announcing it. |
-| [`RewardDistributor`](src/rewards/RewardDistributor.sol) | Weekly Merkle rounds of ETH for accepted work. A round never pays more than its total; claims open 24 hours after publishing, during which the owner can revoke the round, and close after 12 weeks. |
-| [`ProofsIncome`](src/rewards/ProofsIncome.sol) | The payee of the $BRAIN launch on ripples.run. Unwraps the WETH it is paid and splits it: half to the holders of BrainChain Proofs, one equal part per piece minted by then, claimable by whoever holds the piece; a quarter to the `FeeSplitter`; a quarter to the treasury, with the rounding dust. The admin can change the split and the two targets for income not yet distributed. What holders were allotted stays theirs as long as both targets accept ETH without calling back into the contract. A piece held by a contract that cannot receive ETH cannot claim until it moves. |
+| Contract | Address | Role |
+| --- | --- | --- |
+| [`ProofIndex`](src/ProofIndex.sol) | [`0x0fb02559e704549794EdF3FBBBe91DB88bB849ee`](https://robinhoodchain.blockscout.com/address/0x0fb02559e704549794EdF3FBBBe91DB88bB849ee) | The BrainChain Proof for each task, which [Shipped](https://shipped.bond) delivery bonds settle on |
+| [`DeskMandate`](src/desks/DeskMandate.sol) | [`0xA76916D1b75a82776779fb9d7EB156A4E4a55099`](https://robinhoodchain.blockscout.com/address/0xA76916D1b75a82776779fb9d7EB156A4E4a55099) | Five house-model desks trading Robinhood stock tokens within on-chain bounds |
+| [`PayoutSwap`](src/desks/PayoutSwap.sol) | [`0x64616b20297797e14479C9186b31f7b540329144`](https://robinhoodchain.blockscout.com/address/0x64616b20297797e14479C9186b31f7b540329144) | Pays a worker in a stock token, within a premium of the Chainlink price and a daily cap |
+| [`Float`](src/float/Float.sol) | [`0xefA99FA95e8107cc3F4E99Fb7154DE3D7C5f03C3`](https://robinhoodchain.blockscout.com/address/0xefA99FA95e8107cc3F4E99Fb7154DE3D7C5f03C3) | Lends idle USDG on Morpho markets the Safe allows, under a cap |
+| [`ProofsIncome`](src/rewards/ProofsIncome.sol) | [`0xeb1b4168D4b87D3d9F0D64E13B7071251BBB63b7`](https://robinhoodchain.blockscout.com/address/0xeb1b4168D4b87D3d9F0D64E13B7071251BBB63b7) | Receives the $BRAIN launch income and splits it in shares the admin sets |
+| [`FeeSplitter`](src/rewards/FeeSplitter.sol) | [`0x15Cf18dBA874EA0c77ED8Cecf38aDa64697102fb`](https://robinhoodchain.blockscout.com/address/0x15Cf18dBA874EA0c77ED8Cecf38aDa64697102fb) | Splits the ETH it receives between reward rounds and the treasury |
+| [`RewardDistributor`](src/rewards/RewardDistributor.sol) | [`0x686633c82F81b99B1Ae9bAAE458Aa8280F158367`](https://robinhoodchain.blockscout.com/address/0x686633c82F81b99B1Ae9bAAE458Aa8280F158367) | Weekly Merkle rounds of ETH for accepted work |
 
-## Testnet
+$BRAIN is at [`0xC80333bf7f4078e14Ce5b6e223aF607aDcA44418`](https://robinhoodchain.blockscout.com/token/0xC80333bf7f4078e14Ce5b6e223aF607aDcA44418). The token, the Proofs collection and the launch treasury listed in `deployments/mainnet.json` come from ripples.run; their source is not in this repository.
+
+### Testnet
 
 | Contract | Address |
 | --- | --- |
@@ -163,31 +127,19 @@ BrainChain is an Arbitrum Orbit chain with Robinhood Chain as its parent. Gas is
 | GuardianGate | `0x84d01e0869fbCb07c0141E49c390ffdc064D6882` |
 | AdminTimelock | `0x2b70BCf8Fe79E75f10a7DbF8D9ab6D63216f2273` |
 | WorkerStaking | `0x6aFC3EFB49CF9b14C2F7c6C4f6C0bb3eF0125e2b` |
-| FeeRouter | `0x235658EE85939e2969E1bcBaE1633769a414bD8a` |
 | ProposalBonds | `0x2f15B42131544e6763dbECC7C954C7823AAa0D47` |
+| [`FeeRouter`](src/flywheel/FeeRouter.sol) | `0x235658EE85939e2969E1bcBaE1633769a414bD8a` |
 | TestUSDG | `0xC4ec72794bF3Ce9ba1DE4B38085464c2eb0cDCf2` |
 | TestBRAIN | `0xc717546497343911750768335b649b86d0a6eCcf` |
 | TestSwap | `0x0EF716C553Ede96aA1DA49ddb5DE8FC6aB3270DE` |
 
-Add the network, bridge ETH and claim test tokens at [usebrainchain.com/network](https://usebrainchain.com/network). [`script/DeployTestnet.s.sol`](script/DeployTestnet.s.sol) deploys the contracts in this repository to testnet. Testnet runs the 3.5.0 contracts (see [CHANGELOG.md](CHANGELOG.md)).
+On testnet, `FeeRouter` takes the 3% fee and buys tBRAIN with it: half is burned, half goes to the house treasury. Mainnet does not deploy it. Add the network, bridge ETH and claim test tokens at [usebrainchain.com/testnet](https://usebrainchain.com/testnet).
 
-## The $BRAIN flywheel
+Retired sets stay on chain and readable; their addresses are under `retired` in each deployments file. [CHANGELOG.md](CHANGELOG.md) lists what changed in each set.
 
-$BRAIN is BrainChain's token, on Robinhood Chain at `0xC80333bf7f4078e14Ce5b6e223aF607aDcA44418`. On testnet, tBRAIN stands in for it.
+## Build and test
 
-| Contract | Responsibility |
-| --- | --- |
-| [`FeeRouter`](src/flywheel/FeeRouter.sol) | Takes the protocol fee on paid bounties on testnet (3%) and buys $BRAIN through a swap adapter. Half is burned, half goes to the house treasury. The $BRAIN address is set once, at launch. |
-| [`WorkerStaking`](src/flywheel/WorkerStaking.sol) | Any agent stakes $BRAIN to be hireable alongside the house models, once governance allow-lists it on the board. A worker that disputes a grade and loses is slashed. Stake cannot be withdrawn while the worker has a task in flight. |
-| [`ProposalBonds`](src/flywheel/ProposalBonds.sol) | Anyone bonds $BRAIN to propose a chain change. The bond is returned if Jev's latest decision adopts the change, or if Jev never decides inside the decision window, and burned if Jev decides against it. |
-
-The fee router never buys below a floor rate set by governance, so the keeper cannot sell fees at an arbitrary price.
-
-Refunds never pay the fee. See [usebrainchain.com/docs/brain-token](https://usebrainchain.com/docs/brain-token).
-
-## Getting started
-
-Requirements: [Foundry](https://getfoundry.sh) 1.8 or later. A clone with `--shallow-submodules` is much faster.
+Requirements: [Foundry](https://getfoundry.sh) 1.8 or later, and Node.js 22 or later for the verifier.
 
 ```sh
 git clone --recurse-submodules --shallow-submodules https://github.com/usebrainchain/brainchain.git
@@ -196,44 +148,60 @@ forge build
 forge test
 ```
 
-The suite covers every settlement path, access control and the confidence rule, plus fuzzed invariants:
+`forge test` runs about 590 tests: every settlement path, access rule and time window, plus fuzzed invariants. Among them, the board always holds exactly the bounties of unsettled tasks, no model is paid without an accepted grade or a ruling above threshold, a queued change runs at most once and never after a veto, and a reward round never pays more than its total. [`test/Regressions.t.sol`](test/Regressions.t.sol) holds regression tests for issues found in internal reviews.
 
-- the board always holds exactly the bounties of unsettled tasks, and every posted bounty is either escrowed or settled;
-- no model is paid without an accepted grade or a ruling above threshold, and the account that delivered is the one paid;
-- fees follow each task's own terms, and nothing settles twice;
-- a staked worker's stake is held for every task in flight, and house spending stays under its daily cap;
-- a reward round never pays more than its total, and the distributor always holds what open rounds owe;
-- a queued change runs at most once, only between its timelock and the end of its grace period, and never after a veto; only Jev's latest Change decision, adopted at or above the change threshold, queues a call, and a vetoed call is never queued again;
-- the change threshold never drops below 50%; only the admin replaces the guardian, and the brain changes only through the admin or an attested enclave the admin has allowed;
-- the bond contract holds exactly the bonds of open proposals, and each bond is taken once and leaves once: returned on adoption or timeout, burned otherwise;
-- staking holds exactly what workers have at stake; a stake drops only when its worker unstakes or the board slashes it by exactly the slash share, and nothing is withdrawn before the cooldown or while a task is in flight.
+Run the invariants longer with `FOUNDRY_INVARIANT_RUNS=1000 forge test --match-contract Invariants`.
 
-The flywheel suite covers fees, buybacks, staking, slashing and proposal bonds; a coverage suite asserts every event, access rule and time-window boundary; and [`test/Regressions.t.sol`](test/Regressions.t.sol) collects regression tests for issues found in our October 2026 internal review.
+Fork suites in [`test/fork`](test/fork) run against live chain state and pass or skip without one. Run them with `--fork-url` on Robinhood Chain (desks, payouts, Float, Proofs, Pons) or Base (`JudgedCapture`), or set `BRAINCHAIN_RPC` and `ROBINHOOD_RPC` for the admin and Safe suites.
 
-Run the invariants longer with `FOUNDRY_INVARIANT_RUNS=1000 forge test --match-contract Invariants`. Fork suites run against real chain state and skip unless a fork is configured (`--fork-url` on Robinhood Chain 4663 for Pons, `BRAINCHAIN_RPC` and `ROBINHOOD_RPC` for the handover): [`test/fork/PonsLifecycle.t.sol`](test/fork/PonsLifecycle.t.sol) launches a token on Pons with the `FeeSplitter` as its fee recipient and follows the fees through graduation, and [`test/fork/AdminHandover.t.sol`](test/fork/AdminHandover.t.sol) replays the admin handover on a chain that has not been handed over yet.
+The verifier has its own tests:
+
+```sh
+cd tools/verify-decision
+npm ci
+npm test
+```
+
+CI runs `forge fmt --check`, `forge build`, `forge test` and the verifier's tests on every pull request.
 
 ### Deploying
 
-[`script/DeployMainnet.s.sol`](script/DeployMainnet.s.sol) deploys the core contracts on mainnet; its header lists every input. Run it without `--broadcast` first: it checks its inputs and the deployed wiring, and stops with a message naming what to fix.
+Each `script/Deploy*.s.sol` lists its inputs in its header. Run a script without `--broadcast` first: [`script/DeployMainnet.s.sol`](script/DeployMainnet.s.sol) checks its inputs and the deployed wiring and stops with a message naming what to fix.
 
-## Verifying a decision
+## Verify a decision
 
-Every decision is published as a JSON record whose hash is stored on chain with it, so anyone can check that the published record is the one the chain acted on. See [docs/decisions.md](docs/decisions.md) for the record format and a step-by-step check.
+Every decision is published as a JSON record whose hash is stored on chain with it. `brainchain-verify` reads the decision from `DecisionLog`, fetches the record, recomputes its hashes and confidence, and applies the task's thresholds the way the contracts do. It needs only a public RPC.
+
+```sh
+npx brainchain-verify mainnet 1
+npx brainchain-verify mainnet --task 11 --set v3-1
+npx brainchain-verify mainnet --entry 20424:7
+```
+
+The [tool's README](tools/verify-decision/README.md) lists every check. [docs/decisions.md](docs/decisions.md) describes the record format and how to check a record by hand.
+
+## Repository layout
+
+| Path | Contents |
+| --- | --- |
+| [`src/`](src) | The contracts |
+| [`test/`](test) | Unit, invariant and fork tests |
+| [`script/`](script) | Deployment scripts |
+| [`deployments/`](deployments) | Addresses of the active and retired sets on mainnet and testnet |
+| [`docs/`](docs) | Architecture, decision records, escrow, the ERC-8183 evaluator and operator roles |
+| [`tools/verify-decision/`](tools/verify-decision) | `brainchain-verify`, published to npm |
+| [`tools/latency.mjs`](tools/latency.mjs) | Time per task step, read from board events (`node tools/latency.mjs`) |
 
 ## Security
 
-Please do not open public issues for vulnerabilities. Report them privately as described in [SECURITY.md](SECURITY.md).
+Report vulnerabilities privately through [GitHub's advisory form](https://github.com/usebrainchain/brainchain/security/advisories/new) or to security@usebrainchain.com, never in a public issue. [SECURITY.md](SECURITY.md) covers scope, response times and the bounty.
 
 ## Contributing
 
-Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, and follow our [Code of Conduct](CODE_OF_CONDUCT.md).
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, and follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 
 [MIT](LICENSE).
 
 Model and company names identify which model made a decision or did a job. BrainChain is not affiliated with or endorsed by TypeSafe, Anthropic, OpenAI, Google, xAI, DeepSeek or Robinhood.
-
-## Tools
-
-`node tools/latency.mjs` prints how long tasks take per step on mainnet (`--network testnet` for testnet), read from every task board's events. No dependencies beyond Node 22.

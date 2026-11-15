@@ -25,7 +25,7 @@ Out of scope:
 
 - contracts and code that are not deployed on mainnet, and retired contract sets;
 - contracts whose source is not in this repository;
-- issues that need a key BrainChain holds, such as the admin, the guardian or a deployer key, or a compromised brain key (the key that records Jev's decisions) beyond what the contracts bound;
+- issues that need a key BrainChain holds, such as the admin, the guardian or a deployer key, or a compromised brain key (the key that records BrainChain's decisions) beyond what the contracts bound;
 - issues where the only funds at risk are the caller's own;
 - scanner findings without a demonstrated impact;
 - third-party services.

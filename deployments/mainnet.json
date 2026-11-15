@@ -17,7 +17,9 @@
     "BRAIN": "0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37",
     "AdminSafe": "0xdFeFbdBF680568e8DC44abbbd657c0701964cC8c",
     "GuardianGate": "0x71B2dc3dEC1aEB000936380981DfC51E47AA4fb8",
-    "DcapAttestation": "0x94552cb7C8806fAD00c4EB59182E98C5Ba4bBfcb"
+    "DcapAttestation": "0x94552cb7C8806fAD00c4EB59182E98C5Ba4bBfcb",
+    "Inscriptions": "0x770D6756CA8a1627FFf01B846383b13d6fa0c514",
+    "PayoutPreferences": "0x2b0d01f5D25F5894590b3281705a48db8740946F"
   },
 
   "robinhoodChain": {
@@ -29,7 +31,10 @@
     "BrainChainProofs": "0xE6E6B7DBF1a66dFB25c6F6A87a916B3186113169",
     "BRAIN": "0xC80333bf7f4078e14Ce5b6e223aF607aDcA44418",
     "BrainLaunchTreasury": "0x396003b5Ffb940466325622D05f1b59acCF894A2",
-    "ProofIndex": "0x0fb02559e704549794EdF3FBBBe91DB88bB849ee"
+    "ProofIndex": "0x0fb02559e704549794EdF3FBBBe91DB88bB849ee",
+    "DeskMandate": "0xA76916D1b75a82776779fb9d7EB156A4E4a55099",
+    "PayoutSwap": "0x64616b20297797e14479C9186b31f7b540329144",
+    "Float": "0xefA99FA95e8107cc3F4E99Fb7154DE3D7C5f03C3"
   },
   "release": "3.5.0",
   "aliases": ["v5"],

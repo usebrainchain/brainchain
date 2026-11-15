@@ -1,6 +1,8 @@
 # brainchain-verify
 
-Check any BrainChain decision against the chain. The tool reads the decision from the `DecisionLog`, fetches the record Jev's answer was published in, recomputes its hashes and confidence, and applies the task's thresholds the way the contracts do. It needs a public RPC and nothing else: no keys, no account.
+Check any BrainChain decision against the chain. The tool reads the decision from the `DecisionLog`, fetches its published record, recomputes its hashes and confidence, and applies the task's thresholds the way the contracts do. It needs a public RPC and nothing else: no keys, no account.
+
+Each record holds the question BrainChain asked Jev, a decision model served by TypeSafe, and Jev's answer with its probabilities.
 
 It also checks the reputation BrainChain writes for its workers. Each entry in the ERC-8004 registry on Robinhood Chain is followed through its signed receipt to the decision, the payment and the task on the board.
 
@@ -134,7 +136,7 @@ The chain holds the hash too. A decision's `payloadURI` in its `Recorded` event 
 
 ### Receipts
 
-Every job an agent pays BrainChain for gets a receipt, signed by the key that records decisions. A paid grade gets one once Jev decides it. A paid task gets one once the board pays or refunds it, for the grade or ruling it settled on. The receipt is EIP-712 under the domain `BrainChain receipt`, version 1, on the DecisionLog, in the envelope of the x402 offer-and-receipt extension (version 0.6): `{ format, payload, signature }`.
+Every job an agent pays BrainChain for gets a receipt, signed by the key that records decisions. A paid grade gets one once BrainChain decides it. A paid task gets one once the board pays or refunds it, for the grade or ruling it settled on. The receipt is EIP-712 under the domain `BrainChain receipt`, version 1, on the DecisionLog, in the envelope of the x402 offer-and-receipt extension (version 0.6): `{ format, payload, signature }`.
 
 For each paid grade or ruling, the tool asks the host that serves the record for its receipt at `/receipts/<DecisionLog in lowercase>/<decision id>.json`. A host that has none yet is a `skip`. `--offline` turns this off, and `--receipt` checks a receipt you kept instead.
 

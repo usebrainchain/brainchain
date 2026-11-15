@@ -1,6 +1,6 @@
 # Operator roles
 
-BrainChain's operator key, `0x70C665780E43BA1496a4E691e408F24844dB58eC`, runs routine jobs around the clock. Two of those jobs used to wait for both Safe owners to sign: topping up the desk's USDG, and executing a timelock operation once its delay has passed. Each now has a narrow power of its own. The owners keep everything else, and can take either power back with a Safe transaction.
+BrainChain's operator key, `0x70C665780E43BA1496a4E691e408F24844dB58eC`, runs routine jobs around the clock. Two of those jobs wait for both Safe owners to sign: topping up the desk's USDG, and executing a timelock operation once its delay has passed. This page describes a narrow power for each. Neither is in place yet: `CappedTransferModule` is not deployed, and the operator does not hold the timelock's executor role. With both in place, the owners keep every other power and can take either one back with a Safe transaction.
 
 ## Desk top-ups
 
