@@ -2,11 +2,15 @@
 
 Check any BrainChain decision against the chain. The tool reads the decision from the `DecisionLog`, fetches the record Jev's answer was published in, recomputes its hashes and confidence, and applies the task's thresholds the way the contracts do. It needs a public RPC and nothing else: no keys, no account.
 
+It also checks the reputation BrainChain writes for its workers. Each entry in the ERC-8004 registry on Robinhood Chain is followed through its signed receipt to the decision, the payment and the task on the board.
+
 ```sh
 npx brainchain-verify mainnet 1
 npx brainchain-verify mainnet --task 11 --set v3-1
 npx brainchain-verify testnet 100 --json
 npx brainchain-verify mainnet --receipt receipt.json
+npx brainchain-verify mainnet --entry 20424:7
+npx brainchain-verify mainnet --agent 20424
 ```
 
 Requires Node.js 22 or later.
@@ -17,6 +21,8 @@ Requires Node.js 22 or later.
 brainchain-verify <mainnet|testnet|chainId> <decisionId> [--set <TaskBoard>] [--rpc <url>] [--offline] [--json]
 brainchain-verify <mainnet|testnet|chainId> --task <taskId> [--set <TaskBoard>] [--rpc <url>] [--offline] [--json]
 brainchain-verify <mainnet|testnet|chainId> [<decisionId>] --receipt <file|url> [--set <TaskBoard>] [--rpc <url>] [--json]
+brainchain-verify mainnet --entry <agentId>:[<writer>:]<feedbackIndex> [--rpc <url>] [--registry-rpc <url>] [--json]
+brainchain-verify mainnet --agent <agentId> [--rpc <url>] [--registry-rpc <url>] [--json]
 ```
 
 | Argument | Meaning |
@@ -27,6 +33,9 @@ brainchain-verify <mainnet|testnet|chainId> [<decisionId>] --receipt <file|url> 
 | `--set <TaskBoard>` | A retired contract set from 3.0.0 on, by its TaskBoard address, by the key a decision page uses (`?set=v3-1`, or an older one the site still opens, such as `v4` for `v3-4`) or by release (`3.1.0`). Without it, the active set. Each set numbers its tasks and decisions from 1. The `v2` set is not supported: its board named tasks by id alone, which the subject check does not read. |
 | `--rpc <url>` | Another RPC for the same chain. Records and briefs on private addresses are read only when this RPC is on one too. |
 | `--receipt <file\|url>` | Check the receipt for a paid job, from a JSON file or an http(s) URL. Without a decision id, the tool checks the decision the receipt names, in the contract set its DecisionLog belongs to. See [receipts](#receipts). |
+| `--entry <agentId>:[<writer>:]<index>` | Check one reputation entry BrainChain wrote. See [reputation entries](#reputation-entries). |
+| `--agent <agentId>` | Check every reputation entry BrainChain wrote for one agent, oldest first. |
+| `--registry-rpc <url>` | Another RPC for Robinhood Chain, where the ERC-8004 registries are. |
 | `--offline` | Fetch no receipt from the brain host. A receipt given with `--receipt` is still checked. |
 | `--json` | One JSON object on stdout. |
 | `--version` | Print the version. |
@@ -167,6 +176,64 @@ Its answer and confidence are checked, and the confidence is recomputed from the
 
 A paid grade runs the checks sent with its request. BrainChain appends them to the brief as its last block, and `checks` holds their run to the same rule as a task's. A caller can also write such a block into the brief's own text, where nothing runs it, and the record reads the same either way. So a brief that ends in a checks block with no run is a `skip`. An ACP evaluation runs no checks.
 
+## Reputation entries
+
+Each task that settles for a registered worker becomes one entry in the ERC-8004 reputation registry on Robinhood Chain (`0x8004BAa17C55a88189AE136b182e5fdA19dE9b63`). The value is 100 when the board paid the bounty and 0 when it refunded it, under the tags `brainchain` and `task`, and the endpoint is the task's page. An entry for a task an agent paid BrainChain for points at the task's signed [receipt](#receipts): `feedbackURI` is where the receipt is served, and `feedbackHash` is the `keccak256` of the receipt as served there. Every other entry names the task page again and carries a zero hash. That covers house tasks, tasks posted straight on the board, ACP orders and entries written before receipts.
+
+```sh
+npx brainchain-verify mainnet --entry 20424:7
+npx brainchain-verify mainnet --entry 20424:0xafB0C4Ef895D4895040cdC6435B96D3EE8350c6E:12
+npx brainchain-verify mainnet --agent 20424 --json
+```
+
+The registry names an entry by its agent id, the address that wrote it and its index, which counts from 1 for each agent and writer. `--entry` takes the three in that order, separated by colons. BrainChain writes from `0x97D558417c3D61f1074422AD843e1Db1E565b952`, and wrote from `0xafB0C4Ef895D4895040cdC6435B96D3EE8350c6E` before 10 November 2026. Leave the writer out for an entry from the first. Anyone can write under the same tags, so the tool reads entries from these two addresses only.
+
+On an entry, the tool checks, in order:
+
+| Check | What passes |
+| --- | --- |
+| `entry` | The entry's `NewFeedback` event and the registry's `readFeedback` agree. The tags are `brainchain` and `task`, and the value is 100 or 0 with no decimals. |
+| `endpoint` | The endpoint is a task page naming the task and its board, and the board is in one of the contract sets the tool carries. Entries written before 5 November name the task alone. Task ids restart with each board, so `endpoint` skips on them and the task's checks do not run. |
+| `feedback-hash` | The `keccak256` of the bytes served at `feedbackURI` equals `feedbackHash`. A zero hash is a `skip` that reads `no receipt`. |
+| `entry-receipt` | The receipt is one BrainChain signs. It names a decision its DecisionLog holds, in one of the contract sets the tool carries, and `feedbackURI` is that decision's receipt address. |
+| the decision's checks | The decision the receipt names, checked as any decision is, with this receipt. That covers its record, its evidence hash, and the receipt's signature, outcome and payment. The lines keep their names. |
+| `entry-task` | The decision's subject is `subjectOf(task)` on the board the endpoint names. |
+| `entry-value` | The board paid the task for 100 and refunded it for 0. With a receipt, its outcome is `accepted` for 100 and `rejected` for 0. |
+| `entry-worker` | The board's `WorkerHired` event for the task names the agent. A house worker is hired by the `keccak256` of its model name, so agent 20424 is `keccak256("claude")`. The tool carries the five house agents, 20424 to 20428, as [Worker models](https://docs.usebrainchain.com/workers#erc-8004-identity) lists them. An outside worker is hired by its address, left-padded to 32 bytes. That address must have owned the agent, or been its registered wallet, on the identity registry (`0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`) when the board hired it. |
+
+The public RPC for Robinhood Chain keeps no past state, so the tool replays the agent's transfers and wallet changes on the identity registry up to the hire's block time. A transfer clears the wallet, as the registry does.
+
+```text
+$ npx brainchain-verify mainnet --entry 20424:7
+Entry 20424:7 in the ERC-8004 reputation registry on Robinhood Chain (0x8004BAa17C55a88189AE136b182e5fdA19dE9b63)
+
+  ok    entry: value 100 for agent 20424 under brainchain and task, written by 0x97D5…b952 in block 114772689, as the registry holds it
+  ok    endpoint: task 49 on board 0x44b8…A211, contract set v3-5
+  skip  no receipt: the entry's feedbackHash is zero. Only a task an agent paid BrainChain for has a signed receipt; house tasks, tasks posted straight on the board, ACP orders and older entries have none
+  ok    value: 100, as the board paid task 49
+  ok    worker: the board hired claude for task 49 as keccak256("claude"), and agent 20424 is the house worker claude
+
+Verdict: no receipt. No signed receipt backs this entry, and the checks the chain allows without one passed.
+Not checked: that Jev produced the answer. See https://docs.usebrainchain.com/trust-model
+```
+
+An entry's verdict is `match`, `no receipt`, `withheld`, `MISMATCH` or `UNVERIFIED`. `no receipt` means the hash is zero and every check that could run passed. `withheld` is a decision record served without the work, as for any decision.
+
+`--agent` gives one line per entry: its verdict, its name and what it is about. Below an entry go the lines of any check that failed or could not run. The last line counts the entries, those with a receipt, those whose receipt and decision checked out, and those that failed. `--entry` with a name from the list shows every check.
+
+```text
+$ npx brainchain-verify mainnet --agent 20425
+Agent 20425 in the ERC-8004 reputation registry on Robinhood Chain (0x8004BAa17C55a88189AE136b182e5fdA19dE9b63): 8 entries BrainChain wrote
+
+  no receipt 20425:0xafB0C4Ef895D4895040cdC6435B96D3EE8350c6E:1  value 100, task 1
+  no receipt 20425:0xafB0C4Ef895D4895040cdC6435B96D3EE8350c6E:4  value 100, task 22 in set v3-5
+  no receipt 20425:2  value 100, task 41 in set v3-5
+
+8 entries, 0 with a receipt, 0 verified, 0 failed.
+```
+
+Trimmed to three entries.
+
 ## What it cannot check
 
 That Jev produced the answer. BrainChain records Jev's answers, and the contracts bound what a recorded answer can do. A decision that passes every check has the question, answer and probabilities the chain acted on. The [trust model](https://docs.usebrainchain.com/trust-model) explains what the chain relies on and what bounds it.
@@ -176,7 +243,7 @@ That Jev produced the answer. BrainChain records Jev's answers, and the contract
 | Code | Meaning |
 | --- | --- |
 | 0 | Every check that could run passed. Skips do not fail a decision. A `withheld` verdict also exits 0, so read the verdict if you need to tell it from a full match. |
-| 1 | A check failed, a record could not be fetched, or the decision could not be read: an unknown id, a task with no decisions, an RPC error, a `--receipt` that cannot be read. |
+| 1 | A check failed, a record or receipt could not be fetched, or the decision or entry could not be read: an unknown id, a task with no decisions, an entry the registry does not hold, an RPC error, a `--receipt` that cannot be read. |
 | 2 | Bad arguments, or an RPC that serves another chain. |
 
 ## JSON
@@ -218,6 +285,8 @@ That Jev produced the answer. BrainChain records Jev's answers, and the contract
   "trustModel": "https://docs.usebrainchain.com/trust-model"
 }
 ```
+
+With `--entry` or `--agent`, the object holds `registry`, `verdict`, `summary` and `entries` instead of `set` and `decisions`, and `agentId` with `--agent`. `verdict` is `match`, `no-receipt`, `withheld`, `mismatch` or `unverified`. It is `no-receipt` only when every check passed and no entry had a receipt. `summary` counts `entries`, `withReceipt`, `verified`, `failed` and `unverified`. Each entry carries its name as `entry`, the fields of its `NewFeedback` event, the `task`, `board` and `set` its endpoint names, the `decision` its receipt names with its `id`, `set` and `kind`, its own `verdict` and its `checks`.
 
 ## Building
 

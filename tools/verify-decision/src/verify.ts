@@ -11,6 +11,7 @@ import {
   decodeFunctionData,
   encodeAbiParameters,
   encodeFunctionData,
+  getAddress,
   http,
   keccak256,
   pad,
@@ -18,6 +19,7 @@ import {
   parseEventLogs,
   recoverMessageAddress,
   recoverTypedDataAddress,
+  size,
   toBytes,
   TransactionReceiptNotFoundError,
   type Abi,
@@ -26,6 +28,7 @@ import {
   type Hex,
   type PublicClient,
   toHex,
+  zeroAddress,
 } from "viem";
 
 import { decisionExecutorAbi, decisionLogAbi, modelRegistryAbi, taskBoardAbi } from "./abi.js";
@@ -1670,11 +1673,12 @@ async function readDesk({ client, network, set }: Context, origin: string): Prom
   return { payees: payees as Desk["payees"], formerDesks: former };
 }
 
+const ROBINHOOD_RPC = "https://rpc.mainnet.chain.robinhood.com";
 // Public RPCs for the networks the desk takes payment on.
 const PAYMENT_RPCS: Record<string, string> = {
   "eip155:8453": "https://mainnet.base.org",
   "eip155:84532": "https://sepolia.base.org",
-  "eip155:4663": "https://rpc.mainnet.chain.robinhood.com",
+  "eip155:4663": ROBINHOOD_RPC,
   "eip155:46630": "https://rpc.testnet.chain.robinhood.com",
   "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": "https://api.mainnet-beta.solana.com",
   "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1": "https://api.devnet.solana.com",
@@ -1737,7 +1741,7 @@ async function solanaBalances(rpc: string, signature: string, mint: string): Pro
 export type Outcome = "match" | "withheld" | "unverified" | "mismatch";
 
 /** Disagreement first, then what could not be read. A withheld record never reads as a match: its hashes were not checked. */
-export function outcomeOf(reports: DecisionReport[]): Outcome {
+export function outcomeOf(reports: Pick<DecisionReport, "checks" | "withheld">[]): Outcome {
   const checks = reports.flatMap((r) => r.checks);
   if (checks.some((c) => c.status === "fail")) return "mismatch";
   if (checks.some((c) => c.status === "error")) return "unverified";
@@ -1761,4 +1765,388 @@ export function withheldNotChecked(reports: DecisionReport[]): string {
       ? "Its answer and confidence agree with the chain. The rest of it, such as the question, its levels and the second grader, is the host's word."
       : "Its answer and confidence agree with the chain, and so do the task's brief, levels and threshold. The rest of it, such as the question and the second grader, is the host's word.")
   );
+}
+
+/** Where BrainChain records each task that settles for an ERC-8004 agent, and whom its entries name. */
+export interface Registry {
+  /** Reads the chain the registries are on. */
+  client: PublicClient;
+  chainId: number;
+  /** The ERC-8004 reputation registry. */
+  address: Address;
+  /** The ERC-8004 identity registry, which says who held an agent and when. */
+  identity: Address;
+  /** The addresses BrainChain writes entries from, the one it writes from now first. Anyone can write under its tag, so only these count. */
+  writers: readonly Address[];
+  /** The block of BrainChain's first entry. */
+  fromBlock: bigint;
+  /** BrainChain's house workers: the model name the board hires each agent id by. */
+  house: Readonly<Record<string, string>>;
+}
+
+/** BrainChain mainnet's: the registries on Robinhood Chain, and the addresses and agents its docs list (workers#erc-8004-identity). */
+export const REPUTATION = {
+  network: 274663,
+  chainId: 4663,
+  rpc: ROBINHOOD_RPC,
+  address: "0x8004BAa17C55a88189AE136b182e5fdA19dE9b63",
+  identity: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
+  // The desk key since 10 November 2026, and the one before it.
+  writers: ["0x97D558417c3D61f1074422AD843e1Db1E565b952", "0xafB0C4Ef895D4895040cdC6435B96D3EE8350c6E"],
+  fromBlock: 103_375_137n,
+  house: { 20424: "claude", 20425: "gpt", 20426: "gemini", 20427: "grok", 20428: "deepseek" },
+} as const;
+
+// EIP-8004's registries, as deployed on Robinhood Chain.
+const reputationAbi = parseAbi([
+  "event NewFeedback(uint256 indexed agentId, address indexed clientAddress, uint64 feedbackIndex, int128 value, uint8 valueDecimals, string indexed indexedTag1, string tag1, string tag2, string endpoint, string feedbackURI, bytes32 feedbackHash)",
+  "function readFeedback(uint256 agentId, address clientAddress, uint64 feedbackIndex) view returns (int128 value, uint8 valueDecimals, string tag1, string tag2, bool isRevoked)",
+]);
+const identityAbi = parseAbi([
+  "event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)",
+  "event MetadataSet(uint256 indexed agentId, string indexed indexedMetadataKey, string metadataKey, bytes metadataValue)",
+]);
+
+const TAG = "brainchain";
+// Robinhood Chain's RPC reads logs over at most this many blocks, and only when each topic it filters on has one value.
+const LOG_SPAN = 10_000_000n;
+// An outside worker's model id is its address, left-padded to 32 bytes.
+const PADDED = /^0x0{24}([0-9a-f]{40})$/i;
+const NO_RECEIPT =
+  "no receipt: the entry's feedbackHash is zero. Only a task an agent paid BrainChain for has a signed receipt; house tasks, tasks posted straight on the board, ACP orders and older entries have none";
+
+/** An entry as its NewFeedback event states it. The registry names it by agent, writer and index. */
+export interface Feedback {
+  agentId: bigint;
+  clientAddress: Address;
+  /** From 1 for each agent and writer. */
+  feedbackIndex: bigint;
+  value: bigint;
+  valueDecimals: number;
+  tag1: string;
+  tag2: string;
+  endpoint: string;
+  feedbackURI: string;
+  feedbackHash: Hex;
+  block: bigint;
+  transaction: Hex;
+}
+
+export interface EntryReport {
+  /** As --entry takes it: the agent and the index, with the writer between them unless it is the one BrainChain writes from now. */
+  entry: string;
+  agentId: string;
+  clientAddress: Address;
+  feedbackIndex: number;
+  value: number;
+  block: number;
+  transaction: Hex;
+  endpoint: string;
+  feedbackURI: string;
+  feedbackHash: Hex;
+  /** The task the endpoint names, and its board and contract set where it names one the tool carries. */
+  task?: number;
+  board?: Address;
+  set?: string;
+  /** The decision the entry's receipt names, checked with the receipt. Its checks are among the entry's. */
+  decision?: DecisionReport & { set: string };
+  /** That decision's record was served without the work, so its hashes could not be checked. */
+  withheld?: boolean;
+  checks: Check[];
+}
+
+export const entryName = (registry: Registry, f: Pick<Feedback, "agentId" | "clientAddress" | "feedbackIndex">): string =>
+  `${f.agentId}:${eq(f.clientAddress, registry.writers[0] ?? "") ? "" : `${f.clientAddress}:`}${f.feedbackIndex}`;
+
+/** Every entry BrainChain wrote for an agent, from the writers given or all of its own, oldest first. */
+export async function entriesOf(registry: Registry, agentId: bigint, writers: readonly Address[] = registry.writers): Promise<Feedback[]> {
+  const { client, address } = registry;
+  const head = await client.getBlockNumber();
+  const found: Feedback[] = [];
+  for (const writer of writers) {
+    for (let from = registry.fromBlock; from <= head; from += LOG_SPAN) {
+      const toBlock = from + LOG_SPAN - 1n < head ? from + LOG_SPAN - 1n : head;
+      const events = await client.getContractEvents({ address, abi: reputationAbi, eventName: "NewFeedback", args: { agentId, clientAddress: writer }, fromBlock: from, toBlock, strict: true });
+      for (const { args, blockNumber, transactionHash } of events) {
+        const { indexedTag1: _, ...entry } = args;
+        found.push({ ...entry, block: blockNumber, transaction: transactionHash });
+      }
+    }
+  }
+  return found.sort((a, b) => (a.block === b.block ? Number(a.feedbackIndex - b.feedbackIndex) : a.block < b.block ? -1 : 1));
+}
+
+/**
+ * One entry, end to end: as the registry holds it, the task its endpoint
+ * names, the receipt its feedbackHash commits to, the decision and payment
+ * that receipt names, and the board's settlement and hire behind its value
+ * and its agent.
+ */
+export async function verifyEntry(ctx: Context, registry: Registry, f: Feedback): Promise<EntryReport> {
+  const c = new Checks();
+  const report: EntryReport = {
+    entry: entryName(registry, f),
+    agentId: f.agentId.toString(),
+    clientAddress: f.clientAddress,
+    feedbackIndex: Number(f.feedbackIndex),
+    value: Number(f.value),
+    block: Number(f.block),
+    transaction: f.transaction,
+    endpoint: clean(f.endpoint),
+    feedbackURI: clean(f.feedbackURI),
+    feedbackHash: f.feedbackHash,
+    checks: c.list,
+  };
+  await checkStored(registry, c, f);
+
+  const page = taskPage(ctx.network.sets, f.endpoint);
+  if (page) report.task = Number(page.task);
+  if (page?.board) report.board = page.board;
+  if (page?.set) report.set = page.set.key;
+  checkEndpoint(c, f.endpoint, page);
+
+  let receipt: EntryReceipt | undefined;
+  if (eq(f.feedbackHash, NO)) c.add("feedback-hash", "skip", NO_RECEIPT);
+  else receipt = await entryReceipt(ctx, c, f);
+  if (receipt) {
+    const on = contextFor(ctx, receipt.set);
+    const decided = await verifyDecision(on, receipt.decision, receipt.given);
+    c.list.push(...decided.checks);
+    report.decision = { ...decided, set: receipt.set.key };
+    if (decided.withheld) report.withheld = true;
+    await checkEntryTask(on, c, receipt.decision, page);
+  }
+  if (page?.set) {
+    const placed = { task: page.task, set: page.set };
+    await checkValue(ctx, c, f, placed, receipt?.outcome);
+    await checkWorker(ctx, registry, c, f, placed);
+  }
+  return report;
+}
+
+/** The entry as the registry holds it beside its event, under BrainChain's tags and on its scale. */
+async function checkStored({ client, address }: Registry, c: Checks, f: Feedback): Promise<void> {
+  const [value, decimals, tag1, tag2, revoked] = await client.readContract({ address, abi: reputationAbi, functionName: "readFeedback", args: [f.agentId, f.clientAddress, f.feedbackIndex] });
+  const wrong: string[] = [];
+  if (value !== f.value || decimals !== f.valueDecimals || tag1 !== f.tag1 || tag2 !== f.tag2) {
+    wrong.push(`the registry holds ${value} with ${decimals} decimals under ${tag1} and ${tag2}, where its NewFeedback event says ${f.value} with ${f.valueDecimals} under ${f.tag1} and ${f.tag2}`);
+  }
+  if (f.tag1 !== TAG || f.tag2 !== "task") wrong.push(`its tags are ${f.tag1} and ${f.tag2}, where BrainChain writes ${TAG} and task`);
+  if (f.valueDecimals !== 0 || (f.value !== 0n && f.value !== 100n)) wrong.push(`its value is ${f.value} with ${f.valueDecimals} decimals, where BrainChain writes 100 or 0 with none`);
+  c.check(
+    "entry",
+    wrong.length === 0,
+    `entry: value ${f.value} for agent ${f.agentId} under ${TAG} and task, written by ${short(f.clientAddress)} in block ${f.block}, as the registry holds it${revoked ? ". Revoked since, so the registry's summaries leave it out" : ""}`,
+    `entry: ${wrong.join("; ")}`,
+  );
+}
+
+interface TaskPage {
+  task: bigint;
+  board?: Address;
+  set?: ContractSet;
+}
+
+/** The task page BrainChain names as an entry's endpoint: `task?id=<task>&board=<TaskBoard>`, or the id alone before 5 November. */
+function taskPage(sets: readonly ContractSet[], endpoint: string): TaskPage | undefined {
+  if (!URL.canParse(endpoint)) return undefined;
+  const url = new URL(endpoint);
+  const id = url.searchParams.get("id");
+  const board = url.searchParams.get("board");
+  if (!url.pathname.endsWith("/task") || id === null || !/^[1-9]\d{0,77}$/.test(id) || (board !== null && !ADDRESS.test(board))) return undefined;
+  if (board === null) return { task: BigInt(id) };
+  return { task: BigInt(id), board: getAddress(board), set: sets.find((s) => eq(s.board, board)) };
+}
+
+function checkEndpoint(c: Checks, endpoint: string, page: TaskPage | undefined): void {
+  if (!page) return c.add("endpoint", "fail", `endpoint: ${display(endpoint)} is not a task page, which BrainChain names in every entry`);
+  if (!page.board) {
+    return c.add("endpoint", "skip", `endpoint: task ${page.task}, on no board. Entries from before 5 November name the task alone, and task ids restart with each board, so the task's checks did not run`);
+  }
+  if (!page.set) return c.add("endpoint", "skip", `endpoint: task ${page.task} on board ${short(page.board)}, none of the contract sets this tool carries, so the task's checks did not run`);
+  c.add("endpoint", "ok", `endpoint: task ${page.task} on board ${short(page.board)}, contract set ${page.set.key}`);
+}
+
+interface EntryReceipt {
+  decision: bigint;
+  set: ContractSet;
+  given: GivenReceipt;
+  outcome: string;
+}
+
+/** The receipt at feedbackURI, once its bytes hash to feedbackHash and it names a decision the DecisionLog it names holds, at the address the brain serves that receipt from. */
+async function entryReceipt(ctx: Context, c: Checks, f: Feedback): Promise<EntryReceipt | undefined> {
+  let bytes: Uint8Array;
+  try {
+    ({ bytes } = await fetchBytes(f.feedbackURI, { what: "receipt", limit: MAX_RECEIPT_BYTES, allowPrivate: await allowsPrivate(ctx.client) }));
+  } catch (error) {
+    c.add("feedback-hash", "error", `could not fetch the receipt: ${errorMessage(error)}`);
+    return undefined;
+  }
+  const hash = keccak256(bytes);
+  const where = display(f.feedbackURI);
+  if (!eq(hash, f.feedbackHash)) {
+    c.add("feedback-hash", "fail", `feedback hash: the receipt at ${where} hashes to ${short(hash)}, not to feedbackHash ${short(f.feedbackHash)}`);
+    return undefined;
+  }
+  c.add("feedback-hash", "ok", `feedback hash: the receipt at ${where} hashes to feedbackHash ${short(hash)}`);
+
+  const text = decodeText(bytes);
+  const value = text === undefined ? undefined : parseJson(text);
+  const receipt = parseReceipt(value);
+  if (!receipt || receipt.x402) {
+    c.add("entry-receipt", "fail", `receipt: ${where} is not a receipt as BrainChain signs one`);
+    return undefined;
+  }
+  const { decision, decisionLog, outcome } = receipt.payload;
+  const set = ctx.network.sets.find((s) => eq(s.log, decisionLog));
+  if (!set) {
+    c.add("entry-receipt", "fail", `receipt: names DecisionLog ${short(decisionLog)}, none of the contract sets on ${ctx.network.name}`);
+    return undefined;
+  }
+  const recorded = await ctx.client.readContract({ address: set.log, abi: decisionLogAbi, functionName: "count" });
+  const path = `/receipts/${decisionLog.toLowerCase()}/${decision}.json`;
+  const wrong: string[] = [];
+  if (BigInt(decision) < 1n || BigInt(decision) > recorded) wrong.push(`decision ${decision}, and DecisionLog ${short(set.log)} holds decisions 1 to ${recorded}`);
+  if (!URL.canParse(f.feedbackURI) || new URL(f.feedbackURI).pathname !== path) wrong.push(`decision ${decision} on DecisionLog ${short(set.log)}, whose receipt the brain serves at ${path}, not at ${where}`);
+  c.check("entry-receipt", wrong.length === 0, `receipt: names decision ${decision} on DecisionLog ${short(set.log)}, contract set ${set.key}, and is served at that decision's address`, `receipt: names ${list(wrong)}`);
+  return wrong.length === 0 ? { decision: BigInt(decision), set, given: { from: clean(f.feedbackURI), value }, outcome } : undefined;
+}
+
+const setContexts = new WeakMap<Context, Map<string, Context>>();
+
+/** The context for another contract set on the same network, kept so each set's briefs and desk are read once. */
+function contextFor(ctx: Context, set: ContractSet): Context {
+  if (set === ctx.set) return ctx;
+  let known = setContexts.get(ctx);
+  if (!known) setContexts.set(ctx, (known = new Map()));
+  let found = known.get(set.key);
+  if (!found) known.set(set.key, (found = { ...ctx, set, briefs: new Map() }));
+  return found;
+}
+
+async function checkEntryTask(ctx: Context, c: Checks, id: bigint, page: TaskPage | undefined): Promise<void> {
+  if (!page?.set) return c.add("entry-task", "skip", `task: the endpoint names no task on a board this tool carries, so decision ${id} is not tied to one`);
+  const { subject } = await readDecision(ctx, id);
+  const board = short(page.set.board);
+  c.check(
+    "entry-task",
+    subject === taskSubject(ctx.network.chainId, page.set.board, page.task),
+    `task: decision ${id} is about task ${page.task} on board ${board}, the task the endpoint names`,
+    `task: decision ${id} on DecisionLog ${short(ctx.set.log)} is not about task ${page.task} on board ${board}, the task the endpoint names`,
+  );
+}
+
+/** BrainChain writes 100 for a task the board paid and 0 for one it refunded, and a task's receipt says accepted or rejected for the same. */
+async function checkValue({ client }: Context, c: Checks, f: Feedback, { task, set }: { task: bigint; set: ContractSet }, outcome: string | undefined): Promise<void> {
+  const on = await client.readContract({ address: set.board, abi: taskBoardAbi, functionName: "get", args: [task] });
+  const settled = on.status === Status.Paid ? "paid" : on.status === Status.Refunded ? "refunded" : undefined;
+  if (!settled) {
+    return c.add("entry-value", "fail", `value: task ${task} is ${STATUS[on.status] ?? `status ${on.status}`}. The board has neither paid nor refunded it, and BrainChain writes an entry only once it has`);
+  }
+  const owed = settled === "paid" ? 100n : 0n;
+  const wrong: string[] = [];
+  if (f.value !== owed) wrong.push(`the board ${settled} task ${task}, which BrainChain writes as ${owed}`);
+  if (outcome !== undefined && outcome !== (f.value === 100n ? "accepted" : "rejected")) wrong.push(`the receipt says ${outcome}`);
+  c.check(
+    "entry-value",
+    wrong.length === 0,
+    `value: ${f.value}, as the board ${settled} task ${task}${outcome === undefined ? "" : ` and the receipt says ${outcome}`}`,
+    `value: ${f.value}, but ${list(wrong)}`,
+  );
+}
+
+/** The worker the board hired for the task is the agent: a house worker by its model name, an outside worker by an address that held the agent when it was hired. */
+async function checkWorker(ctx: Context, registry: Registry, c: Checks, f: Feedback, { task, set }: { task: bigint; set: ContractSet }): Promise<void> {
+  const hires = await ctx.client.getContractEvents({ address: set.board, abi: taskBoardAbi, eventName: "WorkerHired", args: { id: task }, fromBlock: BigInt(set.fromBlock), strict: true });
+  const hired = hires.at(-1);
+  if (!hired) return c.add("entry-worker", "fail", `worker: the board hired no worker for task ${task}`);
+  const model = hired.args.model.toLowerCase();
+  const agent = f.agentId.toString();
+  const named = (id: string) => {
+    const house = Object.entries(registry.house).find(([, name]) => keccak256(toBytes(name)) === id);
+    return house ? `${house[1]}, house agent ${house[0]}` : `model ${short(id)}`;
+  };
+  const house = registry.house[agent];
+  if (house !== undefined) {
+    c.check(
+      "entry-worker",
+      keccak256(toBytes(house)) === model,
+      `worker: the board hired ${house} for task ${task} as keccak256("${house}"), and agent ${agent} is the house worker ${house}`,
+      `worker: agent ${agent} is the house worker ${house}, and the board hired ${named(model)} for task ${task}`,
+    );
+    return;
+  }
+  const account = PADDED.exec(model)?.[1];
+  if (!account) return c.add("entry-worker", "fail", `worker: the board hired ${named(model)} for task ${task}, which no outside agent can be`);
+  const worker = getAddress(`0x${account}`);
+  const { timestamp } = await ctx.client.getBlock({ blockNumber: hired.blockNumber });
+  const held = await holderAt(registry, f.agentId, timestamp);
+  const as = held.owner && eq(held.owner, worker) ? "owned" : held.wallet && eq(held.wallet, worker) ? "was the registered wallet of" : undefined;
+  const holder = held.owner ? `${short(held.owner)} owned it${held.wallet ? ` and ${short(held.wallet)} was its wallet` : ""}` : "nobody held it";
+  c.check(
+    "entry-worker",
+    as !== undefined,
+    `worker: the board hired ${short(worker)} for task ${task}, which ${as} agent ${agent} on the identity registry when it was hired`,
+    `worker: the board hired ${short(worker)} for task ${task}, but when it was hired ${holder} on the identity registry`,
+  );
+}
+
+interface IdentityEvent {
+  time: bigint;
+  /** A mint when `from` is the zero address. */
+  transfer?: { from: Address; to: Address };
+  /** The agentWallet set, or cleared when empty. */
+  wallet?: Hex;
+}
+
+const identities = new WeakMap<Registry, Map<bigint, Promise<IdentityEvent[]>>>();
+
+/** Who owned the agent and which wallet it had registered at `time`, replayed from its events: the registry clears the wallet when the agent changes hands. */
+async function holderAt(registry: Registry, agentId: bigint, time: bigint): Promise<{ owner?: Address; wallet?: Address }> {
+  let known = identities.get(registry);
+  if (!known) identities.set(registry, (known = new Map()));
+  let pending = known.get(agentId);
+  if (!pending) known.set(agentId, (pending = identityEvents(registry, agentId)));
+  let owner: Address | undefined;
+  let wallet: Address | undefined;
+  for (const event of await pending) {
+    if (event.time > time) break;
+    if (event.transfer) {
+      owner = event.transfer.to === zeroAddress ? undefined : event.transfer.to;
+      if (event.transfer.from !== zeroAddress) wallet = undefined;
+    } else {
+      wallet = event.wallet && size(event.wallet) === 20 ? getAddress(event.wallet) : undefined;
+    }
+  }
+  return { ...(owner ? { owner } : {}), ...(wallet ? { wallet } : {}) };
+}
+
+/** The agent's transfers and agentWallet changes, oldest first, read back from the head to its mint. */
+async function identityEvents({ client, identity }: Registry, agentId: bigint): Promise<IdentityEvent[]> {
+  const found: { block: bigint; index: number; event: Omit<IdentityEvent, "time"> }[] = [];
+  for (let to = await client.getBlockNumber(); ; ) {
+    const fromBlock = to >= LOG_SPAN ? to - LOG_SPAN + 1n : 0n;
+    const span = { address: identity, abi: identityAbi, fromBlock, toBlock: to, strict: true } as const;
+    const [transfers, wallets] = await Promise.all([
+      client.getContractEvents({ ...span, eventName: "Transfer", args: { tokenId: agentId } }),
+      client.getContractEvents({ ...span, eventName: "MetadataSet", args: { agentId, indexedMetadataKey: "agentWallet" } }),
+    ]);
+    for (const { args, blockNumber, logIndex } of transfers) found.push({ block: blockNumber, index: logIndex, event: { transfer: { from: args.from, to: args.to } } });
+    for (const { args, blockNumber, logIndex } of wallets) found.push({ block: blockNumber, index: logIndex, event: { wallet: args.metadataValue } });
+    if (fromBlock === 0n || transfers.some((t) => t.args.from === zeroAddress)) break;
+    to = fromBlock - 1n;
+  }
+  found.sort((a, b) => (a.block === b.block ? a.index - b.index : a.block < b.block ? -1 : 1));
+  const times = new Map<bigint, Promise<bigint>>();
+  for (const { block } of found) if (!times.has(block)) times.set(block, client.getBlock({ blockNumber: block }).then((b) => b.timestamp));
+  return Promise.all(found.map(async ({ block, event }) => ({ ...event, time: await times.get(block)! })));
+}
+
+export type EntryOutcome = Outcome | "no-receipt";
+
+/** As for decisions, and `no-receipt` when everything passed and no entry had a receipt to check. */
+export function entryOutcome(reports: EntryReport[]): EntryOutcome {
+  const outcome = outcomeOf(reports);
+  return outcome === "match" && reports.every((r) => eq(r.feedbackHash, NO)) ? "no-receipt" : outcome;
 }
