@@ -52,8 +52,8 @@ import {PayoutPreferences} from "../src/PayoutPreferences.sol";
 /// default 250000), optional BOND_DECIDE_WITHIN (seconds Jev has to decide a
 /// proposal before its bond is returned, default 7 days), optional
 /// PAYOUT_PREFERENCES (the payout registry the board reads at delivery; the
-/// executor is the house paid in a worker's place, and the brain pays the
-/// worker on Robinhood Chain).
+/// executor is the house paid in a worker's place, and the brain service
+/// pays the worker on Robinhood Chain).
 contract DeployMainnet is Script {
     struct Config {
         address safe;
