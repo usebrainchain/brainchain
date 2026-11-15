@@ -466,6 +466,41 @@ contract Erc8183AppealHookTest is Erc8183Setup {
         assertEq(usdc.balanceOf(provider), 10_000e6);
     }
 
+    function test_aPauseCanRunOutTheRulingPeriod() public {
+        uint256 id = submittedJob();
+        vm.prank(admin);
+        acp.pause();
+        decide(id, true, 9_000);
+        vm.prank(client);
+        hook.appeal(id);
+        decideReverts(decision(id, true, false, 9_000), ERC8183.EnforcedPause.selector);
+
+        vm.warp(block.timestamp + RULING + 1);
+        vm.prank(admin);
+        acp.unpause();
+        decideReverts(decision(id, true, false, 9_000), Erc8183AppealHook.RulingClosed.selector);
+        evaluator.finalize(address(acp), id);
+        assertEq(uint8(status(id)), uint8(IERC8183.JobStatus.Completed));
+        assertEq(usdc.balanceOf(client), 10_000e6 - BUDGET);
+    }
+
+    function test_aPausePastTheGracePeriodLetsTheJobExpire() public {
+        uint256 id = submittedJob();
+        decide(id, true, 9_000);
+        vm.prank(admin);
+        acp.pause();
+        vm.warp(acp.getJob(id).expiredAt + acp.EVALUATION_GRACE_PERIOD());
+        vm.expectRevert(ERC8183.EnforcedPause.selector);
+        evaluator.finalize(address(acp), id);
+        vm.prank(admin);
+        acp.unpause();
+        vm.prank(stranger);
+        acp.claimRefund(id);
+        assertEq(uint8(status(id)), uint8(IERC8183.JobStatus.Expired));
+        assertEq(usdc.balanceOf(client), 10_000e6);
+        assertEq(usdc.balanceOf(provider), 10_000e6);
+    }
+
     function test_ownerSetsBondsAndTerms() public {
         vm.startPrank(stranger);
         vm.expectRevert(Erc8183AppealHook.NotOwner.selector);
