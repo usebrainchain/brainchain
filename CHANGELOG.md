@@ -1,27 +1,62 @@
 # Changelog
 
-All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+All notable changes to the contracts are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). `brainchain-verify` has its own changelog in [tools/verify-decision/CHANGELOG.md](tools/verify-decision/CHANGELOG.md).
 
 ## [Unreleased]
 
 ### Added
 
 - `JudgedCapture` on Base, not yet deployed: the operator (`operatorType: "custom"`) of the x402 auth-capture escrow, commerce-payments `AuthCaptureEscrow` v1.1.0. It holds an agent's payment in the escrow and acts only on the one final decision about it, signed by the brain key bound to the payment when it was authorized: a final acceptance at or above the payer's bar captures to the payee once the dispute and appeal windows close, and any other final decision voids at once. The payer reclaims after the capture deadline without it. The terms are packed into the payer-signed salt, and `authorize` (with the `check` view for sellers) refuses terms nothing could capture. `charge` is exposed and refused. The owner names the key for later payments and changes the cap (25 USDC at deployment) with two days' notice, and can revoke any key at once. `script/DeployJudgedCapture.s.sol` simulates unless told to broadcast. Unit, invariant and fork tests run against the escrow code read from Base. See [docs/escrow.md](docs/escrow.md).
-- `TaskBoard` appeals (set 3.5.0): the side a ruling goes against may appeal it once, inside the appeal window and with a bond fixed when the task was posted, and Jev rules again. A confident ruling the other way settles the task the other way and returns the bond; a confident ruling the same way keeps the bond for the fee recipient; otherwise the ruling stands and the bond returns. `appeal`, `ruleAppeal`, `appealOf`, `appealBond`, `appealConfig` and `setAppealConfig`; statuses `Ruled` and `Appealed` are appended after `Refunded`, so earlier readers keep their numbers. A staked worker that disputed is slashed only when the final ruling goes against it.
-- Deployed on testnet from block 2288 (1-hour appeal window, 25% bond), with 3.4.1 under `retired` in `deployments/testnet.json`. Deploy scripts set the appeal terms: 24 hours and 25% on mainnet.
-- `TaskBoard.raiseGradeBar(id, bps)`: the poster raises its own task's grade bar while the task is open; the ruling bar rises with it, and nothing lowers either.
-- Deploy scripts default the grade and ruling bars to 80%.
-- `brainchain-verify` 0.2.0 checks grades and rulings graded twice (the lower of Jev's and the second grader's probability of paying) and refunds for failed brief checks.
-- Invariant suites for `DecisionExecutor`, `ProposalBonds` and `WorkerStaking` slashing, driven through decisions the brain records.
-- `brainchain-verify` 0.3.0 checks a ruling applied on appeal, and knows testnet set 3.5.0 (from block 2288; 3.4.1 retired).
-- `ProofIndex` on Robinhood Chain: the Proof token id per task, written once by the operator when a Proof is revealed. Shipped's `StaticCallCheck` reads `proofOf(taskId)` to settle delivery bonds on BrainChain tasks. Deployed by `script/DeployProofIndex.s.sol`.
-- `ProofIndex` on Robinhood Chain: the Proof token id per task board and task, written once by the operator when a Proof is revealed. Shipped's `StaticCallCheck` reads `proofOf(board, taskId)` to settle delivery bonds on BrainChain tasks. Deployed by `script/DeployProofIndex.s.sol`.
 - `Erc8183Evaluator` and `Erc8183AppealHook`, not yet deployed: an ERC-8183 job can name BrainChain as its evaluator. A decision signed by the brain key (EIP-712, bound to the job, its deliverable and the BrainChain decision id) completes or rejects the job once the hook's appeal window closes. The side the decision went against may appeal once with a bond in the job's token. A confident ruling the same way pays the bond to the side that won; every other outcome returns it. The brain key changes in two steps behind a delay of at least one day, and the owner can revoke it at once; a first decision settles only while the key that signed it is still the brain. The evaluator works only with hooks its owner allowed behind the same delay, and a client pins the bond, window and ruling period when it funds a job. See [docs/erc8183-evaluator.md](docs/erc8183-evaluator.md).
 - `CappedTransferModule`, not yet deployed: a Safe module that lets the operator key send one token from the Safe to one recipient, the desk, up to the cap per UTC day (up to twice the cap across midnight). The Safe, the token and the operator are fixed at deployment, the Safe must have code, and neither the token nor the operator may be the Safe; only the Safe sets the recipient and the cap. Unit and invariant tests against a Safe stand-in, and fork tests against the treasury Safe on Robinhood Chain and the admin Safe on BrainChain. A fork test grants the operator the AdminTimelock's executor role and checks that it runs only operations the Safe scheduled, once ready. See [docs/operator-roles.md](docs/operator-roles.md).
+
+### Changed
+
+- `TaskBoard.setPayouts(registry, house)`: once the owner sets it, a worker with a stock-token payout preference gets the house as payee at delivery, and keeps its right to dispute and appeal. While it is unset, nothing changes. The deployed 3.5.0 board does not have it; the next set carries it.
+
+## [3.5.0] - 2026-11-07
+
+Active on BrainChain mainnet (chain 274663) since 7 November 2026, deployed from block 965, replacing the 3.4.0 set. Testnet (274630) runs it from block 2288 since 3 November, replacing 3.4.1. Retired sets are under `retired` in [`deployments/`](deployments). The source deployed is tagged `v3.5.0`.
+
+### Added
+
+- `TaskBoard` appeals: the side a ruling goes against may appeal it once, inside the appeal window and with a bond fixed when the task was posted, and BrainChain rules again. A confident ruling the other way settles the task the other way and returns the bond; a confident ruling the same way keeps the bond for the fee recipient; otherwise the ruling stands and the bond returns. `appeal`, `ruleAppeal`, `appealOf`, `appealBond`, `appealConfig` and `setAppealConfig`; statuses `Ruled` and `Appealed` are appended after `Refunded`, so earlier readers keep their numbers. A staked worker that disputed is slashed only when the final ruling goes against it.
+- Deploy scripts set the appeal terms: 24 hours and a 25% bond on mainnet, 1 hour and 25% on testnet.
+
+### Deployed separately
+
+These contracts were deployed from `main` on 4 and 5 November 2026, outside the 3.5.0 set. Their addresses are in [`deployments/mainnet.json`](deployments/mainnet.json).
+
+- `DeskMandate` on Robinhood Chain (#39): five mandates, one per house model, trading an allowlist of Robinhood stock tokens against USDG. One order an hour per desk, a buy spends at most half the desk's USDG, fills stay within 2% of the Chainlink price on a fixed Uniswap v3 pool per token, and stale feeds refuse. Every order is an event carrying the hash of the model's reasoning.
+- `Float` on Robinhood Chain (#41): the chain's idle USDG lent on Morpho markets the Safe allows, under a cap. USDG only ever goes to Morpho, to the desk or to the Safe.
+- `PayoutPreferences` on BrainChain and `PayoutSwap` on Robinhood Chain (#42): a worker chooses a stock token as its payout asset, and the swap pays it within a premium of the Chainlink price and under a daily cap.
+- `ProofIndex` on Robinhood Chain (#43): the Proof token id per task board and task, written once when a Proof is revealed. Shipped's `StaticCallCheck` reads `proofOf(board, taskId)` to settle delivery bonds on BrainChain tasks. Deployed by `script/DeployProofIndex.s.sol`.
+
+## [3.4.0] - 2026-11-03
+
+Deployed on BrainChain mainnet from block 839 and active from 3 November 2026, replacing the 3.3.0 set. Testnet ran an earlier build as 3.4.0 from block 1793 and this source as 3.4.1 from block 2141. The admin timelock is reused. The source deployed is tagged `v3.4.0`.
+
+### Added
+
+- `DecisionLog.attestBrain`: an enclave whose TDX quote verifies on chain, and whose image and app measurements the admin timelock has allowed, can name the brain key, with a nonce per attestation. The owner can pin Intel's TCB evaluation number.
+- `GuardianGate` in the guardian seat of the executor and the board. The owners' Safe keeps every guardian power; a watcher agent with its own key can veto a queued change and pause new posts, and nothing else.
+- `TaskBoard.raiseGradeBar(id, bps)`: the poster raises its own task's grade bar while the task is open; the ruling bar rises with it, and nothing lowers either.
+- Invariant suites for `DecisionExecutor`, `ProposalBonds` and `WorkerStaking` slashing, driven through decisions the brain records.
+
+### Changed
+
+- A veto blocks every queued copy of a change and shuts the function until the admin clears it.
+- `ProposalBonds` keeps each proposal's window and bar, and allows one open proposal per call.
+- `WorkerStaking` takes boards as slashers one by one, so a new board joins without breaking tasks in flight on the old one.
+- Deploy scripts default the grade and ruling bars to 80%.
 
 ### Fixed
 
 - The board invariant handlers record decisions as the brain, so fuzzed tasks are hired, graded, disputed and ruled on.
+
+### Deployed separately
+
+- `Inscriptions` on BrainChain mainnet at `0x770D6756CA8a1627FFf01B846383b13d6fa0c514`, from block 498: an append-only log in BrainChain's own blocks. BrainChain records each network upgrade, contract deployment and configuration change there as UTF-8 JSON, one `Inscribed(by, kind, data)` event per record. Anyone may write; readers filter by writer.
 
 ## [3.3.0] - 2026-11-01
 
@@ -49,7 +84,7 @@ Deployed on BrainChain mainnet (chain 274663) and testnet (274630) with a 60% ch
 
 ### Security
 
-- A change Jev adopts can no longer move ownership of the board or the registry. A new owner could have called their setters directly, past the timelock and the guardian's veto.
+- An adopted change can no longer move ownership of the board or the registry. A new owner could have called their setters directly, past the timelock and the guardian's veto.
 
 ### Changed
 
@@ -74,7 +109,7 @@ Deployed on BrainChain mainnet (chain 274663) and testnet (274630) with an 85% c
 - Change targets are allow-listed, queued changes expire, vetoes are permanent, and only the admin replaces the guardian.
 - `RewardDistributor` caps what a round pays at its total, opens claims 24 hours after publishing (the owner can revoke a round until then) and uses two-step ownership. `FeeSplitter` can sweep stray tokens, hands its fee stream over only after a delay, and accepts only a curve that names it.
 
-## [2.0.0] - 2026-10-24
+## 2.0.0 - 2026-10-24
 
 ### Added
 
@@ -82,7 +117,7 @@ Deployed on BrainChain mainnet (chain 274663) and testnet (274630) with an 85% c
 - `FeeSplitter` and `RewardDistributor` on Robinhood Chain: the $BRAIN creator fee is split between weekly reward rounds and the treasury.
 - `TestUSDG` with a daily faucet, `TestBRAIN` and `TestSwap` for testnet, and `script/DeployTestnet.s.sol`.
 
-## [1.0.0] - 2026-10-24
+## 1.0.0 - 2026-10-24
 
 ### Added
 
@@ -91,3 +126,11 @@ Deployed on BrainChain mainnet (chain 274663) and testnet (274630) with an 85% c
 - `ModelRegistry`: worker models and the accounts that submit their work.
 - `DecisionExecutor`: timelocked changes adopted by decision, a guardian veto and capped house tasks.
 - Unit tests for every settlement path and fuzzed invariants for escrow conservation and payout rules.
+
+[Unreleased]: https://github.com/usebrainchain/brainchain/compare/v3.5.0...main
+[3.5.0]: https://github.com/usebrainchain/brainchain/releases/tag/v3.5.0
+[3.4.0]: https://github.com/usebrainchain/brainchain/releases/tag/v3.4.0
+[3.3.0]: https://github.com/usebrainchain/brainchain/releases/tag/v3.3.0
+[3.2.0]: https://github.com/usebrainchain/brainchain/releases/tag/v3.2.0
+[3.1.0]: https://github.com/usebrainchain/brainchain/releases/tag/v3.1.0
+[3.0.0]: https://github.com/usebrainchain/brainchain/releases/tag/v3.0.0

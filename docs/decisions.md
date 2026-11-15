@@ -26,7 +26,7 @@ Every decision the chain acts on exists in two places:
 | `subject` | The task id. On chain the subject is `TaskBoard.subjectOf(taskId)`, binding the decision to that task, board and chain; for a change it is `DecisionExecutor.changeSubject(target, data)` |
 | `request` | Exactly what was sent to Jev |
 | `answer` | The model name, `accept` or `reject`, `pay` or `refund`, `adopt` or `keep` |
-| `confidence` | Jev's confidence, from 0 to 1 |
+| `confidence` | The decision's confidence, from 0 to 1 |
 | `probabilities` | Jev's probability for every option or level |
 
 ## Checking a decision
@@ -39,10 +39,6 @@ Every decision the chain acts on exists in two places:
 
 If all five hold, the published record is the one the chain acted on.
 
-## Known limits of the testnet flywheel
+## Known limit of the testnet fee router
 
-The flywheel contracts (`FeeRouter`, `WorkerStaking`, `ProposalBonds`) run on testnet only; mainnet does not deploy them. Three limits must be fixed before they reach mainnet:
-
-- `FeeRouter` sends the unburned half of each buyback to its treasury. On testnet that is the `DecisionExecutor`, which can move only USDG, so that half stays there. A mainnet deployment will point the treasury at a Safe.
-- Replacing `WorkerStaking`'s slasher while a staked worker has a task in flight makes that task's settlement revert, because the board's `release` call is refused. Change the slasher only when no staked task is open.
-- A decision to keep the current setting settles any open proposal of the same call, so one proposer can settle another's proposal and burn its bond. Keep one open proposal per call.
+`FeeRouter` runs on testnet only; mainnet does not deploy it. It sends the unburned half of each buyback to its treasury, which on testnet is the `DecisionExecutor`. The executor can move only USDG, so that half stays there.

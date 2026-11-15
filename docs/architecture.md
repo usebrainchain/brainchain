@@ -4,9 +4,34 @@ BrainChain is an Arbitrum Orbit chain whose parent chain is Robinhood Chain. Blo
 
 This page describes the contracts in this repository. Mainnet and testnet run the 3.5.0 set; [CHANGELOG.md](../CHANGELOG.md) lists every change.
 
+```mermaid
+flowchart TB
+    subgraph RH[Robinhood Chain]
+        S[(Settlement and bridge)]
+    end
+    subgraph BC[BrainChain]
+        DL[DecisionLog]
+        TB[TaskBoard]
+        MR[ModelRegistry]
+        DE[DecisionExecutor<br/>timelock · guardian veto]
+    end
+    BR[Brain service] -->|records decisions| DL
+    BR -->|applies decisions| TB
+    BR -->|queues adopted changes| DE
+    BR <-->|typed questions| JEV[(Jev API, TypeSafe)]
+    W[Worker services] <-->|official APIs| LLM[(Model providers)]
+    W -->|submit results| TB
+    TB --> MR
+    DE -->|owns settings| TB
+    DE -->|owns settings| MR
+    AD[Admin timelock<br/>48-hour delay] -->|names the brain, allows enclaves that may| DL
+    AD -->|replaces guardian| DE
+    BC -->|batches and state| RH
+```
+
 ## Trust model
 
-The brain is the service that asks Jev and records the answers. **The chain does not verify that a recorded answer came from Jev**: the brain key is trusted to record Jev's answers faithfully. What the chain does enforce is how a recorded answer may be used:
+The brain is the service that asks Jev, a decision model served by TypeSafe, and records its answers. **The chain does not verify that a recorded answer came from Jev**: the brain key is trusted to record Jev's answers faithfully. What the chain does enforce is how a recorded answer may be used:
 
 - a decision applies only to the task, board and chain its subject names, only if it is the latest decision of its kind about that task, and only if it was recorded after the event it judges (the post, the delivery, the dispute);
 - each contract applies its own confidence threshold; a task's thresholds are set when it is posted, and only its poster can change them, by raising the grade bar while the task is open (the ruling bar rises with it);
@@ -31,7 +56,7 @@ Chain-level powers (BrainChain's chain owner and the UpgradeExecutors on both ch
 
 ## Thresholds and terms live in the contracts
 
-The brain records a decision with Jev's confidence, but it does not decide whether that confidence is enough. `TaskBoard` keeps its own hire, grade and ruling thresholds, and `DecisionExecutor` keeps the change threshold. A task copies the thresholds, windows and fee in force when it is posted, so a later change applies only to new tasks. Nothing lowers a task's bars afterwards; its poster may raise the grade bar while the task is open (`TaskBoard.raiseGradeBar`), and the ruling bar rises with it. Settings change only through an adopted change and its timelock; windows are capped at seven days, task durations at 30 days, the fee at 10%, the timelock between one hour and 30 days, and the change threshold cannot go below 50%.
+The brain records each decision with its confidence, but it does not decide whether that confidence is enough. `TaskBoard` keeps its own hire, grade and ruling thresholds, and `DecisionExecutor` keeps the change threshold. A task copies the thresholds, windows and fee in force when it is posted, so a later change applies only to new tasks. Nothing lowers a task's bars afterwards; its poster may raise the grade bar while the task is open (`TaskBoard.raiseGradeBar`), and the ruling bar rises with it. Settings change only through an adopted change and its timelock; windows are capped at seven days, task durations at 30 days, the fee at 10%, the timelock between one hour and 30 days, and the change threshold cannot go below 50%.
 
 ## Timing
 
@@ -43,14 +68,15 @@ Each step has a window, copied from `TaskBoard.Config` when the task is posted:
 | Grade | `gradeWindow` after delivery | Refund to the poster |
 | Dispute | `disputeWindow` after the grade | The grade stands |
 | Ruling | `ruleWindow` after a dispute | The grade stands |
+| Appeal | The appeal window after a ruling, set per task when it is posted | The ruling stands |
 
 ## Changes to the chain
 
 ```mermaid
 stateDiagram-v2
     [*] --> Proposed
-    Proposed --> Queued: Jev adopts above threshold
-    Proposed --> [*]: Jev keeps the current setting
+    Proposed --> Queued: adopted above threshold
+    Proposed --> [*]: current setting kept
     Queued --> Executed: timelock passed, within 14 days
     Queued --> Vetoed: guardian veto
     Queued --> Expired: not executed within 14 days after its timelock ends

@@ -62,9 +62,9 @@ Decision(bytes24 task,bytes32 paymentInfoHash,bool accepted,bool isFinal,uint16 
 | --- | --- |
 | `task` | Must equal the task in the payment's terms |
 | `paymentInfoHash` | The escrow's `getHash` of the one payment it applies to |
-| `accepted` | Whether Jev accepted the work |
+| `accepted` | Whether BrainChain accepted the work |
 | `isFinal` | True only on the one decision that settles the payment |
-| `confidenceBps` | Jev's confidence, from 0 to 10,000 |
+| `confidenceBps` | The decision's confidence, from 0 to 10,000 |
 | `decisionId` | The decision's id in BrainChain's `DecisionLog` |
 | `decisionLog` | The `DecisionLog` address on BrainChain |
 

@@ -18,13 +18,22 @@ forge test
 forge fmt
 ```
 
+`brainchain-verify` lives in `tools/verify-decision` and needs Node.js 22 or later:
+
+```sh
+cd tools/verify-decision
+npm ci
+npm test
+```
+
 ## Pull requests
 
 - Keep each pull request to one change, with a clear description of what it does and why.
 - Add or update tests for every behaviour change. Changes to settlement paths need a test for each path they touch.
-- Run `forge fmt` and `forge test` before pushing; CI runs both.
+- Run `forge fmt` and `forge test` before pushing, and `npm test` when the tool changes; CI runs all three.
+- Contracts that are deployed change only with a new contract set. Say in the pull request whether a change touches one.
 - Do not change a confidence rule, a refund path or a timelock without an issue that discusses it first.
-- Update `docs/` and `CHANGELOG.md` when behaviour changes.
+- Update `docs/` and `CHANGELOG.md` when behaviour changes (`tools/verify-decision/CHANGELOG.md` for the tool).
 
 By contributing, you agree that your contributions are licensed under the [MIT License](LICENSE).
 
