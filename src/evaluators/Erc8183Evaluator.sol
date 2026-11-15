@@ -46,10 +46,11 @@ contract Erc8183Evaluator is EIP712 {
         uint256 decisionId;
     }
 
-    /// The first decision on a job.
+    /// The first decision on a job, and the key that signed it.
     struct Judgment {
         bool decided;
         bool completes;
+        address signer;
         uint256 decisionId;
         bytes32 digest;
     }
@@ -58,6 +59,7 @@ contract Erc8183Evaluator is EIP712 {
     error NotPendingOwner();
     error NotBrain();
     error NoBrain();
+    error SignerNotBrain();
     error ZeroAddress();
     error BadConfidence();
     error BadDelay();
@@ -150,6 +152,7 @@ contract Erc8183Evaluator is EIP712 {
             if (j.decided) revert AlreadyDecided();
             bool completes = d.accept && confident;
             (j.decided, j.completes, j.decisionId, j.digest) = (true, completes, d.decisionId, digest);
+            j.signer = brain;
             emit Decided(d.jobContract, d.jobId, d.decisionId, false, completes, d.confidenceBps);
             hook.onDecision(d.jobId, completes);
             return;
@@ -164,10 +167,13 @@ contract Erc8183Evaluator is EIP712 {
 
     /// @notice Settles a job on its first decision. The hook lets this through
     /// once the appeal window closes unappealed, or once an appeal's ruling
-    /// period closes without a ruling.
+    /// period closes without a ruling. A decision whose key has since been
+    /// revoked or replaced never settles this way: the job then needs a ruling
+    /// by the current key, or it expires and refunds its client.
     function finalize(address jobContract, uint256 jobId) external {
         Judgment storage j = _judgments[jobContract][jobId];
         if (!j.decided) revert NotDecided();
+        if (j.signer != brain) revert SignerNotBrain();
         _settle(jobContract, jobId, j.completes, j.decisionId, j.digest, abi.encode(false, false));
     }
 
@@ -232,8 +238,8 @@ contract Erc8183Evaluator is EIP712 {
 
     /// @notice Stops the current brain key at once, for a key that may have
     /// leaked. Until a proposed key takes effect, every decision is refused,
-    /// rulings included. Decisions already applied still settle through
-    /// `finalize` when their window or ruling period closes.
+    /// rulings included, and no first decision the key applied can settle
+    /// through `finalize`.
     function revokeBrain() external {
         if (msg.sender != owner) revert NotOwner();
         emit BrainRevoked(brain);
@@ -260,8 +266,8 @@ contract Erc8183Evaluator is EIP712 {
     }
 
     /// @notice Stops trusting `hook` at once and drops any proposal for it.
-    /// Its jobs take no further decisions; a job already decided still
-    /// settles through `finalize`.
+    /// Its jobs take no further decisions; a job already decided by the
+    /// current key still settles through `finalize`.
     function removeHook(address hook) external {
         if (msg.sender != owner) revert NotOwner();
         delete hookAllowed[hook];

@@ -41,6 +41,8 @@ contract Erc8183Handler is Test {
         uint256 appealedAt;
         bool bondHeld;
         bool detached;
+        /// The key that signed the first decision.
+        uint256 signer;
     }
 
     uint256[] public ids;
@@ -129,6 +131,7 @@ contract Erc8183Handler is Test {
                 breaches++;
             }
             g.decided = true;
+            g.signer = brainKey;
             g.completes = accept && confidenceBps >= BAR;
             g.decidedAt = block.timestamp;
         } catch {}
@@ -177,7 +180,7 @@ contract Erc8183Handler is Test {
             bool appealed_ = g.appellant != address(0);
             bool early = appealed_ ? block.timestamp <= g.appealedAt + RULING : block.timestamp <= g.decidedAt + WINDOW;
             // A detached hook holds nothing, and its bond waits for releaseBond.
-            if (paused || (early && !g.detached)) breaches++;
+            if (paused || g.signer != brainKey || (early && !g.detached)) breaches++;
             _settle(id, g.completes);
             if (appealed_ && !g.detached) _payBond(id, g.appellant);
         } catch {}
@@ -426,7 +429,7 @@ contract Erc8183InvariantsTest is StdInvariant, Test {
         uint256 n = handler.idsLength();
         for (uint256 i; i < n; ++i) {
             uint256 id = handler.ids(i);
-            (, IERC8183.JobStatus expected,,,,,,,) = handler.ghosts(id);
+            (, IERC8183.JobStatus expected,,,,,,,,) = handler.ghosts(id);
             assertEq(uint8(acp.getJob(id).status), uint8(expected));
         }
     }

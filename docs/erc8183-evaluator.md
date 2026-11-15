@@ -39,7 +39,7 @@ The job then runs as usual. The provider sets a budget, the client funds it, and
 ## Lifecycle
 
 1. **First decision.** The brain judges the deliverable and signs a decision. Anyone submits it with `Erc8183Evaluator.decide`. The job stays Submitted and the hook opens the appeal window.
-2. **No appeal.** Once the window closes, anyone calls `Erc8183Evaluator.finalize`. The first decision completes or rejects the job.
+2. **No appeal.** Once the window closes, anyone calls `Erc8183Evaluator.finalize`. The first decision completes or rejects the job, provided the key that signed it is still the brain.
 3. **Appeal.** Inside the window, the side the first decision went against calls `Erc8183AppealHook.appeal` and posts the bond. That is the client when the job would complete, and the provider when it would be rejected. Each job takes one appeal.
 4. **Ruling.** The brain judges again and signs a second decision, marked as a ruling on the appeal. Submitting it settles the job at once. If no ruling arrives within the ruling period, anyone calls `finalize`, the first decision settles the job, and the bond returns.
 
@@ -123,13 +123,15 @@ The evaluator's owner, a Safe, names the brain key. The first key is a construct
 
 The owner can cancel a proposal before it takes effect. `delay` is fixed at deployment and is at least one day. Decisions signed by the old key stop counting once the new key takes effect.
 
-If the key may have leaked, the owner calls `revokeBrain()`. The key stops at once, and every decision is refused, first decisions and rulings alike, until a proposed key takes effect through the same delayed change. Revoking does not undo decisions already applied. A job decided before the revoke still settles through `finalize` when its window or ruling period closes, unless a new key takes effect in time to rule on an appeal.
+Each first decision records the key that signed it, and `finalize` settles it only while that key is still the brain. A job the old key decided therefore needs a ruling by the new key, which its losing side can ask for by appealing, or it expires and refunds the client. Rotate when no decided job is waiting on its window, or expect those jobs to refund.
+
+If the key may have leaked, the owner calls `revokeBrain()`. The key stops at once, and every decision is refused, first decisions and rulings alike, until a proposed key takes effect through the same delayed change. A first decision the revoked key already applied cannot settle through `finalize`. The job settles only on a ruling by a new key, if one takes effect inside the ruling period of an appeal; otherwise it expires, the client is refunded, and a held bond returns to the appellant.
 
 The evaluator is deployed on a chain other than BrainChain, so it cannot read the brain key from `DecisionLog`. It keeps its own copy. `setKeyCheck` names a contract a proposed key must also pass before it takes effect, such as one that verifies the brain enclave's TDX quote on that chain. None is set at first.
 
 ## Allowed hooks
 
-The evaluator relies on a hook's record of the deliverable and on its appeal clock, so it works only with hooks its owner has allowed. Allowing a hook takes the same two steps and the same delay as a key change: the owner calls `proposeHook(hook)`, and anyone calls `acceptHook(hook)` once `delay` has passed. `removeHook(hook)` takes effect at once. A removed hook's jobs take no further decisions; a job already decided still settles through `finalize`.
+The evaluator relies on a hook's record of the deliverable and on its appeal clock, so it works only with hooks its owner has allowed. Allowing a hook takes the same two steps and the same delay as a key change: the owner calls `proposeHook(hook)`, and anyone calls `acceptHook(hook)` once `delay` has passed. `removeHook(hook)` takes effect at once. A removed hook's jobs take no further decisions; a job already decided by the current key still settles through `finalize`.
 
 The list is kept by the owner because the hook is deployed after the evaluator, with the evaluator's address fixed in it, and each hook carries its own bonds and terms. A list fixed at construction could not include them. Adding trust waits out the delay; removing it, like revoking the key, does not.
 

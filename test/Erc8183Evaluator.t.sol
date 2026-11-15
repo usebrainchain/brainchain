@@ -593,17 +593,55 @@ contract Erc8183EvaluatorTest is Erc8183Setup {
         assertTrue(evaluator.judgmentOf(address(acp), undecided).decided);
     }
 
-    function test_aDecisionAppliedBeforeARevokeStillSettlesWhenItsTimeRunsOut() public {
-        uint256 id = submittedJob();
-        decide(id, true, 9_000);
-        vm.prank(client);
-        hook.appeal(id);
+    function test_aDecisionByARevokedKeyCannotSettle() public {
+        uint256 appealed = submittedJob();
+        decide(appealed, true, 9_000);
+        uint256 unappealed = submittedJob();
+        decide(unappealed, true, 9_000);
+        Erc8183Evaluator.Judgment memory j = evaluator.judgmentOf(address(acp), appealed);
+        assertEq(j.signer, brain);
+
         vm.prank(safe);
         evaluator.revokeBrain();
+        vm.prank(client);
+        hook.appeal(appealed);
+        decideReverts(decision(appealed, true, false, 9_000), Erc8183Evaluator.NoBrain.selector);
+
         vm.warp(block.timestamp + RULING + 1);
-        evaluator.finalize(address(acp), id);
+        vm.expectRevert(Erc8183Evaluator.SignerNotBrain.selector);
+        evaluator.finalize(address(acp), appealed);
+        vm.expectRevert(Erc8183Evaluator.SignerNotBrain.selector);
+        evaluator.finalize(address(acp), unappealed);
+
+        vm.warp(acp.getJob(appealed).expiredAt + acp.EVALUATION_GRACE_PERIOD());
+        acp.claimRefund(appealed);
+        acp.claimRefund(unappealed);
+        hook.releaseBond(appealed);
+        assertEq(uint8(status(appealed)), uint8(IERC8183.JobStatus.Expired));
+        assertEq(usdc.balanceOf(client), 10_000e6);
+        assertEq(usdc.balanceOf(provider), 10_000e6);
+    }
+
+    function test_aDecisionByARotatedOutKeySettlesOnlyThroughARulingByTheNewKey() public {
+        uint256 nextKey = 0xB4A2;
+        uint256 id = submittedJob();
+        uint256 other = submittedJob();
+        vm.prank(safe);
+        evaluator.proposeBrain(vm.addr(nextKey));
+        decide(id, false, 9_000);
+        decide(other, true, 9_000);
+        vm.prank(provider);
+        hook.appeal(id);
+
+        vm.warp(block.timestamp + BRAIN_DELAY);
+        evaluator.acceptBrain();
+        vm.expectRevert(Erc8183Evaluator.SignerNotBrain.selector);
+        evaluator.finalize(address(acp), other);
+
+        Erc8183Evaluator.Decision memory d = decision(id, true, true, 9_000);
+        evaluator.decide(d, sign(nextKey, d));
         assertEq(uint8(status(id)), uint8(IERC8183.JobStatus.Completed));
-        assertEq(usdc.balanceOf(client), 10_000e6 - BUDGET);
+        assertEq(usdc.balanceOf(provider), 10_000e6 + net());
     }
 
     function test_aHookTheOwnerNeverAllowedIsRefused() public {

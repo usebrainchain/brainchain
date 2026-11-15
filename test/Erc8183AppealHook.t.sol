@@ -429,6 +429,24 @@ contract Erc8183AppealHookTest is Erc8183Setup {
         assertEq(usdc.balanceOf(client), 10_000e6 - BUDGET - BOND);
     }
 
+    function test_aPayoutReceiverCannotTakeBackAConfirmedBond() public {
+        GrabbingProvider receiver = new GrabbingProvider(hook);
+        uint256 id = createJob(address(evaluator), address(hook));
+        vm.prank(provider);
+        acp.setPayoutReceiver(id, address(receiver));
+        fundJob(id);
+        submitJob(id);
+        decide(id, true, 9_000);
+        vm.prank(client);
+        hook.appeal(id);
+
+        rule(id, true, 9_000);
+        assertTrue(receiver.tried());
+        assertFalse(receiver.grabbed());
+        assertEq(usdc.balanceOf(address(receiver)), net());
+        assertEq(usdc.balanceOf(provider), 10_000e6 + BOND);
+    }
+
     function test_releaseBondWaitsForExpiryOrDetach() public {
         uint256 id = appealed(true, client);
         vm.expectRevert(Erc8183AppealHook.NotReleasable.selector);
