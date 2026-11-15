@@ -74,6 +74,8 @@ export interface DecisionReport {
   recordedAt?: string;
   confidenceBps?: number;
   payloadURI?: string;
+  /** The evidence hash the decision's Recorded event carries in payloadURI, once the record matched it. */
+  evidence?: Hex;
   /** The receipt checked for the paid job this decision settled, with the job and outcome it states. */
   receipt?: { from: string; job?: string; outcome?: string };
   checks: Check[];
@@ -676,9 +678,11 @@ export async function verifyDecision(ctx: Context, id: bigint, receipt?: GivenRe
     `the Recorded event in block ${recorded.blockNumber} differs from what DecisionLog.get(${id}) returns`,
   );
 
+  // The fragment carries the decision's evidence hash. No HTTP client sends it, so it names no other file.
+  const location = e.payloadURI.replace(/#[\s\S]*$/, "");
   let fetched: Fetched;
   try {
-    fetched = await fetchBytes(e.payloadURI, { what: "record", limit: MAX_RECORD_BYTES, allowPrivate: await allowsPrivate(client) });
+    fetched = await fetchBytes(location, { what: "record", limit: MAX_RECORD_BYTES, allowPrivate: await allowsPrivate(client) });
   } catch (error) {
     c.add("fetch", "error", `could not fetch the record: ${errorMessage(error)}`);
     return report;
@@ -686,7 +690,7 @@ export async function verifyDecision(ctx: Context, id: bigint, receipt?: GivenRe
   const text = decodeText(fetched.bytes);
   const record = text === undefined ? undefined : parseJson(text);
   if (!isPublished(record)) {
-    c.add("fetch", "fail", `${display(e.payloadURI)} is not a decision record`);
+    c.add("fetch", "fail", `${display(location)} is not a decision record`);
     return report;
   }
 
@@ -700,7 +704,7 @@ export async function verifyDecision(ctx: Context, id: bigint, receipt?: GivenRe
   const excuse = fetched.withheld && hash !== e.payloadHash ? await withholding(ctx, decision, record, task, outside, recorded.blockNumber) : undefined;
   if (excuse?.allowed) report.withheld = true;
 
-  c.add("fetch", "ok", `fetched the record from ${display(e.payloadURI)}${excuse?.allowed ? ", served without the work" : ""}`);
+  c.add("fetch", "ok", `fetched the record from ${display(location)}${excuse?.allowed ? ", served without the work" : ""}`);
   if (excuse) c.add("withheld", excuse.allowed ? "ok" : "fail", `withheld: ${excuse.why}`);
 
   if (excuse?.allowed) {
@@ -832,7 +836,8 @@ export async function verifyDecision(ctx: Context, id: bigint, receipt?: GivenRe
   let sent: Promise<Address> | undefined;
   const sender = () => (sent ??= client.getTransaction({ hash: recorded.transactionHash }).then((tx) => tx.from));
   const decided: Decided = { id, decision, record, task, outside, block: recorded.blockNumber, payloadURI: e.payloadURI, sender };
-  checkEvidence(c, record, decision.inputHash);
+  const anchored = checkEvidence(c, record, decision.inputHash, e.payloadURI);
+  if (anchored) report.evidence = anchored;
   if (record.versions !== undefined) await checkVersions(ctx, c, record.versions, await sender(), recorded.blockNumber);
   const kept = receipt ?? (await servedReceipt(ctx, c, decided));
   if (kept) report.receipt = await checkReceipt(ctx, c, decided, kept);
@@ -1310,17 +1315,32 @@ function evidenceOf(record: Published, inputHash: Hex): Hex | undefined {
   }
 }
 
-function checkEvidence(c: Checks, record: Published, inputHash: Hex): void {
-  if (record.evidence === undefined) return;
+/** The evidence hash a Recorded event's payloadURI carries after #evidence=, written with the decision; null for any other fragment. */
+function anchorOf(uri: string): Hex | null | undefined {
+  const at = uri.indexOf("#");
+  if (at < 0) return undefined;
+  const hash = /^evidence=(0x[0-9a-f]{64})$/i.exec(uri.slice(at + 1))?.[1];
+  return hash ? (hash.toLowerCase() as Hex) : null;
+}
+
+/** The hash on chain, once the record matched it. A location without a fragment predates the hash on chain, so only the record's own field is held to it. */
+function checkEvidence(c: Checks, record: Published, inputHash: Hex, uri: string): Hex | undefined {
+  const anchor = anchorOf(uri);
+  const fail = (message: string): undefined => void c.add("evidence", "fail", `evidence: ${message}`);
+  if (anchor === null) return fail("the Recorded event's payloadURI ends in a fragment other than #evidence= and a hash");
+  if (anchor === undefined && record.evidence === undefined) return undefined;
   const recomputed = evidenceOf(record, inputHash);
-  if (!recomputed) return c.add("evidence", "fail", "evidence: the record's judges, payments or versions are not as the brain records them, so its evidence hash cannot be rebuilt");
-  const over = "the hash over inputHash, every judge's answer and receipt, the payments and the versions";
-  c.check(
-    "evidence",
-    typeof record.evidence === "string" && recomputed === record.evidence.toLowerCase(),
-    `evidence: ${over} is ${short(recomputed)}, as recorded`,
-    `evidence: ${over} is ${short(recomputed)}, not the record's ${short(String(record.evidence))}`,
-  );
+  if (!recomputed) return fail("the record's judges, payments or versions are not as the brain records them, so its evidence hash cannot be rebuilt");
+  const over = `the hash over inputHash, every judge's answer and receipt, the payments and the versions is ${short(recomputed)}`;
+  const kept = typeof record.evidence === "string" ? record.evidence.toLowerCase() : undefined;
+  if (anchor === undefined) {
+    c.check("evidence", recomputed === kept, `evidence: ${over}, as recorded`, `evidence: ${over}, not the record's ${short(String(record.evidence))}`);
+    return undefined;
+  }
+  if (recomputed !== anchor) return fail(`${over}, not ${short(anchor)}, the hash its Recorded event's payloadURI carries`);
+  if (kept !== anchor) return fail(`${over}, as its Recorded event's payloadURI carries it, but the record holds ${kept ? short(kept) : "none"}`);
+  c.add("evidence", "ok", `evidence: ${over}, as the record and its Recorded event's payloadURI state`);
+  return anchor;
 }
 
 function isVersions(value: unknown): value is Versions {
@@ -1516,18 +1536,20 @@ async function checkReceipt(ctx: Context, c: Checks, d: Decided, given: GivenRec
   }
   const p = receipt.payload;
   const { network, set } = ctx;
-  const evidence = typeof d.record.evidence === "string" ? d.record.evidence : undefined;
+  const anchor = anchorOf(d.payloadURI);
+  const evidence = anchor ?? (typeof d.record.evidence === "string" ? d.record.evidence : undefined);
+  const whose = anchor ? "the hash on chain" : "the record's";
   const wrong: string[] = [];
   if (p.version !== 1) wrong.push(`version ${p.version}, where BrainChain signs version 1`);
   if (p.chainId !== network.chainId) wrong.push(`chain ${p.chainId}, not ${network.chainId}`);
   if (!eq(p.decisionLog, set.log)) wrong.push(`DecisionLog ${short(p.decisionLog)}, not ${short(set.log)}`);
   if (p.decision !== d.id.toString()) wrong.push(`decision ${p.decision}, not ${d.id}`);
   if (!evidence) wrong.push("an evidence hash, where the record holds none");
-  else if (!eq(p.evidence, evidence)) wrong.push(`evidence ${short(p.evidence)}, not the record's ${short(evidence)}`);
+  else if (!eq(p.evidence, evidence)) wrong.push(`evidence ${short(p.evidence)}, not ${whose} ${short(evidence)}`);
   c.check(
     "receipt-decision",
     wrong.length === 0,
-    `receipt: names decision ${d.id} on DecisionLog ${short(set.log)}, chain ${network.chainId}, and the record's evidence hash ${short(p.evidence)}`,
+    `receipt: names decision ${d.id} on DecisionLog ${short(set.log)}, chain ${network.chainId}, and the evidence hash ${short(p.evidence)}, ${anchor ? "as its Recorded event carries it" : "as the record holds it"}`,
     `receipt: names ${list(wrong)}`,
   );
   await checkOutcome(ctx, c, d, p);
@@ -1726,6 +1748,13 @@ export function outcomeOf(reports: DecisionReport[]): Outcome {
 export function withheldNotChecked(reports: DecisionReport[]): string {
   const withheld = reports.filter((r) => r.withheld);
   const outside = withheld.length > 0 && withheld.every((r) => r.outside);
+  const opening = "This copy is served without the work, so its record and request hashes could not be checked.";
+  if (withheld.length > 0 && withheld.every((r) => r.evidence)) {
+    const judged = "its judges' answers, payments and versions, which match the evidence hash its Recorded event carries";
+    return outside
+      ? `${opening} Its answer and confidence agree with the chain, and so do ${judged}. The rest of it, such as the question and its levels, is the host's word.`
+      : `${opening} Its answer and confidence agree with the chain, and so do the task's brief, levels and threshold, and ${judged}. The rest of it, such as the question, is the host's word.`;
+  }
   return (
     "This copy is served without the work, so its hashes could not be checked and nothing ties its text to the chain. " +
     (outside

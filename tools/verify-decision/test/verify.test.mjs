@@ -123,6 +123,7 @@ async function verify({
   offline,
   receipt,
   reads = [],
+  fragment = publish.evidence ? `#evidence=${publish.evidence}` : "",
 }) {
   const original = JSON.stringify(publish);
   const served = serve === undefined ? original : typeof serve === "string" ? serve : JSON.stringify(serve);
@@ -146,7 +147,7 @@ async function verify({
     },
     getContractEvents: async ({ eventName, args, toBlock }) => {
       reads.push(eventName);
-      if (eventName === "Recorded") return [{ args: { id: 1n, ...decision, payloadHash: keccak256(toBytes(original)), payloadURI: `${base}${name}` }, blockNumber: 900n, transactionHash: `0x${"f0".repeat(32)}` }];
+      if (eventName === "Recorded") return [{ args: { id: 1n, ...decision, payloadHash: keccak256(toBytes(original)), payloadURI: `${base}${name}${fragment}` }, blockNumber: 900n, transactionHash: `0x${"f0".repeat(32)}` }];
       if (eventName === "Posted") return [{ args: { briefURI, briefHash: briefHash ?? keccak256(toBytes(JSON.stringify(BRIEF))) } }];
       if (eventName === "WorkGraded" && graded) return [{ args: { decisionId: 1n, accepted: answer === YES && bps >= on.gradeThresholdBps } }];
       if (eventName === "Ruled") return ruled.map((decisionId) => ({ args: { decisionId, paid: false, confident: true } }));
@@ -787,7 +788,7 @@ describe("evidence and receipts", () => {
     assert.equal(record.evidence, PINNED_EVIDENCE);
     const whole = await verify({ ...recorded(record), offline: true });
     assert.deepEqual(failed(whole), []);
-    assert.match(check(whole, "evidence").message, /^evidence: the hash over inputHash, every judge's answer and receipt, the payments and the versions is 0x\w{4}…\w{4}, as recorded$/);
+    assert.match(check(whole, "evidence").message, /^evidence: the hash over inputHash, every judge's answer and receipt, the payments and the versions is 0x\w{4}…\w{4}, as the record and its Recorded event's payloadURI state$/);
 
     const kept = sealed(rejected());
     const copy = await verify({ ...recorded(kept), serve: redacted(kept), withheld: true, offline: true });
@@ -810,15 +811,78 @@ describe("evidence and receipts", () => {
     assert.deepEqual(failed(unbuilt), ["evidence"]);
     assert.match(check(unbuilt, "evidence").message, /cannot be rebuilt/);
 
-    // The hash is the record's, so a host can rebuild it over a forged copy. The receipt the brain key signed over the hash still tells them apart.
+    // A host can rebuild the record's own hash over a forged copy. The one on chain does not move, and nor does the one a receipt signs.
     const { versions: _v, payments: _p, evidence: _e, ...parts } = redacted(kept);
     const rebuilt = sealed({ ...parts, second: { ...kept.second, receipt: { id: "rcpt-forged", body: {} } } }, [PAYMENT], VERSIONS, keccak256(toBytes(canonicalStringify(kept.request))));
     const refunded = { withheld: true, task: { status: Status.Refunded, accepted: false }, receipt: given(await issued(kept, { outcome: "rejected" })) };
     assert.deepEqual(failed(await paid(kept, { ...refunded, serve: redacted(kept) })), []);
-    const caught = await paid(kept, { ...refunded, serve: rebuilt });
-    assert.equal(status(caught, "evidence"), "ok");
-    assert.deepEqual(failed(caught), ["receipt-decision"]);
-    assert.match(check(caught, "receipt-decision").message, /^receipt: names evidence \S+, not the record's \S+$/);
+    const anchored = await paid(kept, { ...refunded, serve: rebuilt });
+    assert.deepEqual(failed(anchored), ["evidence"]);
+    assert.match(check(anchored, "evidence").message, /, not 0x\w{4}…\w{4}, the hash its Recorded event's payloadURI carries$/);
+    const unanchored = await paid(kept, { ...refunded, serve: rebuilt, fragment: "" });
+    assert.equal(status(unanchored, "evidence"), "ok");
+    assert.deepEqual(failed(unanchored), ["receipt-decision"]);
+    assert.match(check(unanchored, "receipt-decision").message, /^receipt: names evidence \S+, not the record's \S+$/);
+  });
+
+  it("holds the evidence hash to the one its Recorded event carries after #evidence= in payloadURI", async () => {
+    const record = sealed(accepted());
+    hits.length = 0;
+    const good = await verify({ ...recorded(record), offline: true });
+    assert.deepEqual(failed(good), []);
+    assert.match(check(good, "evidence").message, /is 0x\w{4}…\w{4}, as the record and its Recorded event's payloadURI state$/);
+    assert.equal(good.evidence, record.evidence);
+    assert.ok(good.payloadURI.endsWith(`#evidence=${record.evidence}`));
+    // The fragment names the hash, not another file: the host was asked for the record's path alone.
+    assert.match(check(good, "fetch").message, /^fetched the record from http:\S+\/record-\d+\.json$/);
+    assert.ok(hits.every((hit) => !hit.includes("#")));
+
+    const other = `0x${"e7".repeat(32)}`;
+    const mismatch = await verify({ ...recorded(record), offline: true, fragment: `#evidence=${other}` });
+    assert.deepEqual(failed(mismatch), ["evidence"]);
+    assert.match(check(mismatch, "evidence").message, /is 0x\w{4}…\w{4}, not 0xe7e7…e7e7, the hash its Recorded event's payloadURI carries$/);
+    assert.equal(mismatch.evidence, undefined);
+
+    // A copy served without the work whose own field disagrees, or that drops its evidence to read as an older record.
+    const kept = sealed(rejected());
+    const onKept = { ...recorded(kept), withheld: true, offline: true, fragment: `#evidence=${kept.evidence}` };
+    const copy = await verify({ ...onKept, serve: redacted(kept) });
+    assert.deepEqual(failed(copy), []);
+    assert.match(withheldNotChecked([copy]), /and so do the task's brief, levels and threshold, and its judges' answers, payments and versions, which match the evidence hash its Recorded event carries\. The rest of it, such as the question, is the host's word\.$/);
+    assert.match(withheldNotChecked([await verify({ ...onKept, serve: redacted(kept), fragment: "" })]), /The rest of it, such as the question and the second grader, is the host's word\.$/);
+    const disagrees = await verify({ ...onKept, serve: { ...redacted(kept), evidence: other } });
+    assert.deepEqual(failed(disagrees), ["evidence"]);
+    assert.match(check(disagrees, "evidence").message, /as its Recorded event's payloadURI carries it, but the record holds 0xe7e7…e7e7$/);
+    const { versions: _v, payments: _p, evidence: _e, ...older } = redacted(kept);
+    assert.deepEqual(failed(await verify({ ...onKept, serve: older })), ["evidence"]);
+  });
+
+  it("fails a location whose fragment is not an evidence hash, and reads an old one as before", async () => {
+    const record = sealed(accepted());
+    for (const fragment of ["#page=2", "#", "#evidence=0x12", `#evidence=${record.evidence}&more`, `#evidence=${record.evidence}#evidence=${record.evidence}`, `#proof=${record.evidence}`]) {
+      for (const publish of [record, grade()]) {
+        const report = await verify({ ...recorded(publish), offline: true, fragment });
+        assert.deepEqual(failed(report), ["evidence"], `${fragment} ${publish.evidence ? "new" : "old"}`);
+        assert.equal(check(report, "evidence").message, "evidence: the Recorded event's payloadURI ends in a fragment other than #evidence= and a hash");
+      }
+    }
+    // A location recorded before the hash went on chain: the record's own field is checked, as before.
+    const unanchored = await verify({ ...recorded(record), offline: true, fragment: "" });
+    assert.deepEqual(failed(unanchored), []);
+    assert.match(check(unanchored, "evidence").message, /, as recorded$/);
+    assert.equal(unanchored.evidence, undefined);
+    const old = await verify({});
+    assert.equal(check(old, "evidence"), undefined);
+    assert.equal(old.evidence, undefined);
+
+    // A data: location drops its fragment before it is decoded, as a URL's does before it is fetched.
+    const { client, ctx } = publicRecord(dataUri(JSON.stringify(BRIEF)));
+    const events = client.getContractEvents;
+    client.getContractEvents = async (query) =>
+      (await events(query)).map((event) => (query.eventName === "Recorded" ? { ...event, args: { ...event.args, payloadURI: `${event.args.payloadURI}#evidence=${record.evidence}` } } : event));
+    const fromData = await verifyDecision(ctx, 1n);
+    assert.equal(status(fromData, "record-hash"), "ok");
+    assert.deepEqual(failed(fromData), ["evidence"]);
   });
 
   it("holds the versions to the key that sent the Recorded transaction and its attestation on the log before it", async () => {
@@ -853,7 +917,7 @@ describe("evidence and receipts", () => {
     assert.deepEqual(lines(report).slice(-6), ["evidence ok", "versions ok", "receipt ok", "receipt-decision ok", "receipt-outcome ok", "receipt-payment ok"]);
     const brain = `${BRAIN.address.slice(0, 6)}…${BRAIN.address.slice(-4)}`;
     assert.equal(check(report, "receipt").message, `receipt: BrainChain's receipt, signed by ${brain}, the key that sent this decision's Recorded transaction`);
-    assert.match(check(report, "receipt-decision").message, /^receipt: names decision 1 on DecisionLog 0x2222…2222, chain 274663, and the record's evidence hash 0x\w{4}…\w{4}$/);
+    assert.match(check(report, "receipt-decision").message, /^receipt: names decision 1 on DecisionLog 0x2222…2222, chain 274663, and the evidence hash 0x\w{4}…\w{4}, as its Recorded event carries it$/);
     assert.equal(check(report, "receipt-outcome").message, "outcome: accepted, as the board paid task 7 on this decision");
     assert.equal(check(report, "receipt-payment").message, "payment: transaction 0xabab…abab on eip155:8453 moved 1000000 of 0x8335…2913 from 0x0000…00a1 to the desk's 0x0000…00D5, as the receipt and the record say");
     assert.deepEqual(report.receipt, { from: RECEIPT_URL(), job: "task", outcome: "accepted" });

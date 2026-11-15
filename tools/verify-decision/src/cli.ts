@@ -165,6 +165,7 @@ function report(reports: DecisionReport[], header: string, task?: number): never
       ...(r.withheld ? { withheld: true } : {}),
       ...(r.run ? { run: r.run } : {}),
       ...(r.panel ? { panel: r.panel } : {}),
+      ...(r.evidence ? { evidence: r.evidence } : {}),
       ...(r.receipt ? { receipt: r.receipt } : {}),
       block: r.block,
       recordedAt: r.recordedAt,
