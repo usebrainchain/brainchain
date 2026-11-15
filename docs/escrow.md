@@ -44,6 +44,8 @@ Before settling a payer's authorization, the seller calls `check(paymentInfo, am
 - a brain key is in place to decide the payment;
 - the terms have a task, a bar of at most 10,000 and the one-day margin before the capture deadline.
 
+`check` only says the payment can be held. It does not say the terms are the seller's. The seller compares the returned task, bar and `windowsClose` with its own and settles only when all three match. A payer can sign a bar of 10,000 or another seller's task, and `check` still passes: a final acceptance below that bar then voids, and the payer gets its money back for work that was accepted.
+
 The escrow's own checks still apply when the authorization settles, so the seller also simulates the `authorize` call, as the scheme asks of every collect.
 
 The scheme has a `"custom"` operator expose `charge` beside `authorize`. JudgedCapture exposes it and always reverts with `NoCharge`: a judged payment is held until it is decided, never charged up front. A facilitator relays only `authorize` for an `"escrow"` payment.
@@ -92,6 +94,7 @@ The owner is a Safe on Base. Each payment is decided by the brain key in force w
 
 - `queueBrain` announces a new key. It takes effect two days later, when anyone calls `execute`, and decides only payments authorized after that. The owner can `cancel` it before then. A key the owner names cannot capture a payment that was already held.
 - `revokeBrain(key)` stops a key at once and for good. The payments bound to it can no longer be captured or voided, and their payers reclaim at the capture deadline. Revoking the current key also stops new payments until a new key is named through the delay.
+- A routine rotation keeps the old key online until every payment bound to it has passed its capture deadline, since only that key can decide them. Revoking a key that is still queued does not cancel the queue: `cancel` it as well, or `execute` installs it and new payments stop for another two days.
 - `queueCap` changes the cap with the same two days' notice. A new cap applies to payments authorized after it.
 
 The owner cannot move a held payment, change its terms, or stop a reclaim. Ownership moves in two steps: `transferOwnership`, then `acceptOwnership` by the new owner.
