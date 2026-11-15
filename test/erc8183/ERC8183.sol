@@ -4,22 +4,30 @@ pragma solidity ^0.8.24;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import {ERC165Checker} from "@openzeppelin/contracts/utils/introspection/ERC165Checker.sol";
 
 import {IERC8183, IERC8183Hook} from "../../src/interfaces/IERC8183.sol";
 
+/// @notice The reference payout receiver callback (contracts/IDisburser.sol at the same commit).
+interface IDisburser is IERC165 {
+    function onDisbursement(uint256 jobId, bytes4 selector, address token, uint256 amount, bytes calldata data) external;
+}
+
 /// @notice The ERC-8183 reference job contract (github.com/erc-8183/base-contracts
 /// at 142e669, contracts/ERC8183.sol) reduced to its job lifecycle for tests:
-/// the same checks, state changes, fees, hook calls and hook data, and the
-/// one-hour evaluation grace period. Left out: milestone claims, payout
-/// receivers, pausing, upgrades and signed authorizations. Admin roles are a
-/// single admin address.
+/// the same checks, state changes, fees, hook calls and hook data, payout
+/// receivers and their callback in the same order, pausing, hook detaching and
+/// the one-hour evaluation grace period. Left out: milestone claims, the
+/// admin's emergency withdrawal while paused, upgrades and signed
+/// authorizations. Admin roles are a single admin address.
 contract ERC8183 is IERC8183, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     uint256 public constant EVALUATION_GRACE_PERIOD = 1 hours;
 
     address public admin;
+    bool public paused;
     uint256 public platformFeeBP;
     address public platformTreasury;
     uint256 public evaluatorFeeBP;
@@ -37,6 +45,8 @@ contract ERC8183 is IERC8183, ReentrancyGuard {
         address hook
     );
     event BudgetSet(uint256 indexed jobId, address indexed token, uint256 amount);
+    event PayoutReceiverSet(uint256 indexed jobId, address indexed payoutReceiver);
+    event Disbursed(uint256 indexed jobId, address indexed receiver, bytes4 selector, uint256 amount);
     event JobFunded(uint256 indexed jobId, address indexed client, uint256 amount);
     event JobSubmitted(uint256 indexed jobId, address indexed provider, bytes32 deliverable);
     event JobCompleted(uint256 indexed jobId, address indexed evaluator, bytes32 reason);
@@ -50,6 +60,8 @@ contract ERC8183 is IERC8183, ReentrancyGuard {
 
     error InvalidJob();
     error InvalidHook();
+    error InvalidReceiver();
+    error EnforcedPause();
     error WrongStatus();
     error Unauthorized();
     error ZeroAddress();
@@ -75,6 +87,19 @@ contract ERC8183 is IERC8183, ReentrancyGuard {
     modifier onlyAdmin() {
         if (msg.sender != admin) revert Unauthorized();
         _;
+    }
+
+    modifier whenNotPaused() {
+        if (paused) revert EnforcedPause();
+        _;
+    }
+
+    function pause() external onlyAdmin {
+        paused = true;
+    }
+
+    function unpause() external onlyAdmin {
+        paused = false;
     }
 
     function setPlatformFee(uint256 feeBP_, address treasury_) external onlyAdmin {
@@ -118,7 +143,7 @@ contract ERC8183 is IERC8183, ReentrancyGuard {
         string calldata description,
         address hook,
         uint256 providerAgentId
-    ) external nonReentrant returns (uint256) {
+    ) external whenNotPaused nonReentrant returns (uint256) {
         if (expiredAt <= block.timestamp + 5 minutes) revert ExpiryTooShort();
         if (msg.sender == provider) revert ClientCannotBeProvider();
         if (evaluator == address(0)) revert ZeroAddress();
@@ -141,7 +166,22 @@ contract ERC8183 is IERC8183, ReentrancyGuard {
         return jobId;
     }
 
-    function setBudget(uint256 jobId, address token, uint256 amount, bytes calldata optParams) external nonReentrant {
+    function setPayoutReceiver(uint256 jobId, address payoutReceiver) external whenNotPaused nonReentrant {
+        Job storage job = jobs[jobId];
+        if (jobId == 0 || jobId > jobCounter) revert InvalidJob();
+        if (job.status != JobStatus.Open) revert WrongStatus();
+        if (block.timestamp >= job.expiredAt) revert WrongStatus();
+        if (msg.sender != job.provider) revert Unauthorized();
+        _validatePayoutReceiver(payoutReceiver, job.paymentToken);
+        job.payoutReceiver = payoutReceiver;
+        emit PayoutReceiverSet(jobId, payoutReceiver);
+    }
+
+    function setBudget(uint256 jobId, address token, uint256 amount, bytes calldata optParams)
+        external
+        whenNotPaused
+        nonReentrant
+    {
         Job storage job = jobs[jobId];
         if (jobId == 0 || jobId > jobCounter) revert InvalidJob();
         if (job.status != JobStatus.Open) revert WrongStatus();
@@ -149,6 +189,7 @@ contract ERC8183 is IERC8183, ReentrancyGuard {
         if (msg.sender != job.provider) revert Unauthorized();
         if (token == address(0)) revert ZeroAddress();
         if (!allowedPaymentTokens[token]) revert PaymentTokenNotAllowed();
+        _validatePayoutReceiver(job.payoutReceiver, token);
 
         bytes memory data = abi.encode(msg.sender, token, amount, optParams);
         _beforeHook(job.hook, jobId, this.setBudget.selector, data);
@@ -160,6 +201,7 @@ contract ERC8183 is IERC8183, ReentrancyGuard {
 
     function fund(uint256 jobId, address expectedToken, uint256 expectedBudget, bytes calldata optParams)
         external
+        whenNotPaused
         nonReentrant
     {
         Job storage job = jobs[jobId];
@@ -184,7 +226,7 @@ contract ERC8183 is IERC8183, ReentrancyGuard {
         _afterHook(job.hook, jobId, this.fund.selector, data);
     }
 
-    function submit(uint256 jobId, bytes32 deliverable, bytes calldata optParams) external nonReentrant {
+    function submit(uint256 jobId, bytes32 deliverable, bytes calldata optParams) external whenNotPaused nonReentrant {
         Job storage job = jobs[jobId];
         if (jobId == 0 || jobId > jobCounter) revert InvalidJob();
         if (job.status != JobStatus.Funded && (job.status != JobStatus.Open || job.budget > 0)) revert WrongStatus();
@@ -199,7 +241,7 @@ contract ERC8183 is IERC8183, ReentrancyGuard {
         _afterHook(job.hook, jobId, this.submit.selector, data);
     }
 
-    function complete(uint256 jobId, bytes32 reason, bytes calldata optParams) external nonReentrant {
+    function complete(uint256 jobId, bytes32 reason, bytes calldata optParams) external whenNotPaused nonReentrant {
         Job storage job = jobs[jobId];
         if (jobId == 0 || jobId > jobCounter) revert InvalidJob();
         if (job.status != JobStatus.Submitted) revert WrongStatus();
@@ -222,15 +264,12 @@ contract ERC8183 is IERC8183, ReentrancyGuard {
             token.safeTransfer(job.evaluator, evalFee);
             emit EvaluatorFeePaid(jobId, job.evaluator, evalFee);
         }
-        if (net > 0) {
-            token.safeTransfer(job.provider, net);
-            emit PaymentReleased(jobId, job.provider, net);
-        }
+        _payout(jobId, job, net, this.complete.selector, optParams);
         emit JobCompleted(jobId, msg.sender, reason);
         _afterHook(job.hook, jobId, this.complete.selector, data);
     }
 
-    function reject(uint256 jobId, bytes32 reason, bytes calldata optParams) external nonReentrant {
+    function reject(uint256 jobId, bytes32 reason, bytes calldata optParams) external whenNotPaused nonReentrant {
         Job storage job = jobs[jobId];
         if (jobId == 0 || jobId > jobCounter) revert InvalidJob();
         if (job.status == JobStatus.Open) {
@@ -254,7 +293,7 @@ contract ERC8183 is IERC8183, ReentrancyGuard {
         _afterHook(job.hook, jobId, this.reject.selector, data);
     }
 
-    function claimRefund(uint256 jobId) external nonReentrant {
+    function claimRefund(uint256 jobId) external whenNotPaused nonReentrant {
         Job storage job = jobs[jobId];
         if (jobId == 0 || jobId > jobCounter) revert InvalidJob();
         if (job.status != JobStatus.Open && job.status != JobStatus.Funded && job.status != JobStatus.Submitted) {
@@ -278,6 +317,24 @@ contract ERC8183 is IERC8183, ReentrancyGuard {
 
     function getJob(uint256 jobId) external view returns (Job memory) {
         return jobs[jobId];
+    }
+
+    /// @dev As in the reference: the receiver's callback runs after the job is
+    /// Completed and before the hook's `afterAction`.
+    function _payout(uint256 jobId, Job storage job, uint256 net, bytes4 selector, bytes calldata optParams) internal {
+        address recipient = job.payoutReceiver == address(0) ? job.provider : job.payoutReceiver;
+        if (net == 0) return;
+        IERC20(job.paymentToken).safeTransfer(recipient, net);
+        emit PaymentReleased(jobId, recipient, net);
+        if (recipient.code.length > 0 && ERC165Checker.supportsInterface(recipient, type(IDisburser).interfaceId)) {
+            IDisburser(recipient).onDisbursement(jobId, selector, job.paymentToken, net, optParams);
+            emit Disbursed(jobId, recipient, selector, net);
+        }
+    }
+
+    function _validatePayoutReceiver(address payoutReceiver, address paymentToken) internal view {
+        if (payoutReceiver == address(this)) revert InvalidReceiver();
+        if (payoutReceiver != address(0) && payoutReceiver == paymentToken) revert InvalidReceiver();
     }
 
     function _beforeHook(address hook, uint256 jobId, bytes4 selector, bytes memory data) internal {
