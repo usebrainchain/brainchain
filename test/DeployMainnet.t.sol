@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 
 import {DeployMainnet} from "../script/DeployMainnet.s.sol";
+import {PayoutPreferences} from "../src/PayoutPreferences.sol";
 import {TestBRAIN} from "../src/testnet/TestBRAIN.sol";
 import {MockERC20} from "./MockERC20.sol";
 
@@ -44,7 +45,13 @@ contract DeployMainnetTest is Test {
         script.deploy();
 
         vm.setEnv("BRAIN_TOKEN", vm.toString(address(brainToken)));
+        PayoutPreferences preferences = new PayoutPreferences();
+        vm.setEnv("PAYOUT_PREFERENCES", vm.toString(address(preferences)));
         DeployMainnet.Deployment memory d = script.deploy();
+
+        assertEq(address(d.board.payouts()), address(preferences));
+        assertEq(d.board.payoutHouse(), address(d.executor));
+        assertEq(d.board.owner(), address(d.executor));
 
         assertEq(address(d.board.staking()), address(d.staking));
         assertTrue(d.staking.slashers(address(d.board)));

@@ -14,6 +14,7 @@ import {TaskBoard} from "../src/TaskBoard.sol";
 import {IDecisionExecutor, ProposalBonds} from "../src/flywheel/ProposalBonds.sol";
 import {WorkerStaking} from "../src/flywheel/WorkerStaking.sol";
 import {GuardianGate, IGuardedBoard, IGuardedExecutor} from "../src/GuardianGate.sol";
+import {PayoutPreferences} from "../src/PayoutPreferences.sol";
 
 /// @notice Deploys the BrainChain v3 core on mainnet (chain 274663), with open
 /// workers: any agent can stake $BRAIN in WorkerStaking and be hired on the
@@ -49,7 +50,10 @@ import {GuardianGate, IGuardedBoard, IGuardedExecutor} from "../src/GuardianGate
 /// 3 days), optional SLASH_BPS (share of stake burned when a worker loses a
 /// dispute, default 2000), optional BOND (whole $BRAIN bonded per proposal,
 /// default 250000), optional BOND_DECIDE_WITHIN (seconds Jev has to decide a
-/// proposal before its bond is returned, default 7 days).
+/// proposal before its bond is returned, default 7 days), optional
+/// PAYOUT_PREFERENCES (the payout registry the board reads at delivery; the
+/// executor is the house paid in a worker's place, and the brain pays the
+/// worker on Robinhood Chain).
 contract DeployMainnet is Script {
     struct Config {
         address safe;
@@ -66,6 +70,7 @@ contract DeployMainnet is Script {
         uint64 decideWithin;
         /// The agent key that may veto and pause through the guardian gate; the Safe keeps every guardian power.
         address watcher;
+        PayoutPreferences payouts;
     }
 
     struct Deployment {
@@ -117,6 +122,7 @@ contract DeployMainnet is Script {
         c.bond = SafeCast.toUint128(vm.envOr("BOND", uint256(250_000)) * 1e18);
         c.decideWithin = SafeCast.toUint64(vm.envOr("BOND_DECIDE_WITHIN", uint256(7 days)));
         c.watcher = vm.envAddress("WATCHER");
+        c.payouts = PayoutPreferences(vm.envOr("PAYOUT_PREFERENCES", address(0)));
         // Every USDG amount below is in 6-decimal units, every $BRAIN amount in 18.
         require(address(c.usdg).code.length > 0, "USDG has no code on this chain");
         require(IERC20Metadata(address(c.usdg)).decimals() == 6, "USDG is not a 6-decimal token");
@@ -178,6 +184,7 @@ contract DeployMainnet is Script {
         d.registry.setModel(keccak256("gemini"), c.workers[2], 0.25e6, true);
         d.registry.setModel(keccak256("grok"), c.workers[3], 0.3e6, true);
         d.registry.setModel(keccak256("deepseek"), c.workers[4], 0.1e6, true);
+        if (address(c.payouts) != address(0)) d.board.setPayouts(c.payouts, address(d.executor));
         d.registry.setOwner(address(d.executor));
         d.board.setOwner(address(d.executor));
         // The stake minimum, the bond and the slash share are priced in a token whose value moves,
@@ -207,6 +214,11 @@ contract DeployMainnet is Script {
         (uint64 appealWindow, uint16 appealBondBps) = d.board.appealConfig();
         require(appealWindow == 24 hours && appealBondBps == 2_500, "the appeal terms are mis-set");
         require(d.board.staking() == d.staking, "the board hires from another staking contract");
+        require(
+            d.board.payouts() == c.payouts
+                && d.board.payoutHouse() == (address(c.payouts) == address(0) ? address(0) : address(d.executor)),
+            "the payout registry or house is mis-set"
+        );
         require(d.staking.slashers(address(d.board)), "the board cannot slash or hold stakes");
         require(
             d.staking.token() == c.brainToken && d.bonds.token() == c.brainToken, "staking or bonds take another token"
