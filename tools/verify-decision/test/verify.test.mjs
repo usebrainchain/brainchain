@@ -8,12 +8,26 @@ import { createServer } from "node:http";
 import { after, before, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { createPublicClient, encodeAbiParameters, encodeFunctionData, http, keccak256, toBytes, toHex } from "viem";
+import {
+  createPublicClient,
+  decodeFunctionData,
+  encodeAbiParameters,
+  encodeEventTopics,
+  encodeFunctionData,
+  encodeFunctionResult,
+  http,
+  keccak256,
+  pad,
+  parseAbi,
+  parseAbiParameters,
+  toBytes,
+  toHex,
+} from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 import { taskBoardAbi } from "../dist/abi.js";
 import { canonicalStringify } from "../dist/canonical.js";
-import { clean, outcomeOf, readReceipt, receiptDecision, verifyDecision, withheldNotChecked } from "../dist/verify.js";
+import { clean, entriesOf, entryName, entryOutcome, outcomeOf, readReceipt, receiptDecision, REPUTATION, verifyDecision, verifyEntry, withheldNotChecked } from "../dist/verify.js";
 
 const YES = `0x${"0".repeat(63)}1`;
 const NO = `0x${"0".repeat(64)}`;
@@ -97,10 +111,10 @@ before(async () => {
 after(() => server.close());
 
 /**
- * One decision against a stub chain and the local host. `publish` is the original
- * record, which the chain's hashes commit; `serve` is what the host sends.
+ * A stub chain holding one decision, served by the local host. `publish` is the
+ * original record, which the chain's hashes commit; `serve` is what the host sends.
  */
-async function verify({
+function onChain({
   kind = 2,
   subject = taskSubject(7n),
   answer = YES,
@@ -121,9 +135,11 @@ async function verify({
   ruled = [],
   balances,
   offline,
-  receipt,
   reads = [],
   fragment = publish.evidence ? `#evidence=${publish.evidence}` : "",
+  sets = network.sets,
+  hired,
+  hiredAt = 1793000000n,
 }) {
   const original = JSON.stringify(publish);
   const served = serve === undefined ? original : typeof serve === "string" ? serve : JSON.stringify(serve);
@@ -137,8 +153,10 @@ async function verify({
       reads.push(`getTransaction ${hash}`);
       return { from: sender };
     },
+    getBlock: async () => ({ timestamp: hiredAt }),
     readContract: async ({ functionName, address }) => {
       if (functionName === "brain") return brain;
+      if (functionName === "count") return 1n;
       if (functionName === "config") return [5000, bar, 7000, 0n, 0n, 0n, 0n, 0n, 0n];
       if (functionName === "changeThresholdBps") return 7000;
       if (functionName === "getChange") return { eta: 1793000000n, executed: false, vetoed: false };
@@ -152,12 +170,15 @@ async function verify({
       if (eventName === "WorkGraded" && graded) return [{ args: { decisionId: 1n, accepted: answer === YES && bps >= on.gradeThresholdBps } }];
       if (eventName === "Ruled") return ruled.map((decisionId) => ({ args: { decisionId, paid: false, confident: true } }));
       if (eventName === "Queued" && queued) return [{ args: { changeId: 1n, target: set.board, data: queued } }];
+      if (eventName === "WorkerHired" && hired) return [{ args: { id: args.id, model: hired, decisionId: 1n }, blockNumber: 800n }];
       if (eventName === "BrainAttested") return attested.filter((a) => a.blockNumber <= toBlock && args.brain === sender).map((a) => ({ args: { brain: sender, image: a.image, app: a.app }, blockNumber: a.blockNumber }));
       return [];
     },
   };
-  return verifyDecision({ client, network, set, briefs: new Map(), offline, balances }, 1n, receipt);
+  return { client, network: { ...network, sets }, set, briefs: new Map(), offline, balances };
 }
+
+const verify = (options) => verifyDecision(onChain(options), 1n, options.receipt);
 
 const check = (report, name) => report.checks.find((c) => c.name === name);
 const status = (report, name) => check(report, name)?.status;
@@ -1058,6 +1079,205 @@ describe("evidence and receipts", () => {
     const hire = { ...sealed(accepted()), kind: "hire" };
     assert.equal(check(await verify({ kind: 1, publish: hire }), "receipt"), undefined);
   });
+
+  describe("reputation entries", () => {
+    const [WRITER, FORMER] = REPUTATION.writers;
+    const CLAUDE = keccak256(toBytes("claude"));
+    const GPT = keccak256(toBytes("gpt"));
+    const WORKER = "0x00000000000000000000000000000000000000C7";
+    const padded = (address) => `0x${"0".repeat(24)}${address.slice(2).toLowerCase()}`;
+    const OTHER_SET = { key: "u", release: "3.5.0", fromBlock: 1, board: "0x5555555555555555555555555555555555555555", log: "0x6666666666666666666666666666666666666666", executor: "0x7777777777777777777777777777777777777777" };
+    const pathOf = (receipt) => `/receipts/${receipt.payload.decisionLog.toLowerCase()}/${receipt.payload.decision}.json`;
+    /** receiptJson: the brain serves each receipt in canonical JSON. */
+    const serve = (receipt, body = canonicalStringify(receipt)) => pages.set(pathOf(receipt), { body });
+
+    /** giveFeedback as the brain's reputation.ts calls it, and the NewFeedback event the registry emits for it: a receipt's address and hash for a task an agent paid the desk for, the task page and a zero hash for any other. */
+    function entry({ agentId = 20424n, index = 1n, value = 100n, task = 7n, board = set.board, receipt, client = WRITER, block = 20_000_000n, endpoint = `https://usebrainchain.com/task?id=${task}&board=${board}` } = {}) {
+      const [feedbackURI, feedbackHash] = receipt ? [`${base}${pathOf(receipt)}`, keccak256(toBytes(canonicalStringify(receipt)))] : [endpoint, NO];
+      return { agentId, clientAddress: client, feedbackIndex: index, value, valueDecimals: 0, tag1: "brainchain", tag2: "task", endpoint, feedbackURI, feedbackHash, block, transaction: `0x${"e1".repeat(32)}` };
+    }
+
+    /**
+     * Robinhood Chain: the reputation registry holding `entries`, and the identity
+     * registry's transfers ({ from, to }) and agentWallet changes ({ wallet }) for
+     * each agent. Block n is at 1792000000 + n seconds, so block 1000000 is the
+     * moment the stub board hires.
+     */
+    function robinhood(entries = [], identity = []) {
+      const spans = [];
+      const client = {
+        getBlockNumber: async () => 25_000_000n,
+        getBlock: async ({ blockNumber }) => ({ timestamp: 1_792_000_000n + blockNumber }),
+        readContract: async ({ functionName, args: [agentId, writer, index] }) => {
+          assert.equal(functionName, "readFeedback");
+          const f = entries.find((e) => e.agentId === agentId && e.clientAddress === writer && e.feedbackIndex === index);
+          return [f.value, f.valueDecimals, f.tag1, f.tag2, false];
+        },
+        getContractEvents: async ({ eventName, args, fromBlock, toBlock }) => {
+          spans.push(toBlock - fromBlock + 1n);
+          const within = ({ block }) => block >= fromBlock && block <= toBlock;
+          if (eventName === "NewFeedback") {
+            return entries
+              .filter((e) => e.agentId === args.agentId && e.clientAddress === args.clientAddress && within(e))
+              .map(({ block, transaction, ...e }) => ({ args: { ...e, indexedTag1: keccak256(toBytes(e.tag1)) }, blockNumber: block, transactionHash: transaction }));
+          }
+          const transfers = eventName === "Transfer";
+          return identity
+            .filter((e) => e.agentId === (transfers ? args.tokenId : args.agentId) && "to" in e === transfers && within(e))
+            .map((e, logIndex) => ({ args: transfers ? { from: e.from, to: e.to, tokenId: e.agentId } : { agentId: e.agentId, metadataKey: "agentWallet", metadataValue: e.wallet }, blockNumber: e.block, logIndex }));
+        },
+      };
+      return { registry: { ...REPUTATION, client, fromBlock: 1_000_000n }, spans };
+    }
+
+    /** Task 7, paid on decision 1 for the panel's accepted grade, which an agent paid the desk for. */
+    async function paidTask(chain = {}) {
+      const record = sealed(accepted());
+      const receipt = await issued(record);
+      serve(receipt);
+      const ctx = onChain({ ...recorded(record), task: { status: Status.Paid, accepted: true }, balances: moved(), hired: CLAUDE, sets: [set], ...chain });
+      return { record, receipt, ctx };
+    }
+    const checked = async (ctx, f, identity) => verifyEntry(ctx, robinhood([f], identity).registry, f);
+
+    it("checks a good entry through its receipt to the decision, the payment, and the task, value and worker on the board", async () => {
+      const { receipt, ctx } = await paidTask();
+      const report = await checked(ctx, entry({ receipt }));
+      assert.deepEqual(failed(report), []);
+      assert.equal(entryOutcome([report]), "match");
+      const names = report.checks.map((c) => c.name);
+      assert.deepEqual(names.slice(0, 5), ["entry", "endpoint", "feedback-hash", "entry-receipt", "read"]);
+      assert.deepEqual(names.slice(-7), ["receipt", "receipt-decision", "receipt-outcome", "receipt-payment", "entry-task", "entry-value", "entry-worker"]);
+      assert.ok(names.includes("record-hash") && names.includes("evidence"));
+      assert.equal(check(report, "entry").message, `entry: value 100 for agent 20424 under brainchain and task, written by 0x97D5…b952 in block 20000000, as the registry holds it`);
+      assert.match(check(report, "feedback-hash").message, /^feedback hash: the receipt at http:\S+\/receipts\/0x2222222222222222222222222222222222222222\/1\.json hashes to feedbackHash 0x\w{4}…\w{4}$/);
+      assert.equal(check(report, "entry-receipt").message, "receipt: names decision 1 on DecisionLog 0x2222…2222, contract set t, and is served at that decision's address");
+      assert.equal(check(report, "entry-task").message, "task: decision 1 is about task 7 on board 0x1111…1111, the task the endpoint names");
+      assert.equal(check(report, "entry-value").message, "value: 100, as the board paid task 7 and the receipt says accepted");
+      assert.equal(check(report, "entry-worker").message, `worker: the board hired claude for task 7 as keccak256("claude"), and agent 20424 is the house worker claude`);
+      assert.deepEqual([report.entry, report.task, report.set, report.decision.id, report.decision.set], ["20424:1", 7, "t", 1, "t"]);
+      assert.equal(report.decision.receipt.from, `${base}${pathOf(receipt)}`);
+    });
+
+    it("fails a receipt whose bytes miss feedbackHash, and checks nothing it names", async () => {
+      const { receipt, ctx } = await paidTask();
+      serve(receipt, canonicalStringify(receipt).replace('"amount":"1000000"', '"amount":"1000001"'));
+      const report = await checked(ctx, entry({ receipt }));
+      assert.deepEqual(failed(report), ["feedback-hash"]);
+      assert.match(check(report, "feedback-hash").message, /hashes to 0x\w{4}…\w{4}, not to feedbackHash 0x\w{4}…\w{4}$/);
+      assert.equal(check(report, "receipt"), undefined);
+      assert.equal(report.decision, undefined);
+      assert.equal(check(report, "entry-value").message, "value: 100, as the board paid task 7");
+      assert.equal(entryOutcome([report]), "mismatch");
+
+      // Served the same bytes as a pretty-printed copy, the receipt misses its hash too: the entry commits to the canonical text.
+      serve(receipt, JSON.stringify(receipt, null, 2));
+      assert.deepEqual(failed(await checked(ctx, entry({ receipt }))), ["feedback-hash"]);
+    });
+
+    it("fails a value that contradicts the outcome the board and the receipt state", async () => {
+      const { receipt, ctx } = await paidTask();
+      const zero = await checked(ctx, entry({ receipt, value: 0n }));
+      assert.deepEqual(failed(zero), ["entry-value"]);
+      assert.equal(check(zero, "entry-value").message, "value: 0, but the board paid task 7, which BrainChain writes as 100 and the receipt says accepted");
+
+      const refunded = onChain({ task: { status: Status.Refunded }, hired: CLAUDE, sets: [set] });
+      const hundred = await checked(refunded, entry({ value: 100n }));
+      assert.deepEqual(failed(hundred), ["entry-value"]);
+      assert.equal(check(hundred, "entry-value").message, "value: 100, but the board refunded task 7, which BrainChain writes as 0");
+      assert.deepEqual(failed(await checked(refunded, entry({ value: 0n }))), []);
+
+      const open = await checked(onChain({ task: { status: Status.Graded }, hired: CLAUDE, sets: [set] }), entry());
+      assert.match(check(open, "entry-value").message, /^value: task 7 is graded\. The board has neither paid nor refunded it/);
+    });
+
+    it("fails a worker that is not the agent: another house model, or an address that did not hold the agent when it was hired", async () => {
+      const { receipt, ctx } = await paidTask({ hired: GPT });
+      const house = await checked(ctx, entry({ receipt }));
+      assert.deepEqual(failed(house), ["entry-worker"]);
+      assert.equal(check(house, "entry-worker").message, "worker: agent 20424 is the house worker claude, and the board hired gpt, house agent 20425 for task 7");
+
+      const outside = onChain({ task: { status: Status.Paid }, hired: padded(WORKER), sets: [set] });
+      const agent = (identity) => checked(outside, entry({ agentId: 501n }), identity.map((e) => ({ agentId: 501n, ...e })));
+      const minted = { block: 500_000n, from: "0x0000000000000000000000000000000000000000" };
+      const owned = await agent([{ ...minted, to: WORKER }]);
+      assert.deepEqual(failed(owned), []);
+      assert.equal(check(owned, "entry-worker").message, "worker: the board hired 0x0000…00C7 for task 7, which owned agent 501 on the identity registry when it was hired");
+      const wallet = await agent([{ ...minted, to: STRANGER }, { block: 600_000n, wallet: WORKER.toLowerCase() }]);
+      assert.match(check(wallet, "entry-worker").message, /which was the registered wallet of agent 501/);
+
+      for (const [identity, holder] of [
+        [[{ ...minted, to: WORKER }, { block: 900_000n, from: WORKER, to: STRANGER }], "0x4444…4444 owned it"],
+        [[{ ...minted, to: STRANGER }, { block: 600_000n, wallet: WORKER }, { block: 900_000n, from: STRANGER, to: OTHER.address }], `${OTHER.address.slice(0, 6)}…${OTHER.address.slice(-4)} owned it`],
+        [[{ ...minted, to: STRANGER }, { block: 1_200_000n, wallet: WORKER }], "0x4444…4444 owned it"],
+        [[], "nobody held it"],
+      ]) {
+        const report = await agent(identity);
+        assert.deepEqual(failed(report), ["entry-worker"], holder);
+        assert.equal(check(report, "entry-worker").message, `worker: the board hired 0x0000…00C7 for task 7, but when it was hired ${holder} on the identity registry`);
+      }
+      const asOutside = await checked(onChain({ task: { status: Status.Paid }, hired: CLAUDE, sets: [set] }), entry({ agentId: 501n }));
+      assert.equal(check(asOutside, "entry-worker").message, "worker: the board hired claude, house agent 20424 for task 7, which no outside agent can be");
+    });
+
+    it("reports a zero-hash entry as no receipt, and still holds its value and worker to the board", async () => {
+      const report = await checked(onChain({ task: { status: Status.Paid }, hired: CLAUDE, sets: [set] }), entry());
+      assert.deepEqual(lines(report), ["entry ok", "endpoint ok", "feedback-hash skip", "entry-value ok", "entry-worker ok"]);
+      assert.match(check(report, "feedback-hash").message, /^no receipt: the entry's feedbackHash is zero\./);
+      assert.equal(entryOutcome([report]), "no-receipt");
+      assert.equal(report.decision, undefined);
+
+      // Entries from before 5 November name the task alone, which no board's task ids pin down.
+      const old = await checked(onChain({ sets: [set] }), entry({ endpoint: "https://usebrainchain.com/task?id=9" }));
+      assert.deepEqual(lines(old), ["entry ok", "endpoint skip", "feedback-hash skip"]);
+      assert.equal(entryOutcome([old]), "no-receipt");
+      assert.equal(entryOutcome([old, report]), "no-receipt");
+
+      const mislabelled = { ...entry(), tag2: "grade" };
+      assert.deepEqual(failed(await verifyEntry(onChain({ task: { status: Status.Paid }, hired: CLAUDE, sets: [set] }), robinhood([mislabelled]).registry, mislabelled)), ["entry"]);
+    });
+
+    it("fails an entry for a decision on another board than the one its endpoint names", async () => {
+      const { receipt, ctx } = await paidTask({ sets: [set, OTHER_SET] });
+      const report = await checked(ctx, entry({ receipt, board: OTHER_SET.board }));
+      assert.deepEqual(failed(report), ["entry-task"]);
+      assert.equal(check(report, "endpoint").message, "endpoint: task 7 on board 0x5555…5555, contract set u");
+      assert.equal(check(report, "entry-task").message, "task: decision 1 on DecisionLog 0x2222…2222 is not about task 7 on board 0x5555…5555, the task the endpoint names");
+    });
+
+    it("fails a receipt for a log the tool does not carry, or served at another decision's address", async () => {
+      const { record, ctx } = await paidTask();
+      const stranger = await issued(record, { decisionLog: STRANGER });
+      serve(stranger);
+      const unknown = await checked(ctx, entry({ receipt: stranger }));
+      assert.deepEqual(failed(unknown), ["entry-receipt"]);
+      assert.equal(check(unknown, "entry-receipt").message, "receipt: names DecisionLog 0x4444…4444, none of the contract sets on test");
+
+      const later = await issued(record, { decision: "2" });
+      serve(later);
+      const f = { ...entry({ receipt: later }), feedbackURI: `${base}/receipts/${set.log.toLowerCase()}/1.json` };
+      pages.set(new URL(f.feedbackURI).pathname, { body: canonicalStringify(later) });
+      const elsewhere = await checked(ctx, f);
+      assert.deepEqual(failed(elsewhere), ["entry-receipt"]);
+      assert.match(check(elsewhere, "entry-receipt").message, /^receipt: names decision 2, and DecisionLog 0x2222…2222 holds decisions 1 to 1 and decision 2 on DecisionLog 0x2222…2222, whose receipt the brain serves at \/receipts\/0x2222222222222222222222222222222222222222\/2\.json, not at /);
+    });
+
+    it("lists an agent's entries from BrainChain's writers alone, oldest first, in spans the registry's RPC reads", async () => {
+      const entries = [
+        entry({ index: 2n, block: 24_000_000n }),
+        entry({ client: FORMER, index: 1n, block: 2_000_000n }),
+        entry({ index: 1n, block: 12_000_000n }),
+        entry({ agentId: 20425n, block: 13_000_000n }),
+        entry({ client: STRANGER, block: 3_000_000n }),
+      ];
+      const { registry, spans } = robinhood(entries);
+      const found = await entriesOf(registry, 20424n);
+      assert.deepEqual(found.map((f) => entryName(registry, f)), [`20424:${FORMER}:1`, "20424:1", "20424:2"]);
+      assert.deepEqual(found[1], entries[2]);
+      assert.ok(spans.every((span) => span <= 10_000_000n));
+      assert.deepEqual((await entriesOf(registry, 20424n, [FORMER])).map((f) => f.feedbackIndex), [1n]);
+    });
+  });
 });
 
 describe("briefs", () => {
@@ -1180,14 +1400,14 @@ describe("the command line", () => {
   const MAINNET = 274663;
   const urlOf = (rpc) => `http://127.0.0.1:${rpc.address().port}`;
 
-  /** Answers as `chainId` with an empty DecisionLog, so the CLI names the set it chose and stops. */
-  async function stubRpc(chainId) {
+  /** Answers as `chainId`, and with `answer` or an empty DecisionLog, so the CLI names the set it chose and stops. */
+  async function stubRpc(chainId, answer = () => `0x${"0".repeat(64)}`) {
     const rpc = createServer((request, response) => {
       let body = "";
       request.on("data", (chunk) => (body += chunk));
       request.on("end", () => {
-        const { id, method } = JSON.parse(body);
-        const result = method === "eth_chainId" ? toHex(chainId) : `0x${"0".repeat(64)}`;
+        const { id, method, params } = JSON.parse(body);
+        const result = method === "eth_chainId" ? toHex(chainId) : answer(method, params);
         response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id, result }));
       });
     });
@@ -1244,7 +1464,10 @@ describe("the command line", () => {
   });
 
   it("reports bad arguments as one JSON object with --json, and as text without it", () => {
-    for (const args of [[], ["mainnet"], ["mainnet", "--task"], ["mainnet", "abc"], ["mainnet", "1", "2"], ["mainnet", "1", "--nope"], ["mainnet", "1", "--rpc", "ftp://x"], ["nowhere", "1"], ["mainnet", "1", "--set", "v2"], ["mainnet", "1", "--set", "nope"], ["mainnet", "1", "--receipt"], ["mainnet", "--task", "1", "--receipt", "r.json"]]) {
+    for (const args of [
+      [], ["mainnet"], ["mainnet", "--task"], ["mainnet", "abc"], ["mainnet", "1", "2"], ["mainnet", "1", "--nope"], ["mainnet", "1", "--rpc", "ftp://x"], ["nowhere", "1"], ["mainnet", "1", "--set", "v2"], ["mainnet", "1", "--set", "nope"], ["mainnet", "1", "--receipt"], ["mainnet", "--task", "1", "--receipt", "r.json"],
+      ["mainnet", "--entry", "20424"], ["mainnet", "--entry", "20424:0"], ["mainnet", "--entry", `20424:${STRANGER}:1`], ["testnet", "--entry", "20424:1"], ["mainnet", "1", "--entry", "20424:1"], ["mainnet", "--entry", "20424:1", "--agent", "20424"], ["mainnet", "--agent", "x"], ["mainnet", "--agent", "1", "--set", "v4"], ["mainnet", "--agent", "1", "--offline"], ["mainnet", "--agent", "1", "--registry-rpc", "ftp://x"], ["mainnet", "1", "--registry-rpc", "https://x.invalid"],
+    ]) {
       const asJson = run(...args, "--json");
       assert.equal(asJson.status, 2, args.join(" "));
       assert.equal(asJson.stderr, "", args.join(" "));
@@ -1290,6 +1513,87 @@ describe("the command line", () => {
       assert.match(onlyError(stdout), /^The RPC serves chain 274630, not /);
     } finally {
       rpc.close();
+    }
+  });
+
+  it("checks an entry, and every entry for an agent, from both registries over JSON-RPC", async () => {
+    // EIP-8004's NewFeedback and readFeedback, and the 3.5.0 board an entry from 5 November on names.
+    const registryAbi = parseAbi([
+      "event NewFeedback(uint256 indexed agentId, address indexed clientAddress, uint64 feedbackIndex, int128 value, uint8 valueDecimals, string indexed indexedTag1, string tag1, string tag2, string endpoint, string feedbackURI, bytes32 feedbackHash)",
+      "function readFeedback(uint256 agentId, address clientAddress, uint64 feedbackIndex) view returns (int128 value, uint8 valueDecimals, string tag1, string tag2, bool isRevoked)",
+    ]);
+    const [WRITER, FORMER] = REPUTATION.writers;
+    const BOARD = "0x44b8464342Bbfb9B565FAE494DfDefa37D33A211";
+    const entries = [
+      { clientAddress: FORMER, endpoint: "https://usebrainchain.com/task?id=9", block: 103_400_000n },
+      { clientAddress: WRITER, endpoint: `https://usebrainchain.com/task?id=49&board=${BOARD}`, block: 114_000_000n },
+    ].map((e) => ({ agentId: 20424n, feedbackIndex: 1n, value: 100n, tag1: "brainchain", tag2: "task", feedbackURI: e.endpoint, feedbackHash: NO, ...e }));
+    const log = (address, topics, data, block) => ({ address, topics, data, blockNumber: toHex(block), blockHash: `0x${"ab".repeat(32)}`, transactionHash: `0x${"e1".repeat(32)}`, transactionIndex: "0x0", logIndex: "0x0", removed: false });
+    const robinhood = await stubRpc(4663, (method, [params] = []) => {
+      if (method === "eth_blockNumber") return toHex(115_000_000n);
+      if (method === "eth_call") {
+        const { args } = decodeFunctionData({ abi: registryAbi, data: params.data });
+        const e = entries.find((x) => x.clientAddress.toLowerCase() === args[1].toLowerCase());
+        return encodeFunctionResult({ abi: registryAbi, functionName: "readFeedback", result: [e.value, 0, e.tag1, e.tag2, false] });
+      }
+      return entries
+        .filter((e) => params.topics[2].toLowerCase() === pad(e.clientAddress.toLowerCase()) && BigInt(params.fromBlock) <= e.block && e.block <= BigInt(params.toBlock))
+        .map((e) =>
+          log(
+            REPUTATION.address,
+            encodeEventTopics({ abi: registryAbi, eventName: "NewFeedback", args: { agentId: e.agentId, clientAddress: e.clientAddress, indexedTag1: e.tag1 } }),
+            encodeAbiParameters(parseAbiParameters("uint64, int128, uint8, string, string, string, string, bytes32"), [e.feedbackIndex, e.value, 0, e.tag1, e.tag2, e.endpoint, e.feedbackURI, e.feedbackHash]),
+            e.block,
+          ),
+        );
+    });
+    const zero = `0x${"0".repeat(64)}`;
+    const paid = { poster: STRANGER, bounty: 1n, deadline: 0n, status: Status.Paid, accepted: true, disputed: false, disputedByModel: false, model: keccak256(toBytes("claude")), briefHash: zero, resultHash: zero, submittedAt: 0n, gradedAt: 0n, disputedAt: 0n, postedAt: 0n, payee: STRANGER, feeRecipient: STRANGER, feeBps: 0, hireThresholdBps: 0, gradeThresholdBps: 0, ruleThresholdBps: 0, gradeWindow: 0n, disputeWindow: 0n, ruleWindow: 0n };
+    const brainchain = await stubRpc(MAINNET, (method) =>
+      method === "eth_call"
+        ? encodeFunctionResult({ abi: taskBoardAbi, functionName: "get", result: paid })
+        : [log(BOARD, encodeEventTopics({ abi: taskBoardAbi, eventName: "WorkerHired", args: { id: 49n, model: paid.model, decisionId: 7n } }), "0x", 900n)],
+    );
+    const rpcs = ["--rpc", urlOf(brainchain), "--registry-rpc", urlOf(robinhood)];
+    try {
+      const one = await runAsync("mainnet", "--entry", "20424:1", ...rpcs);
+      assert.equal(one.code, 0, one.stderr);
+      assert.deepEqual(one.stdout.split("\n").map((line) => line.split(":")[0]), [
+        "Entry 20424",
+        "",
+        "  ok    entry",
+        "  ok    endpoint",
+        "  skip  no receipt",
+        "  ok    value",
+        "  ok    worker",
+        "",
+        "Verdict",
+        "Not checked",
+        "",
+      ]);
+      assert.match(one.stdout, /^Entry 20424:1 in the ERC-8004 reputation registry on Robinhood Chain \(0x8004BAa17C55a88189AE136b182e5fdA19dE9b63\)\n/);
+      assert.match(one.stdout, /\n {2}ok {4}endpoint: task 49 on board 0x44b8…A211, contract set v3-5\n/);
+      assert.match(one.stdout, /\nVerdict: no receipt\. /);
+
+      const listed = await runAsync("mainnet", "--agent", "20424", ...rpcs);
+      assert.equal(listed.code, 0, listed.stderr);
+      assert.match(listed.stdout, /: 2 entries BrainChain wrote\n\n {2}no receipt 20424:0xafB0C4Ef895D4895040cdC6435B96D3EE8350c6E:1 {2}value 100, task 9\n {2}no receipt 20424:1 {2}value 100, task 49 in set v3-5\n\n2 entries, 0 with a receipt, 0 verified, 0 failed\.\n/);
+
+      const asJson = await runAsync("mainnet", "--agent", "20424", ...rpcs, "--json");
+      const out = JSON.parse(asJson.stdout);
+      assert.equal(out.verdict, "no-receipt");
+      assert.deepEqual(out.summary, { entries: 2, withReceipt: 0, verified: 0, failed: 0, unverified: 0 });
+      assert.deepEqual(out.entries.map((e) => [e.entry, e.verdict, e.set]), [[`20424:${FORMER}:1`, "no-receipt", undefined], ["20424:1", "no-receipt", "v3-5"]]);
+
+      const missing = await runAsync("mainnet", "--entry", "20424:4", ...rpcs);
+      assert.equal(missing.code, 1);
+      assert.equal(missing.stderr, `BrainChain wrote entries 1 to 1 for agent 20424 from ${WRITER}. It wrote earlier ones from ${FORMER}: name one as 20424:<writer>:<feedbackIndex>\n`);
+      const crossed = await runAsync("mainnet", "--entry", "20424:1", "--rpc", urlOf(brainchain), "--registry-rpc", urlOf(brainchain), "--json");
+      assert.equal(crossed.code, 2);
+      assert.match(onlyError(crossed.stdout), /^The registry RPC serves chain 274663, not Robinhood Chain \(4663\)$/);
+    } finally {
+      robinhood.close();
+      brainchain.close();
     }
   });
 
