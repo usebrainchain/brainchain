@@ -19,6 +19,10 @@ import {IERC8183, IERC8183Hook} from "../interfaces/IERC8183.sol";
 /// A first decision is therefore taken only if the appeal window and the
 /// ruling period both close by `expiredAt`.
 ///
+/// A client funds a job with the terms it expects in `fund`'s `optParams`,
+/// `abi.encode(uint256 bond, uint32 window, uint32 rulingPeriod)`, so the
+/// owner cannot change them between creation and funding.
+///
 /// A bond that an appeal ruling confirms goes to the side that won, so the
 /// judge gains nothing by upholding its own decision. Every other bond goes
 /// back to the appellant: when the ruling reverses the decision, when the
@@ -59,6 +63,8 @@ contract Erc8183AppealHook is IERC8183Hook {
     error BadTerms();
     error WrongEvaluator();
     error TokenNotServed();
+    error TermsNotPinned();
+    error TermsChanged();
     error NoTimeToAppeal();
     error NotFunded();
     error NotSubmitted();
@@ -67,11 +73,12 @@ contract Erc8183AppealHook is IERC8183Hook {
     error AlreadyAppealed();
     error AppealClosed();
     error NotLosingSide();
+    error NotAttached();
     error WindowOpen();
     error RulingOpen();
     error RulingClosed();
     error WrongOutcome();
-    error JobOpen();
+    error NotReleasable();
     error TransferMismatch();
 
     event TermsFixed(uint256 indexed jobId, address indexed token, uint256 bond, uint32 window, uint32 rulingPeriod);
@@ -115,7 +122,8 @@ contract Erc8183AppealHook is IERC8183Hook {
     function beforeAction(uint256 jobId, bytes4 selector, bytes calldata data) external {
         if (msg.sender != address(jobContract)) revert NotJobContract();
         if (selector == IERC8183.fund.selector) {
-            _fix(jobId);
+            (, bytes memory pinned) = abi.decode(data, (address, bytes));
+            _fix(jobId, pinned);
         } else if (selector == IERC8183.submit.selector) {
             if (_holds[jobId].stage != Stage.Funded) revert NotFunded();
         } else if (selector == IERC8183.complete.selector || selector == IERC8183.reject.selector) {
@@ -157,6 +165,7 @@ contract Erc8183AppealHook is IERC8183Hook {
         if (h.stage != Stage.Decided) revert NotDecided();
         if (block.timestamp > uint256(h.decidedAt) + h.window) revert AppealClosed();
         IERC8183.Job memory job = jobContract.getJob(jobId);
+        if (job.hook != address(this)) revert NotAttached();
         if (job.status != IERC8183.JobStatus.Submitted) revert NotSubmitted();
         if (msg.sender != (h.completes ? job.client : job.provider)) revert NotLosingSide();
 
@@ -172,13 +181,16 @@ contract Erc8183AppealHook is IERC8183Hook {
         emit Appealed(jobId, msg.sender, bond);
     }
 
-    /// @notice Returns an appeal bond to its appellant when the job ended
-    /// without passing through this hook: it expired through `claimRefund`, or
-    /// the job contract's admin detached the hook.
+    /// @notice Returns an appeal bond to its appellant when the job cannot
+    /// settle through this hook: it expired through `claimRefund`, or the job
+    /// contract's admin detached the hook. A job that completes or rejects
+    /// with the hook attached settles its bond in `afterAction`, and a payout
+    /// callback that runs before it cannot release the bond early.
     function releaseBond(uint256 jobId) external {
         Hold storage h = _holds[jobId];
         if (h.stage != Stage.Appealed) revert NotAppealed();
-        if (jobContract.getJob(jobId).status == IERC8183.JobStatus.Submitted) revert JobOpen();
+        IERC8183.Job memory job = jobContract.getJob(jobId);
+        if (job.status != IERC8183.JobStatus.Expired && job.hook == address(this)) revert NotReleasable();
         h.stage = Stage.Settled;
         _payBond(jobId, h, h.appellant);
     }
@@ -221,14 +233,16 @@ contract Erc8183AppealHook is IERC8183Hook {
     }
 
     /// @dev Funding fixes the terms, and is refused for a job this hook cannot
-    /// carry: another evaluator, a token without a bond, or an expiry too close
-    /// for a window and a ruling.
-    function _fix(uint256 jobId) private {
+    /// carry: another evaluator, a token without a bond, terms other than the
+    /// client pinned, or an expiry too close for a window and a ruling.
+    function _fix(uint256 jobId, bytes memory pinned) private {
         IERC8183.Job memory job = jobContract.getJob(jobId);
         if (job.evaluator != evaluator) revert WrongEvaluator();
         uint256 bond = bondOf[job.paymentToken];
         if (bond == 0) revert TokenNotServed();
         (uint32 window_, uint32 rulingPeriod_) = (window, rulingPeriod);
+        if (pinned.length != 96) revert TermsNotPinned();
+        if (keccak256(pinned) != keccak256(abi.encode(bond, window_, rulingPeriod_))) revert TermsChanged();
         if (block.timestamp + window_ + rulingPeriod_ > job.expiredAt) revert NoTimeToAppeal();
 
         Hold storage h = _holds[jobId];

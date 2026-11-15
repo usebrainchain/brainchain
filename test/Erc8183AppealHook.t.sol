@@ -7,8 +7,31 @@ import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import {IERC8183, IERC8183Hook} from "../src/interfaces/IERC8183.sol";
 import {Erc8183AppealHook} from "../src/evaluators/Erc8183AppealHook.sol";
 import {Erc8183Evaluator} from "../src/evaluators/Erc8183Evaluator.sol";
-import {ERC8183} from "./erc8183/ERC8183.sol";
+import {ERC8183, IDisburser} from "./erc8183/ERC8183.sol";
 import {Erc8183Setup} from "./Erc8183Evaluator.t.sol";
+
+/// A provider whose payout receiver callback tries to take a confirmed bond
+/// back to the appellant before the hook pays it out.
+contract GrabbingProvider {
+    Erc8183AppealHook public immutable hook;
+    bool public grabbed;
+    bool public tried;
+
+    constructor(Erc8183AppealHook hook_) {
+        hook = hook_;
+    }
+
+    function supportsInterface(bytes4 id) external pure returns (bool) {
+        return id == type(IERC165).interfaceId || id == type(IDisburser).interfaceId;
+    }
+
+    function onDisbursement(uint256 jobId, bytes4, address, uint256, bytes calldata) external {
+        tried = true;
+        try hook.releaseBond(jobId) {
+            grabbed = true;
+        } catch {}
+    }
+}
 
 /// Keeps a cut of every transfer once switched on.
 contract SkimmingToken is ERC20 {
@@ -71,7 +94,7 @@ contract Erc8183AppealHookTest is Erc8183Setup {
         acp.setBudget(id, address(usdc), BUDGET, "");
         vm.prank(client);
         vm.expectRevert(Erc8183AppealHook.WrongEvaluator.selector);
-        acp.fund(id, address(usdc), BUDGET, "");
+        acp.fund(id, address(usdc), BUDGET, pinned());
     }
 
     function test_fundingRefusesATokenWithoutABond() public {
@@ -82,7 +105,7 @@ contract Erc8183AppealHookTest is Erc8183Setup {
         acp.setBudget(id, address(usdc), BUDGET, "");
         vm.prank(client);
         vm.expectRevert(Erc8183AppealHook.TokenNotServed.selector);
-        acp.fund(id, address(usdc), BUDGET, "");
+        acp.fund(id, address(usdc), BUDGET, pinned());
     }
 
     function test_fundingRefusesAnExpiryTooCloseForAnAppeal() public {
@@ -94,7 +117,7 @@ contract Erc8183AppealHookTest is Erc8183Setup {
         acp.setBudget(id, address(usdc), BUDGET, "");
         vm.prank(client);
         vm.expectRevert(Erc8183AppealHook.NoTimeToAppeal.selector);
-        acp.fund(id, address(usdc), BUDGET, "");
+        acp.fund(id, address(usdc), BUDGET, pinned());
     }
 
     function test_aSubmissionMustFollowFundingThroughTheHook() public {
@@ -284,7 +307,7 @@ contract Erc8183AppealHookTest is Erc8183Setup {
 
     function test_aBondReturnsWhenTheJobExpiresUnderAppeal() public {
         uint256 id = appealed(true, client);
-        vm.expectRevert(Erc8183AppealHook.JobOpen.selector);
+        vm.expectRevert(Erc8183AppealHook.NotReleasable.selector);
         hook.releaseBond(id);
 
         vm.warp(acp.getJob(id).expiredAt + acp.EVALUATION_GRACE_PERIOD());
@@ -337,13 +360,110 @@ contract Erc8183AppealHookTest is Erc8183Setup {
         vm.prank(provider);
         acp.setBudget(id, address(skimming), BUDGET, "");
         vm.prank(client);
-        acp.fund(id, address(skimming), BUDGET, "");
+        acp.fund(id, address(skimming), BUDGET, pinned());
         submitJob(id);
         decide(id, false, 9_000);
         skimming.setSkim(true);
         vm.prank(provider);
         vm.expectRevert(Erc8183AppealHook.TransferMismatch.selector);
         hook.appeal(id);
+    }
+
+    function test_fundingRequiresTheTermsTheClientPinned() public {
+        uint256 id = createJob(address(evaluator), address(hook));
+        vm.prank(provider);
+        acp.setBudget(id, address(usdc), BUDGET, "");
+        vm.startPrank(client);
+        vm.expectRevert(Erc8183AppealHook.TermsNotPinned.selector);
+        acp.fund(id, address(usdc), BUDGET, "");
+        vm.expectRevert(Erc8183AppealHook.TermsNotPinned.selector);
+        acp.fund(id, address(usdc), BUDGET, abi.encode(BOND, WINDOW));
+        vm.stopPrank();
+
+        vm.prank(safe);
+        hook.setBond(address(usdc), BOND * 10);
+        vm.prank(client);
+        vm.expectRevert(Erc8183AppealHook.TermsChanged.selector);
+        acp.fund(id, address(usdc), BUDGET, pinned());
+        vm.startPrank(safe);
+        hook.setBond(address(usdc), BOND);
+        hook.setTerms(WINDOW, 1 hours);
+        vm.stopPrank();
+        vm.prank(client);
+        vm.expectRevert(Erc8183AppealHook.TermsChanged.selector);
+        acp.fund(id, address(usdc), BUDGET, pinned());
+        vm.prank(safe);
+        hook.setTerms(1 hours, RULING);
+        vm.prank(client);
+        vm.expectRevert(Erc8183AppealHook.TermsChanged.selector);
+        acp.fund(id, address(usdc), BUDGET, pinned());
+
+        vm.prank(safe);
+        hook.setTerms(WINDOW, RULING);
+        vm.prank(client);
+        acp.fund(id, address(usdc), BUDGET, pinned());
+        assertEq(uint8(stage(id)), uint8(Erc8183AppealHook.Stage.Funded));
+    }
+
+    function test_aPayoutCallbackCannotTakeBackAConfirmedBond() public {
+        GrabbingProvider grabber = new GrabbingProvider(hook);
+        vm.prank(client);
+        uint256 id = acp.createJob(
+            address(grabber), address(evaluator), uint48(block.timestamp) + DURATION, "brief", address(hook), 0
+        );
+        vm.prank(address(grabber));
+        acp.setBudget(id, address(usdc), BUDGET, "");
+        vm.prank(client);
+        acp.fund(id, address(usdc), BUDGET, pinned());
+        vm.prank(address(grabber));
+        acp.submit(id, DELIVERABLE, "");
+        decide(id, true, 9_000);
+        vm.prank(client);
+        hook.appeal(id);
+
+        rule(id, true, 9_000);
+        assertTrue(grabber.tried());
+        assertFalse(grabber.grabbed());
+        assertEq(uint8(status(id)), uint8(IERC8183.JobStatus.Completed));
+        assertEq(usdc.balanceOf(address(grabber)), net() + BOND);
+        assertEq(usdc.balanceOf(client), 10_000e6 - BUDGET - BOND);
+    }
+
+    function test_releaseBondWaitsForExpiryOrDetach() public {
+        uint256 id = appealed(true, client);
+        vm.expectRevert(Erc8183AppealHook.NotReleasable.selector);
+        hook.releaseBond(id);
+        vm.warp(acp.getJob(id).expiredAt);
+        vm.expectRevert(Erc8183AppealHook.NotReleasable.selector);
+        hook.releaseBond(id);
+    }
+
+    function test_appealRefusesADetachedJob() public {
+        uint256 id = submittedJob();
+        decide(id, true, 9_000);
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = id;
+        vm.prank(admin);
+        acp.batchDetachHook(ids);
+        vm.prank(client);
+        vm.expectRevert(Erc8183AppealHook.NotAttached.selector);
+        hook.appeal(id);
+    }
+
+    function test_aJobDetachedBeforeItsFirstDecisionCanOnlyExpire() public {
+        uint256 id = submittedJob();
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = id;
+        vm.prank(admin);
+        acp.batchDetachHook(ids);
+        decideReverts(decision(id, false, true, 9_000), Erc8183Evaluator.WrongHook.selector);
+        vm.expectRevert(Erc8183Evaluator.NotDecided.selector);
+        evaluator.finalize(address(acp), id);
+
+        vm.warp(acp.getJob(id).expiredAt + acp.EVALUATION_GRACE_PERIOD());
+        acp.claimRefund(id);
+        assertEq(usdc.balanceOf(client), 10_000e6);
+        assertEq(usdc.balanceOf(provider), 10_000e6);
     }
 
     function test_ownerSetsBondsAndTerms() public {

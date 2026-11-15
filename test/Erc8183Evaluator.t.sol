@@ -9,6 +9,31 @@ import {Erc8183Evaluator, IBrainKeyCheck} from "../src/evaluators/Erc8183Evaluat
 import {ERC8183} from "./erc8183/ERC8183.sol";
 import {MockERC20} from "./MockERC20.sol";
 
+/// Answers every getter the evaluator reads, but no owner allowed it.
+contract LookalikeHook {
+    address public immutable evaluator;
+    address public immutable jobContract;
+
+    constructor(address evaluator_, address jobContract_) {
+        evaluator = evaluator_;
+        jobContract = jobContract_;
+    }
+
+    function supportsInterface(bytes4 id) external pure returns (bool) {
+        return id != 0xffffffff;
+    }
+
+    function beforeAction(uint256, bytes4, bytes calldata) external {}
+
+    function afterAction(uint256, bytes4, bytes calldata) external {}
+
+    function deliverableOf(uint256) external pure returns (bytes32) {
+        return keccak256("deliverable");
+    }
+
+    function onDecision(uint256, bool) external {}
+}
+
 contract KeyCheck is IBrainKeyCheck {
     mapping(address => bool) public isAttested;
 
@@ -52,8 +77,12 @@ abstract contract Erc8183Setup is Test {
         evaluator = new Erc8183Evaluator(safe, brain, BRAIN_DELAY, BAR);
         hook = new Erc8183AppealHook(acp, address(evaluator), safe, WINDOW, RULING);
 
-        vm.prank(safe);
+        vm.startPrank(safe);
         hook.setBond(address(usdc), BOND);
+        evaluator.proposeHook(address(hook));
+        vm.stopPrank();
+        vm.warp(block.timestamp + BRAIN_DELAY);
+        evaluator.acceptHook(address(hook));
         vm.startPrank(admin);
         acp.setHookWhitelist(address(hook), true);
         acp.setPaymentTokenAllowed(address(usdc), true);
@@ -80,7 +109,12 @@ abstract contract Erc8183Setup is Test {
         vm.prank(provider);
         acp.setBudget(id, address(usdc), BUDGET, "");
         vm.prank(client);
-        acp.fund(id, address(usdc), BUDGET, "");
+        acp.fund(id, address(usdc), BUDGET, pinned());
+    }
+
+    /// The terms a client pins when it funds a job under the hook.
+    function pinned() internal pure returns (bytes memory) {
+        return abi.encode(BOND, WINDOW, RULING);
     }
 
     function submitJob(uint256 id) internal {
@@ -411,7 +445,7 @@ contract Erc8183EvaluatorTest is Erc8183Setup {
 
         assertEq(evaluator.owner(), safe);
         assertEq(evaluator.brain(), brain);
-        assertEq(evaluator.brainDelay(), BRAIN_DELAY);
+        assertEq(evaluator.delay(), BRAIN_DELAY);
         assertEq(evaluator.minConfidenceBps(), BAR);
     }
 
@@ -525,6 +559,102 @@ contract Erc8183EvaluatorTest is Erc8183Setup {
         evaluator.sweep(usdc, treasury);
         assertEq(usdc.balanceOf(address(evaluator)), 0);
         assertEq(usdc.balanceOf(treasury), (BUDGET * PLATFORM_FEE_BPS) / 10_000 + fee);
+    }
+
+    function test_revokeStopsALeakedKeyAtOnce() public {
+        uint256 decided = submittedJob();
+        decide(decided, true, 9_000);
+        vm.prank(client);
+        hook.appeal(decided);
+        uint256 undecided = submittedJob();
+        uint256 nextKey = 0xB4A2;
+        vm.prank(safe);
+        evaluator.proposeBrain(vm.addr(nextKey));
+
+        vm.prank(stranger);
+        vm.expectRevert(Erc8183Evaluator.NotOwner.selector);
+        evaluator.revokeBrain();
+        vm.expectEmit(address(evaluator));
+        emit Erc8183Evaluator.BrainRevoked(brain);
+        vm.prank(safe);
+        evaluator.revokeBrain();
+        assertEq(evaluator.brain(), address(0));
+
+        decideReverts(decision(undecided, false, true, 9_000), Erc8183Evaluator.NoBrain.selector);
+        decideReverts(decision(decided, true, true, 9_000), Erc8183Evaluator.NoBrain.selector);
+        decideReverts(decision(undecided, false, true, 9_000), nextKey, Erc8183Evaluator.NoBrain.selector);
+
+        vm.warp(block.timestamp + BRAIN_DELAY);
+        evaluator.acceptBrain();
+        assertEq(evaluator.brain(), vm.addr(nextKey));
+        decideReverts(decision(undecided, false, true, 9_000), Erc8183Evaluator.NotBrain.selector);
+        Erc8183Evaluator.Decision memory d = decision(undecided, false, true, 9_000);
+        evaluator.decide(d, sign(nextKey, d));
+        assertTrue(evaluator.judgmentOf(address(acp), undecided).decided);
+    }
+
+    function test_aDecisionAppliedBeforeARevokeStillSettlesWhenItsTimeRunsOut() public {
+        uint256 id = submittedJob();
+        decide(id, true, 9_000);
+        vm.prank(client);
+        hook.appeal(id);
+        vm.prank(safe);
+        evaluator.revokeBrain();
+        vm.warp(block.timestamp + RULING + 1);
+        evaluator.finalize(address(acp), id);
+        assertEq(uint8(status(id)), uint8(IERC8183.JobStatus.Completed));
+        assertEq(usdc.balanceOf(client), 10_000e6 - BUDGET);
+    }
+
+    function test_aHookTheOwnerNeverAllowedIsRefused() public {
+        LookalikeHook lookalike = new LookalikeHook(address(evaluator), address(acp));
+        vm.prank(admin);
+        acp.setHookWhitelist(address(lookalike), true);
+        uint256 id = createJob(address(evaluator), address(lookalike));
+        fundJob(id);
+        submitJob(id);
+        decideReverts(decision(id, false, true, 9_000), Erc8183Evaluator.WrongHook.selector);
+    }
+
+    function test_aHookIsAllowedOnlyAfterTheDelayAndRemovedAtOnce() public {
+        Erc8183AppealHook second = new Erc8183AppealHook(acp, address(evaluator), safe, WINDOW, RULING);
+        vm.prank(stranger);
+        vm.expectRevert(Erc8183Evaluator.NotOwner.selector);
+        evaluator.proposeHook(address(second));
+        vm.prank(safe);
+        vm.expectRevert(Erc8183Evaluator.ZeroAddress.selector);
+        evaluator.proposeHook(address(0));
+        vm.expectRevert(Erc8183Evaluator.NoPendingHook.selector);
+        evaluator.acceptHook(address(second));
+
+        vm.prank(safe);
+        evaluator.proposeHook(address(second));
+        assertEq(evaluator.hookReadyAt(address(second)), block.timestamp + BRAIN_DELAY);
+        vm.warp(block.timestamp + BRAIN_DELAY - 1);
+        vm.expectRevert(Erc8183Evaluator.TooEarly.selector);
+        evaluator.acceptHook(address(second));
+        vm.warp(block.timestamp + 1);
+        vm.prank(stranger);
+        evaluator.acceptHook(address(second));
+        assertTrue(evaluator.hookAllowed(address(second)));
+        assertEq(evaluator.hookReadyAt(address(second)), 0);
+
+        vm.prank(stranger);
+        vm.expectRevert(Erc8183Evaluator.NotOwner.selector);
+        evaluator.removeHook(address(hook));
+        uint256 id = submittedJob();
+        vm.prank(safe);
+        evaluator.removeHook(address(hook));
+        assertFalse(evaluator.hookAllowed(address(hook)));
+        decideReverts(decision(id, false, true, 9_000), Erc8183Evaluator.WrongHook.selector);
+
+        vm.prank(safe);
+        evaluator.proposeHook(address(hook));
+        vm.prank(safe);
+        evaluator.removeHook(address(hook));
+        vm.warp(block.timestamp + BRAIN_DELAY);
+        vm.expectRevert(Erc8183Evaluator.NoPendingHook.selector);
+        evaluator.acceptHook(address(hook));
     }
 
     function testFuzz_aFirstDecisionCompletesOnlyWhenAcceptedAtOrAboveTheBar(bool accept, uint16 confidenceBps) public {

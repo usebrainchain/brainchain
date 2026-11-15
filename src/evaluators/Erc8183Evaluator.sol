@@ -16,8 +16,8 @@ interface IBrainKeyCheck {
 }
 
 /// @notice The evaluator for ERC-8183 jobs judged by BrainChain. A job names
-/// this contract as its evaluator and an `Erc8183AppealHook` bound to it as
-/// its hook. The evaluator completes or rejects a job only on a decision
+/// this contract as its evaluator and, as its hook, an `Erc8183AppealHook`
+/// that this contract's owner has allowed. The evaluator completes or rejects a job only on a decision
 /// signed by the brain key about that job and the deliverable its provider
 /// submitted. Anyone may submit a signed decision.
 ///
@@ -57,6 +57,7 @@ contract Erc8183Evaluator is EIP712 {
     error NotOwner();
     error NotPendingOwner();
     error NotBrain();
+    error NoBrain();
     error ZeroAddress();
     error BadConfidence();
     error BadDelay();
@@ -68,6 +69,7 @@ contract Erc8183Evaluator is EIP712 {
     error AlreadyDecided();
     error NotDecided();
     error NoPendingBrain();
+    error NoPendingHook();
     error TooEarly();
     error KeyNotAttested();
 
@@ -83,6 +85,9 @@ contract Erc8183Evaluator is EIP712 {
     event BrainProposed(address indexed brain, uint256 readyAt);
     event BrainProposalCancelled(address indexed brain);
     event BrainSet(address indexed brain);
+    event BrainRevoked(address indexed brain);
+    event HookProposed(address indexed hook, uint256 readyAt);
+    event HookAllowed(address indexed hook, bool allowed);
     event KeyCheckSet(address indexed keyCheck);
     event Swept(address indexed token, address indexed to, uint256 amount);
     event OwnershipTransferStarted(address indexed owner, address indexed pendingOwner);
@@ -91,9 +96,10 @@ contract Erc8183Evaluator is EIP712 {
     bytes32 public constant DECISION_TYPEHASH = keccak256(
         "Decision(address jobContract,uint256 jobId,bytes32 deliverable,bool appeal,bool accept,uint16 confidenceBps,uint256 logChainId,address decisionLog,uint256 decisionId)"
     );
-    uint256 public constant MIN_BRAIN_DELAY = 1 days;
+    uint256 public constant MIN_DELAY = 1 days;
 
-    uint256 public immutable brainDelay;
+    /// How long a new brain key or a new hook waits before it can take effect.
+    uint256 public immutable delay;
     uint16 public immutable minConfidenceBps;
 
     address public owner;
@@ -102,20 +108,23 @@ contract Erc8183Evaluator is EIP712 {
     address public pendingBrain;
     uint256 public brainReadyAt;
     IBrainKeyCheck public keyCheck;
+    /// Hooks whose deliverable record and appeal clock this evaluator trusts.
+    mapping(address hook => bool) public hookAllowed;
+    mapping(address hook => uint256) public hookReadyAt;
 
     /// keccak256(logChainId, decisionLog, decisionId) => applied. A BrainChain decision applies once.
     mapping(bytes32 => bool) public decisionUsed;
     mapping(address jobContract => mapping(uint256 jobId => Judgment)) private _judgments;
 
-    constructor(address owner_, address brain_, uint256 brainDelay_, uint16 minConfidenceBps_)
+    constructor(address owner_, address brain_, uint256 delay_, uint16 minConfidenceBps_)
         EIP712("BrainChain ERC-8183 Evaluator", "1")
     {
         if (owner_ == address(0) || brain_ == address(0)) revert ZeroAddress();
-        if (brainDelay_ < MIN_BRAIN_DELAY) revert BadDelay();
+        if (delay_ < MIN_DELAY) revert BadDelay();
         if (minConfidenceBps_ > 10_000) revert BadConfidence();
         owner = owner_;
         brain = brain_;
-        brainDelay = brainDelay_;
+        delay = delay_;
         minConfidenceBps = minConfidenceBps_;
         emit OwnerSet(owner_);
         emit BrainSet(brain_);
@@ -125,6 +134,7 @@ contract Erc8183Evaluator is EIP712 {
     /// opens the hook's appeal window; a ruling on an appeal settles the job.
     function decide(Decision calldata d, bytes calldata signature) external {
         if (d.confidenceBps > 10_000) revert BadConfidence();
+        if (brain == address(0)) revert NoBrain();
         bytes32 digest = hashDecision(d);
         if (ECDSA.recover(digest, signature) != brain) revert NotBrain();
         bytes32 ref = keccak256(abi.encode(d.logChainId, d.decisionLog, d.decisionId));
@@ -189,12 +199,12 @@ contract Erc8183Evaluator is EIP712 {
         return _domainSeparatorV4();
     }
 
-    /// @notice Starts a change of brain key; it can take effect after `brainDelay`.
+    /// @notice Starts a change of brain key; it can take effect after `delay`.
     function proposeBrain(address next) external {
         if (msg.sender != owner) revert NotOwner();
         if (next == address(0)) revert ZeroAddress();
         pendingBrain = next;
-        brainReadyAt = block.timestamp + brainDelay;
+        brainReadyAt = block.timestamp + delay;
         emit BrainProposed(next, brainReadyAt);
     }
 
@@ -218,6 +228,45 @@ contract Erc8183Evaluator is EIP712 {
         delete pendingBrain;
         delete brainReadyAt;
         emit BrainSet(next);
+    }
+
+    /// @notice Stops the current brain key at once, for a key that may have
+    /// leaked. Until a proposed key takes effect, every decision is refused,
+    /// rulings included. Decisions already applied still settle through
+    /// `finalize` when their window or ruling period closes.
+    function revokeBrain() external {
+        if (msg.sender != owner) revert NotOwner();
+        emit BrainRevoked(brain);
+        brain = address(0);
+    }
+
+    /// @notice Starts allowing `hook`; it can be allowed after `delay`. A hook
+    /// takes effect only after the delay because the evaluator relies on its
+    /// record of the deliverable and on its appeal clock.
+    function proposeHook(address hook) external {
+        if (msg.sender != owner) revert NotOwner();
+        if (hook == address(0)) revert ZeroAddress();
+        hookReadyAt[hook] = block.timestamp + delay;
+        emit HookProposed(hook, hookReadyAt[hook]);
+    }
+
+    function acceptHook(address hook) external {
+        uint256 readyAt = hookReadyAt[hook];
+        if (readyAt == 0) revert NoPendingHook();
+        if (block.timestamp < readyAt) revert TooEarly();
+        hookAllowed[hook] = true;
+        delete hookReadyAt[hook];
+        emit HookAllowed(hook, true);
+    }
+
+    /// @notice Stops trusting `hook` at once and drops any proposal for it.
+    /// Its jobs take no further decisions; a job already decided still
+    /// settles through `finalize`.
+    function removeHook(address hook) external {
+        if (msg.sender != owner) revert NotOwner();
+        delete hookAllowed[hook];
+        delete hookReadyAt[hook];
+        emit HookAllowed(hook, false);
     }
 
     /// @notice Sets the check a proposed key must pass, or zero for none. It
@@ -253,14 +302,15 @@ contract Erc8183Evaluator is EIP712 {
         emit OwnerSet(msg.sender);
     }
 
-    /// @dev The job must name this evaluator, be submitted, and carry a hook
-    /// bound to this evaluator and job contract: the reference job contract
-    /// does not store deliverables, so the hook's record is the one checked.
+    /// @dev The job must name this evaluator, be submitted, and carry an
+    /// allowed hook bound to this evaluator and job contract: the reference
+    /// job contract does not store deliverables, so the hook's record is the
+    /// one checked.
     function _hookOf(address jobContract, uint256 jobId) private view returns (Erc8183AppealHook hook) {
         IERC8183.Job memory job = IERC8183(jobContract).getJob(jobId);
         if (job.evaluator != address(this)) revert NotEvaluator();
         if (job.status != IERC8183.JobStatus.Submitted) revert NotSubmitted();
-        if (job.hook.code.length == 0) revert WrongHook();
+        if (!hookAllowed[job.hook]) revert WrongHook();
         hook = Erc8183AppealHook(job.hook);
         if (hook.evaluator() != address(this) || address(hook.jobContract()) != jobContract) revert WrongHook();
     }

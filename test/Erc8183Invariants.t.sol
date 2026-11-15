@@ -85,7 +85,7 @@ contract Erc8183Handler is Test {
         vm.prank(provider);
         acp.setBudget(id, address(usdc), budget, "");
         vm.prank(client);
-        acp.fund(id, address(usdc), budget, "");
+        acp.fund(id, address(usdc), budget, abi.encode(BOND, WINDOW, RULING));
         vm.prank(provider);
         acp.submit(id, keccak256(abi.encode(id)), "");
 
