@@ -26,9 +26,9 @@ import {GuardianGate, IGuardedBoard, IGuardedExecutor} from "../src/GuardianGate
 /// handover (see AdminHandover.s.sol). The deployer is the guardian at first
 /// and binds the board; the admin moves the guardian to the Safe afterwards.
 ///
-/// A chain change needs Jev to adopt it with at least 60% confidence in its
-/// answer. Measured that way, Jev's adopt decisions on well-supported changes
-/// land at 59 to 69%, so a higher bar blocks every change.
+/// A chain change needs the brain to adopt it with at least 60% confidence in
+/// its answer. Measured that way, Jev's adopt decisions on well-supported
+/// changes land at 59 to 69%, so a higher bar blocks every change.
 ///
 /// The admin timelock owns WorkerStaking and ProposalBonds, unlike testnet
 /// where the executor does: the stake minimum, cooldown, slash share, bond and
@@ -49,8 +49,8 @@ import {GuardianGate, IGuardedBoard, IGuardedExecutor} from "../src/GuardianGate
 /// 1000000), optional STAKE_COOLDOWN (seconds before unstaked $BRAIN can be
 /// withdrawn, default 3 days), optional SLASH_BPS (share of stake burned when a
 /// worker loses a dispute, default 2000), optional BOND (whole $BRAIN bonded
-/// per proposal, default 250000), optional BOND_DECIDE_WITHIN (seconds Jev has
-/// to decide a proposal before its bond is returned, default 7 days).
+/// per proposal, default 250000), optional BOND_DECIDE_WITHIN (seconds the brain
+/// has to decide a proposal before its bond is returned, default 7 days).
 contract DeployMainnet is Script {
     uint16 constant CHANGE_THRESHOLD_BPS = 6_000;
     uint64 constant CHANGE_TIMELOCK = 48 hours;
