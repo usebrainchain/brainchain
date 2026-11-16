@@ -39,7 +39,7 @@ Deployed on BrainChain mainnet from block 839 and active from 3 November 2026, r
 ### Added
 
 - `DecisionLog.attestBrain`: an enclave whose TDX quote verifies on chain, and whose image and app measurements the admin timelock has allowed, can name the brain key, with a nonce per attestation. The owner can pin Intel's TCB evaluation number.
-- `GuardianGate` in the guardian seat of the executor and the board. The owners' Safe keeps every guardian power; a watcher agent with its own key can veto a queued change and pause new posts, and nothing else.
+- `GuardianGate` in the guardian seat of the executor and the board. The owners' Safe keeps every guardian power; a watcher agent with its own key can veto a queued change and pause the board, and nothing else. A pause stops `post`, `hire`, `grade` and `rule` (and `ruleAppeal` from 3.5.0) while `finalize` keeps running, so a pause longer than a task's 6-hour grade window refunds work that was delivered but not graded. Only the Safe unpauses through the gate; the board's owner, the executor, can also unpause through an adopted change.
 - `TaskBoard.raiseGradeBar(id, bps)`: the poster raises its own task's grade bar while the task is open; the ruling bar rises with it, and nothing lowers either.
 - Invariant suites for `DecisionExecutor`, `ProposalBonds` and `WorkerStaking` slashing, driven through decisions the brain records.
 
