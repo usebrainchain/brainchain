@@ -2,11 +2,32 @@
 
 Changes to `brainchain-verify`, the npm package built from this directory. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are npm publish dates, in UTC.
 
+## [Unreleased]
+
+### Changed
+
+- A check that could not run because a host or RPC did not answer, answered with an error or sent more than the tool reads is an `ERROR`, so the verdict is `UNVERIFIED`. Some of these were a `skip` under a `match`. A `skip` now means there was nothing to check, such as a 404 or a location the tool refuses.
+- `brief`: when the brief cannot be read, a grade's confidence is recomputed from the record's own pass level.
+- `receipt-payment`: a `/network.json` signed by another key, or naming another chain, fails. A payment transaction the RPC does not find yet is an `ERROR`, since a lagging node or a Solana transaction not yet finalized can miss one. Only a reverted or failed transaction fails.
+- `fetch`: a record body that is not JSON, such as a proxy's error page, is an `ERROR`. JSON that is not a decision record still fails.
+- With `--task` or `--agent`, an RPC error on one decision or entry is one `ERROR` line named `rpc`, and the rest are still checked.
+- `--agent` counts only entries whose verdict is `match` as verified. `summary` gains `withheld`.
+- A `--receipt` that is not a receipt exits 1, as an unreadable one does.
+- The `subject` line of a change says what it checks: the subject on chain, which is tied to the call Jev was shown only once the change is queued.
+
+### Fixed
+
+- `--receipt` reads a file only up to its 64 KB cap, and only a regular file, so a device such as `/dev/zero` is refused at once.
+
+### Added
+
+- `balancesFrom(rpcs)` reads payment transactions from the RPCs given, for `Context.balances`. `entrySummary`, `entryReport` and `isReceipt` are exported too.
+
 ## [0.7.0] - 2026-11-15
 
 ### Added
 
-- `--entry <agentId>:<index>` checks one ERC-8004 reputation entry BrainChain wrote, end to end: the entry, the receipt its feedback URI names (its bytes hashed against `feedbackHash`), the decision and its payment, the task on the board, the value against the outcome, and the hired worker against the agent id.
+- `--entry <agentId>:[<writer>:]<index>` checks one ERC-8004 reputation entry BrainChain wrote, end to end: the entry, the receipt its feedback URI names (its bytes hashed against `feedbackHash`), the decision and its payment, the task on the board, the value against the outcome, and the hired worker against the agent id.
 - `--agent <agentId>` lists and checks every entry BrainChain wrote for one agent, oldest first.
 - Entries without a receipt, such as house tasks and older entries, show as `skip` with "no receipt".
 
@@ -128,6 +149,7 @@ A record without the new fields verifies exactly as in 0.5.1.
 
 First release. Reads a decision from the `DecisionLog`, fetches its published record, recomputes its hashes and confidence, and applies the task's thresholds the way the contracts do.
 
+[Unreleased]: https://github.com/usebrainchain/brainchain/compare/verify-v0.7.0...main
 [0.7.0]: https://github.com/usebrainchain/brainchain/releases/tag/verify-v0.7.0
 [0.6.0]: https://github.com/usebrainchain/brainchain/releases/tag/verify-v0.6.0
 [0.5.1]: https://github.com/usebrainchain/brainchain/releases/tag/verify-v0.5.1
