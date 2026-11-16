@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
+import {StdStorage, stdStorage} from "forge-std/StdStorage.sol";
 import {DecisionLog, IDcapAttestation} from "../src/DecisionLog.sol";
 
 /// Returns whatever output the test sets, as Automata's entrypoint would after verifying a quote.
@@ -28,6 +29,9 @@ contract MockAttestation is IDcapAttestation {
 }
 
 contract AttestedBrainTest is Test {
+    using stdStorage for StdStorage;
+
+    StdStorage internal store;
     DecisionLog internal decisions;
     MockAttestation internal verifier;
     address internal owner = makeAddr("owner");
@@ -45,6 +49,13 @@ contract AttestedBrainTest is Test {
         decisions.allowImage(keccak256(abi.encodePacked(mrtd, rtmrs)), true);
         decisions.allowApp(keccak256(rtmr3), true);
         vm.stopPrank();
+    }
+
+    function _slice(bytes memory data, uint256 start, uint256 length) internal pure returns (bytes memory part) {
+        part = new bytes(length);
+        for (uint256 i; i < length; ++i) {
+            part[i] = data[start + i];
+        }
     }
 
     function _fill(uint256 length, bytes1 value) internal pure returns (bytes memory out) {
@@ -129,5 +140,129 @@ contract AttestedBrainTest is Test {
         bare.setAttestation(verifier);
         vm.expectRevert(DecisionLog.NotOwner.selector);
         bare.allowApp(keccak256(rtmr3), true);
+    }
+
+    function test_aQuoteThatIsNotTdxNamesNothing() public {
+        bytes memory out = _output(0, rtmr3, decisions.attestationNonce(), enclaveKey);
+        // An SGX quote: version 3, and an enclave report body (type 1) under version 4.
+        out[1] = 0x03;
+        verifier.set(true, out);
+        vm.expectRevert(DecisionLog.NotATdQuote.selector);
+        decisions.attestBrain(hex"00");
+        out[1] = 0x04;
+        out[3] = 0x01;
+        verifier.set(true, out);
+        vm.expectRevert(DecisionLog.NotATdQuote.selector);
+        decisions.attestBrain(hex"00");
+        // Both fields are big-endian, so a set high byte is another version or type.
+        out[3] = 0x02;
+        out[0] = 0x01;
+        verifier.set(true, out);
+        vm.expectRevert(DecisionLog.NotATdQuote.selector);
+        decisions.attestBrain(hex"00");
+        out[0] = 0x00;
+        out[2] = 0x01;
+        verifier.set(true, out);
+        vm.expectRevert(DecisionLog.NotATdQuote.selector);
+        decisions.attestBrain(hex"00");
+        assertEq(decisions.attestations(), 0);
+    }
+
+    function test_aVersion5QuoteWithATd15BodyNamesItsKey() public {
+        bytes memory out = _output(0, rtmr3, decisions.attestationNonce(), enclaveKey);
+        out[1] = 0x05;
+        out[3] = 0x03;
+        // A TD 1.5 body adds TEE_TCB_SVN2 and MRSERVICETD after the report data; the offsets before it hold.
+        verifier.set(true, bytes.concat(out, new bytes(64)));
+        assertEq(decisions.attestBrain(hex"00"), enclaveKey);
+
+        address next = makeAddr("next");
+        out = _output(0, rtmr3, decisions.attestationNonce(), next);
+        out[1] = 0x05;
+        verifier.set(true, out);
+        assertEq(decisions.attestBrain(hex"00"), next, "version 5 with a TD 1.0 body");
+        assertEq(decisions.attestations(), 2);
+    }
+
+    function test_anImageOffTheAllowlistCannotNameAKey() public {
+        bytes memory out = _output(0, rtmr3, decisions.attestationNonce(), enclaveKey);
+        out[147] = 0x12;
+        bytes memory otherMrtd = bytes.concat(bytes1(0x12), _slice(mrtd, 1, 47));
+        verifier.set(true, out);
+        vm.expectRevert(
+            abi.encodeWithSelector(DecisionLog.ImageNotAllowed.selector, keccak256(abi.encodePacked(otherMrtd, rtmrs)))
+        );
+        decisions.attestBrain(hex"00");
+
+        // RTMR2 is part of the image as well.
+        out = _output(0, rtmr3, decisions.attestationNonce(), enclaveKey);
+        out[482] = 0x23;
+        bytes memory otherRtmrs = bytes.concat(_slice(rtmrs, 0, 143), bytes1(0x23));
+        verifier.set(true, out);
+        vm.expectRevert(
+            abi.encodeWithSelector(DecisionLog.ImageNotAllowed.selector, keccak256(abi.encodePacked(mrtd, otherRtmrs)))
+        );
+        decisions.attestBrain(hex"00");
+    }
+
+    function test_aKeyWordWithBitsAboveTheAddressIsRejected() public {
+        bytes memory out = _output(0, rtmr3, decisions.attestationNonce(), enclaveKey);
+        // The key is the last 20 bytes of the 32-byte word after the nonce.
+        out[563] = 0x01;
+        verifier.set(true, out);
+        vm.expectRevert(DecisionLog.QuoteRejected.selector);
+        decisions.attestBrain(hex"00");
+        out[563] = 0x00;
+        out[574] = 0x01;
+        verifier.set(true, out);
+        vm.expectRevert(DecisionLog.QuoteRejected.selector);
+        decisions.attestBrain(hex"00");
+        assertEq(decisions.brain(), makeAddr("brain"));
+    }
+
+    function test_aZeroKeyIsRejected() public {
+        verifier.set(true, _output(0, rtmr3, decisions.attestationNonce(), address(0)));
+        vm.expectRevert(DecisionLog.ZeroAddress.selector);
+        decisions.attestBrain(hex"00");
+        assertEq(decisions.attestations(), 0);
+        assertEq(decisions.brain(), makeAddr("brain"));
+    }
+
+    /// The verifier's real output for the quote that named the live brain on BrainChain mainnet (block
+    /// 2229). The fixture above is built with the log's own offsets, so it cannot catch a wrong one; this
+    /// one reads the measurements out of the raw quote by Intel's layout (a 48-byte header, then the TD
+    /// report: MRTD at 136, RTMR0 to RTMR2 at 328, RTMR3 at 472, report data at 520) and requires the log
+    /// to arrive at the same image, app and key from the verifier's output.
+    function test_theMainnetQuoteParsesToTheLiveMeasurements() public {
+        string memory json = vm.readFile("test/fixtures/attest-brain-2229.json");
+        bytes memory quote = vm.parseJsonBytes(json, ".quote");
+        bytes memory output = vm.parseJsonBytes(json, ".output");
+        address live = vm.parseJsonAddress(json, ".decisionLog");
+        address named = vm.parseJsonAddress(json, ".brain");
+        bytes32 image = vm.parseJsonBytes32(json, ".image");
+        bytes32 app = vm.parseJsonBytes32(json, ".app");
+
+        assertEq(keccak256(abi.encodePacked(_slice(quote, 48 + 136, 48), _slice(quote, 48 + 328, 144))), image);
+        assertEq(keccak256(_slice(quote, 48 + 472, 48)), app);
+        assertEq(_slice(output, 11, 584), _slice(quote, 48, 584), "the output's body is the quote's TD report");
+
+        vm.chainId(vm.parseJsonUint(json, ".chainId"));
+        deployCodeTo("DecisionLog.sol:DecisionLog", abi.encode(owner, makeAddr("brain")), live);
+        DecisionLog log = DecisionLog(live);
+        store.target(live).sig(log.attestations.selector).checked_write(vm.parseJsonUint(json, ".attestationsBefore"));
+        assertEq(log.attestationNonce(), bytes32(_slice(quote, 48 + 520, 32)), "the quote carries the log's nonce");
+
+        vm.startPrank(owner);
+        log.setAttestation(verifier);
+        log.allowImage(image, true);
+        log.allowApp(app, true);
+        vm.stopPrank();
+        verifier.set(true, output);
+        vm.expectEmit(true, false, false, false, live);
+        emit DecisionLog.BrainSet(named);
+        vm.expectEmit(true, true, true, false, live);
+        emit DecisionLog.BrainAttested(named, image, app);
+        assertEq(log.attestBrain(quote), named);
+        assertEq(log.brain(), named);
     }
 }
