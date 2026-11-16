@@ -699,6 +699,11 @@ export async function verifyDecision(ctx: Context, id: bigint, receipt?: GivenRe
   }
   const text = decodeText(fetched.bytes);
   const record = text === undefined ? undefined : parseJson(text);
+  // A proxy's error page says nothing about the record. JSON that is not one is the host's answer.
+  if (record === undefined) {
+    c.add("fetch", "error", `could not read the record: ${display(location)} sent something other than JSON, such as an error page`);
+    return report;
+  }
   if (!isPublished(record)) {
     c.add("fetch", "fail", `${display(location)} is not a decision record`);
     return report;

@@ -1463,6 +1463,18 @@ function publicRecord(briefURI) {
 }
 
 describe("records", () => {
+  it("are an error when the host sends something other than JSON, and a mismatch when the JSON is not a record", async () => {
+    const page = await verify({ serve: "<html><body>502 Bad Gateway</body></html>" });
+    assert.equal(status(page, "fetch"), "error");
+    assert.match(check(page, "fetch").message, /^could not read the record: http:\S+ sent something other than JSON, such as an error page$/);
+    assert.equal(outcomeOf([page]), "unverified");
+
+    const other = await verify({ serve: { hello: "world" } });
+    assert.equal(status(other, "fetch"), "fail");
+    assert.match(check(other, "fetch").message, /is not a decision record$/);
+    assert.equal(outcomeOf([other]), "mismatch");
+  });
+
   it("are an error, not a mismatch, when the host is out of reach or too large", async () => {
     pages.set("/big-record", { stream: 8 });
     const decision = { kind: 2, subject: taskSubject(7n), inputHash: NO, answer: YES, confidenceBps: 9000, recordedAt: 1793000000n };

@@ -77,7 +77,7 @@ The verdict is `match`, `withheld`, `UNVERIFIED` or `MISMATCH`. `withheld` means
 | Check | What passes |
 | --- | --- |
 | `read` | `DecisionLog.get(id)` and the decision's `Recorded` event agree. |
-| `fetch` | The record at the event's `payloadURI` (https, http or a base64 `data:` URI, with redirects refused) is a decision record of at most 4 MB. Briefs are read the same way, up to 256 KB. Anything on a private or loopback address is refused, however its name resolves, unless `--rpc` is on one too. |
+| `fetch` | The record at the event's `payloadURI` (https, http or a base64 `data:` URI, with redirects refused) is a decision record of at most 4 MB. A body that is not JSON, such as a proxy's error page, is an `ERROR`; JSON that is not a decision record is a `FAIL`. Briefs are read the same way, up to 256 KB. Anything on a private or loopback address is refused, however its name resolves, unless `--rpc` is on one too. |
 | `withheld` | On a record served without the work: the kind is a grade or ruling, the request carries the service's marker where the work was, and the chain shows the work is not public. If any of these fails, the record is held to its hashes like any other. |
 | `record-hash` | `keccak256` of the fetched bytes equals `payloadHash`. |
 | `input-hash` | `keccak256` of the record's `request`, serialized canonically (keys sorted, no whitespace), equals `inputHash`. |
