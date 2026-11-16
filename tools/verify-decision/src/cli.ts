@@ -11,6 +11,7 @@ import {
   entriesOf,
   entryName,
   entryOutcome,
+  entryReport,
   entrySummary,
   errorMessage,
   isReceipt,
@@ -134,6 +135,8 @@ const network = foundNetwork;
 const client = createPublicClient({ transport: http(rpcArg ?? network.rpc) });
 const TAGS = { ok: "ok", fail: "FAIL", skip: "skip", error: "ERROR" } as const;
 const tally = (checks: Check[], status: Status): number => checks.filter((c) => c.status === status).length;
+// With --task or --agent, one decision or entry the RPC cannot read is an error line of its own, and the rest still run.
+const unread = (what: string, error: unknown): Check => ({ name: "rpc", status: "error", message: `could not check ${what}: ${errorMessage(error)}` });
 const ENTRY_TAGS: Record<EntryOutcome, string> = { match: "match", "no-receipt": "no receipt", withheld: "withheld", mismatch: "MISMATCH", unverified: "UNVERIFIED" };
 if (reputation) await checkEntries();
 
@@ -343,7 +346,7 @@ async function checkEntries(): Promise<never> {
     const found = await entriesOf(registry, agentId);
     if (found.length === 0) fail(`BrainChain has written no entry for agent ${agentId} ${where}`);
     const reports: EntryReport[] = [];
-    for (const f of found) reports.push(await verifyEntry(ctx, registry, f));
+    for (const f of found) reports.push(await verifyEntry(ctx, registry, f).catch((error: unknown) => entryReport(registry, f, [unread(`entry ${entryName(registry, f)}`, error)])));
     reportEntries(reports, `Agent ${agentId} ${where}: ${found.length} entr${found.length === 1 ? "y" : "ies"} BrainChain wrote`, agentId.toString());
   } catch (error) {
     fail(errorMessage(error));
@@ -361,7 +364,7 @@ try {
     const ids = await decisionsOf(ctx, task);
     if (ids.length === 0) fail(`Task ${task} has no decisions ${where}`);
     const reports: DecisionReport[] = [];
-    for (const id of ids) reports.push(await verifyDecision(ctx, id));
+    for (const id of ids) reports.push(await verifyDecision(ctx, id).catch((error: unknown) => ({ id: Number(id), checks: [unread(`decision ${id}`, error)] })));
     report(reports, `Task ${task} ${where} (TaskBoard ${set.board}): decision${ids.length === 1 ? "" : "s"} ${ids.join(", ")}`, Number(task));
   }
 

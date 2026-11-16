@@ -1906,6 +1906,23 @@ export interface EntryReport {
 export const entryName = (registry: Registry, f: Pick<Feedback, "agentId" | "clientAddress" | "feedbackIndex">): string =>
   `${f.agentId}:${eq(f.clientAddress, registry.writers[0] ?? "") ? "" : `${f.clientAddress}:`}${f.feedbackIndex}`;
 
+/** An entry as its NewFeedback event states it, with `checks` as its own. */
+export function entryReport(registry: Registry, f: Feedback, checks: Check[]): EntryReport {
+  return {
+    entry: entryName(registry, f),
+    agentId: f.agentId.toString(),
+    clientAddress: f.clientAddress,
+    feedbackIndex: Number(f.feedbackIndex),
+    value: Number(f.value),
+    block: Number(f.block),
+    transaction: f.transaction,
+    endpoint: clean(f.endpoint),
+    feedbackURI: clean(f.feedbackURI),
+    feedbackHash: f.feedbackHash,
+    checks,
+  };
+}
+
 /** Every entry BrainChain wrote for an agent, from the writers given or all of its own, oldest first. */
 export async function entriesOf(registry: Registry, agentId: bigint, writers: readonly Address[] = registry.writers): Promise<Feedback[]> {
   const { client, address } = registry;
@@ -1932,19 +1949,7 @@ export async function entriesOf(registry: Registry, agentId: bigint, writers: re
  */
 export async function verifyEntry(ctx: Context, registry: Registry, f: Feedback): Promise<EntryReport> {
   const c = new Checks();
-  const report: EntryReport = {
-    entry: entryName(registry, f),
-    agentId: f.agentId.toString(),
-    clientAddress: f.clientAddress,
-    feedbackIndex: Number(f.feedbackIndex),
-    value: Number(f.value),
-    block: Number(f.block),
-    transaction: f.transaction,
-    endpoint: clean(f.endpoint),
-    feedbackURI: clean(f.feedbackURI),
-    feedbackHash: f.feedbackHash,
-    checks: c.list,
-  };
+  const report = entryReport(registry, f, c.list);
   await checkStored(registry, c, f);
 
   const page = taskPage(ctx.network.sets, f.endpoint);

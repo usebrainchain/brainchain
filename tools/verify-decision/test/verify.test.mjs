@@ -25,8 +25,9 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
-import { taskBoardAbi } from "../dist/abi.js";
+import { decisionLogAbi, taskBoardAbi } from "../dist/abi.js";
 import { canonicalStringify } from "../dist/canonical.js";
+import { NETWORKS } from "../dist/deployments.js";
 import { balancesFrom, clean, entriesOf, entryName, entryOutcome, entrySummary, outcomeOf, readReceipt, receiptDecision, REPUTATION, verifyDecision, verifyEntry, withheldNotChecked } from "../dist/verify.js";
 
 const YES = `0x${"0".repeat(63)}1`;
@@ -1540,7 +1541,7 @@ describe("the command line", () => {
   const MAINNET = 274663;
   const urlOf = (rpc) => `http://127.0.0.1:${rpc.address().port}`;
 
-  /** Answers as `chainId`, and with `answer` or an empty DecisionLog, so the CLI names the set it chose and stops. */
+  /** Answers as `chainId`, and with `answer` or an empty DecisionLog, so the CLI names the set it chose and stops. An Error from `answer` is a JSON-RPC error. */
   async function stubRpc(chainId, answer = () => `0x${"0".repeat(64)}`) {
     const rpc = createServer((request, response) => {
       let body = "";
@@ -1548,12 +1549,14 @@ describe("the command line", () => {
       request.on("end", () => {
         const { id, method, params } = JSON.parse(body);
         const result = method === "eth_chainId" ? toHex(chainId) : answer(method, params);
-        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id, result }));
+        const reply = result instanceof Error ? { error: { code: -32000, message: result.message } } : { result };
+        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id, ...reply }));
       });
     });
     await new Promise((resolve) => rpc.listen(0, "127.0.0.1", resolve));
     return rpc;
   }
+  const log = (address, topics, data, block) => ({ address, topics, data, blockNumber: toHex(block), blockHash: `0x${"ab".repeat(32)}`, transactionHash: `0x${"e1".repeat(32)}`, transactionIndex: "0x0", logIndex: "0x0", removed: false });
   const onlyError = (stdout) => {
     const out = JSON.parse(stdout);
     assert.deepEqual(Object.keys(out), ["error"]);
@@ -1676,12 +1679,11 @@ describe("the command line", () => {
       { clientAddress: FORMER, endpoint: "https://usebrainchain.com/task?id=9", block: 103_400_000n },
       { clientAddress: WRITER, endpoint: `https://usebrainchain.com/task?id=49&board=${BOARD}`, block: 114_000_000n },
     ].map((e) => ({ agentId: 20424n, feedbackIndex: 1n, value: 100n, tag1: "brainchain", tag2: "task", feedbackURI: e.endpoint, feedbackHash: NO, ...e }));
-    const log = (address, topics, data, block) => ({ address, topics, data, blockNumber: toHex(block), blockHash: `0x${"ab".repeat(32)}`, transactionHash: `0x${"e1".repeat(32)}`, transactionIndex: "0x0", logIndex: "0x0", removed: false });
     const robinhood = await stubRpc(4663, (method, [params] = []) => {
       if (method === "eth_blockNumber") return toHex(115_000_000n);
       if (method === "eth_call") {
         const { args } = decodeFunctionData({ abi: registryAbi, data: params.data });
-        const e = entries.find((x) => x.clientAddress.toLowerCase() === args[1].toLowerCase());
+        const e = entries.find((x) => x.clientAddress.toLowerCase() === args[1].toLowerCase() && x.feedbackIndex === args[2]);
         return encodeFunctionResult({ abi: registryAbi, functionName: "readFeedback", result: [e.value, 0, e.tag1, e.tag2, false] });
       }
       return entries
@@ -1697,11 +1699,12 @@ describe("the command line", () => {
     });
     const zero = `0x${"0".repeat(64)}`;
     const paid = { poster: STRANGER, bounty: 1n, deadline: 0n, status: Status.Paid, accepted: true, disputed: false, disputedByModel: false, model: keccak256(toBytes("claude")), briefHash: zero, resultHash: zero, submittedAt: 0n, gradedAt: 0n, disputedAt: 0n, postedAt: 0n, payee: STRANGER, feeRecipient: STRANGER, feeBps: 0, hireThresholdBps: 0, gradeThresholdBps: 0, ruleThresholdBps: 0, gradeWindow: 0n, disputeWindow: 0n, ruleWindow: 0n };
-    const brainchain = await stubRpc(MAINNET, (method) =>
-      method === "eth_call"
-        ? encodeFunctionResult({ abi: taskBoardAbi, functionName: "get", result: paid })
-        : [log(BOARD, encodeEventTopics({ abi: taskBoardAbi, eventName: "WorkerHired", args: { id: 49n, model: paid.model, decisionId: 7n } }), "0x", 900n)],
-    );
+    // Task 50 is one this node cannot read, as a node that lags answers.
+    const brainchain = await stubRpc(MAINNET, (method, [params] = []) => {
+      if (method !== "eth_call") return [log(BOARD, encodeEventTopics({ abi: taskBoardAbi, eventName: "WorkerHired", args: { id: 49n, model: paid.model, decisionId: 7n } }), "0x", 900n)];
+      const { args } = decodeFunctionData({ abi: taskBoardAbi, data: params.data });
+      return args[0] === 50n ? new Error("header not found") : encodeFunctionResult({ abi: taskBoardAbi, functionName: "get", result: paid });
+    });
     const rpcs = ["--rpc", urlOf(brainchain), "--registry-rpc", urlOf(robinhood)];
     try {
       const one = await runAsync("mainnet", "--entry", "20424:1", ...rpcs);
@@ -1739,9 +1742,51 @@ describe("the command line", () => {
       const crossed = await runAsync("mainnet", "--entry", "20424:1", "--rpc", urlOf(brainchain), "--registry-rpc", urlOf(brainchain), "--json");
       assert.equal(crossed.code, 2);
       assert.match(onlyError(crossed.stdout), /^The registry RPC serves chain 274663, not Robinhood Chain \(4663\)$/);
+
+      // An entry the RPC cannot read is an error on its own line, and the others are still checked.
+      const unread = `https://usebrainchain.com/task?id=50&board=${BOARD}`;
+      entries.push({ ...entries[1], feedbackIndex: 2n, endpoint: unread, feedbackURI: unread, block: 114_500_000n });
+      const partial = await runAsync("mainnet", "--agent", "20424", ...rpcs);
+      assert.equal(partial.code, 1);
+      assert.match(partial.stdout, /\n {2}no receipt 20424:1 {2}value 100, task 49 in set v3-5\n {2}UNVERIFIED 20424:2 {2}value 100, endpoint https:\/\/usebrainchain\.com\/task\?id=50&board=0x\w+\n {13}ERROR could not check entry 20424:2: .*header not found.*\n\n3 entries, 0 with a receipt, 0 verified, 0 failed, 1 could not be checked\.\n/);
     } finally {
       robinhood.close();
       brainchain.close();
+    }
+  });
+
+  it("checks the rest of a task's decisions when the RPC cannot read one", async () => {
+    const [active] = NETWORKS.mainnet.sets;
+    const subject = keccak256(encodeAbiParameters([{ type: "uint256" }, { type: "address" }, { type: "uint256" }], [BigInt(MAINNET), active.board, 7n]));
+    const decision = { kind: 2, subject, inputHash: NO, answer: YES, confidenceBps: 9000, recordedAt: 1793000000n };
+    const recorded = (id) =>
+      log(
+        active.log,
+        encodeEventTopics({ abi: decisionLogAbi, eventName: "Recorded", args: { id, kind: 2, subject } }),
+        encodeAbiParameters(parseAbiParameters("bytes32, bytes32, uint16, bytes32, string"), [NO, YES, 9000, NO, `${base}/no-such-record`]),
+        900n,
+      );
+    // Decision 1 is one this node cannot read, as a node that lags answers.
+    const rpc = await stubRpc(MAINNET, (method, [params] = []) => {
+      if (method === "eth_getLogs") return params.topics[1] ? [recorded(BigInt(params.topics[1]))] : [recorded(1n), recorded(2n)];
+      if (params.to.toLowerCase() === active.board.toLowerCase()) return encodeFunctionResult({ abi: taskBoardAbi, functionName: "count", result: 7n });
+      const { args } = decodeFunctionData({ abi: decisionLogAbi, data: params.data });
+      return args[0] === 1n ? new Error("header not found") : encodeFunctionResult({ abi: decisionLogAbi, functionName: "get", result: decision });
+    });
+    try {
+      const text = await runAsync("mainnet", "--task", "7", "--rpc", urlOf(rpc));
+      assert.equal(text.code, 1);
+      assert.match(text.stdout, /\nDecision 1\n {2}ERROR could not check decision 1: .*header not found.*\n\nDecision 2\n {2}ok {4}read from DecisionLog .*\n {2}ERROR could not fetch the record: .*status 404.*\n\nVerdict: UNVERIFIED\. /);
+
+      const { stdout } = await runAsync("mainnet", "--task", "7", "--rpc", urlOf(rpc), "--json");
+      const out = JSON.parse(stdout);
+      assert.equal(out.verdict, "unverified");
+      assert.deepEqual(out.decisions.map((d) => [d.id, d.verdict, d.checks.map((c) => `${c.name} ${c.status}`)]), [
+        [1, "unverified", ["rpc error"]],
+        [2, "unverified", ["read ok", "fetch error"]],
+      ]);
+    } finally {
+      rpc.close();
     }
   });
 
