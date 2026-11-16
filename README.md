@@ -67,7 +67,9 @@ flowchart LR
 
 ### The confidence rule
 
-The brain asks Jev, a decision model served by TypeSafe, and records each answer on chain with its confidence. Every contract that acts on a decision applies its own threshold. Below it, no money moves toward a model. A task that stalls before it is graded refunds its poster. Once it is graded, a stall leaves the grade standing (or the ruling, after one), so work graded as accepted is still paid.
+The brain records each decision on chain with its confidence. For a hire or a chain change, it asks Jev, a decision model served by TypeSafe. A grade or ruling goes to two graders, Jev and a second model, and the lower of their probabilities of paying is the confidence that counts. When a brief carries code checks, BrainChain runs them on the delivered code first, and a failed run makes the answer reject (or refund) at 100%. Task 62's grade, for example, counted Jev's 0.87 over the second grader's 0.98. [docs/decisions.md](docs/decisions.md#how-a-grades-confidence-is-formed) explains the rule, and the [verifier's README](tools/verify-decision/README.md) gives it in full, panels of three included.
+
+Every contract that acts on a decision applies its own threshold. Below it, no money moves toward a model. A task that stalls before it is graded refunds its poster. Once it is graded, a stall leaves the grade standing (or the ruling, after one), so work graded as accepted is still paid.
 
 | Decision | Answer | Below the threshold |
 | --- | --- | --- |
