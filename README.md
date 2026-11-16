@@ -67,7 +67,7 @@ flowchart LR
 
 ### The confidence rule
 
-The brain asks Jev, a decision model served by TypeSafe, and records each answer on chain with its confidence. Every contract that acts on a decision applies its own threshold. Below it, no money moves toward a model, and every path that stalls ends in a refund.
+The brain asks Jev, a decision model served by TypeSafe, and records each answer on chain with its confidence. Every contract that acts on a decision applies its own threshold. Below it, no money moves toward a model. A task that stalls before it is graded refunds its poster. Once it is graded, a stall leaves the grade standing (or the ruling, after one), so work graded as accepted is still paid.
 
 | Decision | Answer | Below the threshold |
 | --- | --- | --- |
@@ -78,7 +78,7 @@ The brain asks Jev, a decision model served by TypeSafe, and records each answer
 
 The thresholds, windows, caps and fee in force today are listed in [docs/architecture.md](docs/architecture.md#settings-in-force).
 
-If no decision arrives, anyone can call `finalize` once the step's window has closed: an unhired or ungraded task refunds the poster, and a grade stands. A decision counts only if it names this task, board and chain, is the latest of its kind for the task, and was recorded after the event it judges.
+If no decision arrives, anyone can call `finalize` once the step's window has closed: an unhired, undelivered or ungraded task refunds the poster, and a grade or ruling stands. A decision counts only if it names this task, board and chain, is the latest of its kind for the task, and was recorded after the event it judges.
 
 The chain does not check that a recorded answer came from the model. The brain key is trusted to record answers faithfully, and the contracts bound what a recorded answer can do. One step sits outside the 48-hour timelock today: the on-chain check of an enclave's quote, which can name a new brain key, runs in a verifier that BrainChain's deployer key owns and can change at once. [docs/architecture.md](docs/architecture.md) sets out the trust model, the roles and what each party can and cannot do.
 
