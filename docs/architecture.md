@@ -39,7 +39,7 @@ The brain is the service that asks Jev, a decision model served by TypeSafe, and
 - money moves only to the poster, to the account that delivered the work, or to the fee recipient fixed at posting;
 - house tasks are capped per task and per day, and treasury transfers wait out a public timelock that the guardian can veto.
 
-So a compromised brain key can record dishonest answers, but it cannot pay an address outside the registry or the governance allow-list, pay a model for a task it was not hired for, reach the treasury without a timelock, or replace itself or the guardian. A new brain key is named only by the admin timelock, or by an enclave whose quote verifies on chain and whose measurements the timelock has allowed.
+So a compromised brain key can record dishonest answers, but it cannot pay an address outside the registry or the governance allow-list, pay a model for a task it was not hired for, reach the treasury without a timelock, or replace itself or the guardian. A new brain key is named only by the admin timelock, or by an enclave whose quote verifies on chain and whose measurements the timelock has allowed. The quote check is the exception to the timelock: BrainChain's deployer key owns the verifier and can change it without delay, so a changed verifier could accept a quote that names another brain key ([The quote check](#the-quote-check)).
 
 ## Parties and what they can do
 
@@ -58,7 +58,9 @@ The admin's power over `WorkerStaking` reaches workers' stakes. A slasher can bu
 
 Chain-level powers (BrainChain's chain owner and the UpgradeExecutors on both chains) belong to the admin timelocks, so every upgrade, every change of guardian and every enclave measurement allowed to name the brain is announced 48 hours before it can take effect. An enclave already allowed names its key with a fresh quote and no further delay (`DecisionLog.attestBrain`).
 
-The quote check itself is outside the timelock today. `DecisionLog.attestation()` is a wrapper (`0xdb2a8FA9018946438772DCB0756e39b17F81E416`) that calls Automata's DCAP entrypoint (`0x94552cb7C8806fAD00c4EB59182E98C5Ba4bBfcb`), and the entrypoint, its PCCS router and its collateral stores are owned by BrainChain's deployer key. That key can change how quotes are verified without the 48-hour delay, so a changed verifier could accept a quote that names another brain key. The next contract set, 3.6.0, is to check the verifier inside `DecisionLog`.
+## The quote check
+
+The quote check itself is outside the timelock today. `DecisionLog.attestation()` is a wrapper (`0xdb2a8FA9018946438772DCB0756e39b17F81E416`) that calls Automata's DCAP entrypoint (`0x94552cb7C8806fAD00c4EB59182E98C5Ba4bBfcb`), and the entrypoint, its PCCS router and its collateral stores are owned by BrainChain's deployer key, `0x8D4b5d7E287ddf83C440a19b2DD6037F58723660`. That key can change how quotes are verified without the 48-hour delay, so a changed verifier could accept a quote that names another brain key. The same key is one of the two owners of the admin Safe, whose two signatures schedule every admin operation. The next contract set, 3.6.0, is to check the verifier inside `DecisionLog`.
 
 ## Thresholds and terms live in the contracts
 
