@@ -97,8 +97,9 @@ export interface Payment {
 
 /**
  * How a transaction changed each owner's balance of `asset`, by owner, in
- * lowercase on EVM networks. Undefined when it is not on `network` or did not
- * succeed.
+ * lowercase on EVM networks. Undefined when it did not succeed, or cannot be on
+ * `network`. Throws when the network's RPC does not find it, which a lagging
+ * node can explain.
  */
 export type Balances = (network: string, transaction: string, asset: string) => Promise<Map<string, bigint> | undefined>;
 
@@ -107,7 +108,7 @@ export interface Context {
   network: Network;
   set: ContractSet;
   briefs: Map<bigint, Promise<Brief>>;
-  /** Reads payment transactions; public RPCs for Base, Robinhood Chain and Solana when absent. */
+  /** Reads payment transactions; public RPCs for Base, Robinhood Chain and Solana when absent. balancesFrom builds one from other RPCs. */
   balances?: Balances;
   /** Fetches no receipt from the brain host, so only one given to verifyDecision is checked. */
   offline?: boolean;
@@ -1703,29 +1704,35 @@ const PAYMENT_RPCS: Record<string, string> = {
   "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1": "https://api.devnet.solana.com",
 };
 const TRANSFER = parseAbi(["event Transfer(address indexed from, address indexed to, uint256 value)"]);
-const paymentClients = new Map<string, PublicClient>();
+// Not a failed payment: a node behind the head, or a Solana transaction not yet finalized, does not have it yet.
+const UNSEEN = "the RPC does not find it yet: a node that lags, or a Solana transaction not yet finalized, can miss one";
 
-const balancesOnChain: Balances = async (network, transaction, asset) => {
-  const rpc = Object.hasOwn(PAYMENT_RPCS, network) ? PAYMENT_RPCS[network] : undefined;
-  if (!rpc) throw new Refused(`the tool has no RPC for ${clean(network)}`);
-  if (network.startsWith("solana:")) return solanaBalances(rpc, transaction, asset);
-  if (!BYTES32.test(transaction)) return undefined;
-  let client = paymentClients.get(network);
-  if (!client) paymentClients.set(network, (client = createPublicClient({ transport: http(rpc) }) as PublicClient));
-  const receipt = await client.getTransactionReceipt({ hash: transaction as Hex }).catch((error: unknown) => {
-    if (error instanceof TransactionReceiptNotFoundError) return undefined;
-    throw error;
-  });
-  if (receipt?.status !== "success") return undefined;
-  const changes = new Map<string, bigint>();
-  const add = (owner: string, value: bigint) => changes.set(owner.toLowerCase(), (changes.get(owner.toLowerCase()) ?? 0n) + value);
-  for (const { address, args } of parseEventLogs({ abi: TRANSFER, logs: receipt.logs, eventName: "Transfer", strict: true })) {
-    if (!eq(address, asset)) continue;
-    add(args.from, -args.value);
-    add(args.to, args.value);
-  }
-  return changes;
-};
+/** Reads payment transactions from the RPC given for each CAIP-2 network, such as eip155:8453. */
+export function balancesFrom(rpcs: Readonly<Record<string, string>>): Balances {
+  const clients = new Map<string, PublicClient>();
+  return async (network, transaction, asset) => {
+    const rpc = Object.hasOwn(rpcs, network) ? rpcs[network] : undefined;
+    if (!rpc) throw new Refused(`the tool has no RPC for ${clean(network)}`);
+    if (network.startsWith("solana:")) return solanaBalances(rpc, transaction, asset);
+    if (!BYTES32.test(transaction)) return undefined;
+    let client = clients.get(network);
+    if (!client) clients.set(network, (client = createPublicClient({ transport: http(rpc) }) as PublicClient));
+    const receipt = await client.getTransactionReceipt({ hash: transaction as Hex }).catch((error: unknown) => {
+      throw error instanceof TransactionReceiptNotFoundError ? new Error(UNSEEN) : error;
+    });
+    if (receipt.status !== "success") return undefined;
+    const changes = new Map<string, bigint>();
+    const add = (owner: string, value: bigint) => changes.set(owner.toLowerCase(), (changes.get(owner.toLowerCase()) ?? 0n) + value);
+    for (const { address, args } of parseEventLogs({ abi: TRANSFER, logs: receipt.logs, eventName: "Transfer", strict: true })) {
+      if (!eq(address, asset)) continue;
+      add(args.from, -args.value);
+      add(args.to, args.value);
+    }
+    return changes;
+  };
+}
+
+const balancesOnChain = balancesFrom(PAYMENT_RPCS);
 
 interface TokenBalance {
   mint?: unknown;
@@ -1746,7 +1753,8 @@ async function solanaBalances(rpc: string, signature: string, mint: string): Pro
   const { result, error } = (await response.json()) as { result?: { meta?: Meta } | null; error?: { message?: unknown } };
   if (error) throw new Error(`${rpc} answered: ${clean(String(error.message))}`);
   const meta = result?.meta;
-  if (!meta || meta.err !== null) return undefined;
+  if (!meta) throw new Error(UNSEEN);
+  if (meta.err !== null) return undefined;
   const changes = new Map<string, bigint>();
   for (const [sign, balances] of [[-1n, meta.preTokenBalances], [1n, meta.postTokenBalances]] as const) {
     for (const { mint: of, owner, uiTokenAmount } of balances ?? []) {

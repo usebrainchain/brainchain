@@ -27,7 +27,7 @@ import { privateKeyToAccount } from "viem/accounts";
 
 import { taskBoardAbi } from "../dist/abi.js";
 import { canonicalStringify } from "../dist/canonical.js";
-import { clean, entriesOf, entryName, entryOutcome, outcomeOf, readReceipt, receiptDecision, REPUTATION, verifyDecision, verifyEntry, withheldNotChecked } from "../dist/verify.js";
+import { balancesFrom, clean, entriesOf, entryName, entryOutcome, outcomeOf, readReceipt, receiptDecision, REPUTATION, verifyDecision, verifyEntry, withheldNotChecked } from "../dist/verify.js";
 
 const YES = `0x${"0".repeat(63)}1`;
 const NO = `0x${"0".repeat(64)}`;
@@ -1079,6 +1079,53 @@ describe("evidence and receipts", () => {
       assert.equal(outcomeOf([none]), "match");
     } finally {
       await manifest();
+    }
+  });
+
+  it("is an error when the payment's RPC does not find the transaction, and a failure only once it reverted or failed", async () => {
+    const record = sealed(accepted());
+    const receipt = given(await issued(record));
+    // A node for Base and Solana that holds `transactions` by hash or signature, and answers null for any other.
+    const transactions = {};
+    const node = createServer((request, response) => {
+      let body = "";
+      request.on("data", (chunk) => (body += chunk));
+      request.on("end", () => {
+        const { id, params } = JSON.parse(body);
+        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id, result: transactions[params[0]] ?? null }));
+      });
+    });
+    await new Promise((resolve) => node.listen(0, "127.0.0.1", resolve));
+    const SOLANA = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
+    const url = `http://127.0.0.1:${node.address().port}`;
+    const balances = balancesFrom({ [PAYMENT.network]: url, [SOLANA]: url });
+    try {
+      const unseen = await paid(record, { receipt, balances });
+      assert.equal(status(unseen, "receipt-payment"), "error");
+      assert.match(check(unseen, "receipt-payment").message, /was not checked: the RPC does not find it yet/);
+      assert.equal(outcomeOf([unseen]), "unverified");
+
+      transactions[PAYMENT.transaction] = { status: "0x0", logs: [] };
+      const reverted = await paid(record, { receipt, balances });
+      assert.deepEqual(failed(reverted), ["receipt-payment"]);
+      assert.match(check(reverted, "receipt-payment").message, /did not succeed, or is not on that network$/);
+
+      const topics = encodeEventTopics({ abi: parseAbi(["event Transfer(address indexed from, address indexed to, uint256 value)"]), eventName: "Transfer", args: { from: PAYER, to: DESK } });
+      const transfer = { address: USDC, topics, data: encodeAbiParameters([{ type: "uint256" }], [1_000_000n]), blockNumber: "0x1", logIndex: "0x0", transactionIndex: "0x0", transactionHash: PAYMENT.transaction, blockHash: `0x${"cd".repeat(32)}`, removed: false };
+      transactions[PAYMENT.transaction] = { status: "0x1", logs: [transfer] };
+      assert.deepEqual(failed(await paid(record, { receipt, balances })), []);
+
+      // Solana answers null for a transaction it has not finalized, and a meta.err for one that failed.
+      const MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+      await assert.rejects(balances(SOLANA, "pending", MINT), /does not find it yet/);
+      transactions.failed = { meta: { err: { InstructionError: [0, "Custom"] }, preTokenBalances: [], postTokenBalances: [] } };
+      assert.equal(await balances(SOLANA, "failed", MINT), undefined);
+      const held = (owner, amount) => ({ mint: MINT, owner, uiTokenAmount: { amount } });
+      transactions.paid = { meta: { err: null, preTokenBalances: [held("payer", "5")], postTokenBalances: [held("desk", "5"), held("payer", "0")] } };
+      assert.deepEqual(await balances(SOLANA, "paid", MINT), new Map([["payer", -5n], ["desk", 5n]]));
+      await assert.rejects(balances("eip155:1", PAYMENT.transaction, USDC), /has no RPC for eip155:1/);
+    } finally {
+      node.close();
     }
   });
 

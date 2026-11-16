@@ -148,7 +148,7 @@ On a receipt, the tool checks that:
 - for a task, the board paid it for `accepted` and refunded it for `rejected`, and the last grade or ruling it applied is this decision. For a paid grade, `accepted` means accept at or above the board's grade bar when the decision was recorded.
 - `network`, `asset`, `amount`, `payer` and `transaction` are those of a payment in the record, and on that network the transaction moved `amount` of `asset` from `payer` to the desk. The desk is the `payTo` for that network in the brain host's `/network.json`, which the tool believes only when `brain()` on the active DecisionLog signed it. A desk's former addresses count on EVM networks.
 
-The tool reads payments on Base, Robinhood Chain and Solana, and on their testnets, from their public RPCs. A `/network.json` signed by another key, or naming another chain, fails `receipt-payment`. A host with no `/network.json`, or a payment on a network the tool has no RPC for, skips it. A host or RPC that does not answer is an `ERROR`.
+The tool reads payments on Base, Robinhood Chain and Solana, and on their testnets, from their public RPCs. A `/network.json` signed by another key, or naming another chain, fails `receipt-payment`. A host with no `/network.json`, or a payment on a network the tool has no RPC for, skips it. A host or RPC that does not answer is an `ERROR`, and so is a payment transaction the RPC does not find yet, since a node that lags or a Solana transaction not yet finalized can miss one. Only a transaction that reverted, or failed on Solana, fails.
 
 ### Keeping a receipt
 
