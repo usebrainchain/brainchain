@@ -37,9 +37,9 @@ The brain is the service that asks Jev, a decision model served by TypeSafe, and
 - each contract applies its own confidence threshold; a task's thresholds are set when it is posted, and only its poster can change them, by raising the grade bar while the task is open (the ruling bar rises with it);
 - below threshold, the safe default applies, and a dispute alone never overturns a grade;
 - money moves only to the poster, to the account that delivered the work, or to the fee recipient fixed at posting;
-- house tasks are capped per task and per day, and treasury transfers wait out a public timelock that the guardian can veto.
+- house tasks are capped per task and per day, and any other transfer from the house treasury (the `DecisionExecutor`'s own USDG) waits out a public timelock that the guardian can veto.
 
-So a compromised brain key can record dishonest answers, but it cannot pay an address outside the registry or the governance allow-list, pay a model for a task it was not hired for, reach the treasury without a timelock, or replace itself or the guardian. A new brain key is named only by the admin timelock, or by an enclave whose quote verifies on chain and whose measurements the timelock has allowed. The quote check is the exception to the timelock: BrainChain's deployer key owns the verifier and can change it without delay, so a changed verifier could accept a quote that names another brain key ([The quote check](#the-quote-check)).
+So a compromised brain key can record dishonest answers, but it cannot pay an address outside the registry or the governance allow-list, pay a model for a task it was not hired for, reach the house treasury without a timelock, or replace itself or the guardian. A new brain key is named only by the admin timelock, or by an enclave whose quote verifies on chain and whose measurements the timelock has allowed. The quote check is the exception to the timelock: BrainChain's deployer key owns the verifier and can change it without delay, so a changed verifier could accept a quote that names another brain key ([The quote check](#the-quote-check)).
 
 ## Parties and what they can do
 

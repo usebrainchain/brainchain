@@ -101,7 +101,7 @@ Explorer: [usebrainchain.com/explorer](https://usebrainchain.com/explorer).
 | [`Inscriptions`](src/Inscriptions.sol) | [`0x770D6756CA8a1627FFf01B846383b13d6fa0c514`](https://usebrainchain.com/address?a=0x770D6756CA8a1627FFf01B846383b13d6fa0c514) | The operations log: upgrades, deployments and configuration changes, one event each |
 | [`PayoutPreferences`](src/PayoutPreferences.sol) | [`0x2b0d01f5D25F5894590b3281705a48db8740946F`](https://usebrainchain.com/address?a=0x2b0d01f5D25F5894590b3281705a48db8740946F) | A worker's choice of payout asset; the 3.5.0 board does not read it yet |
 
-Bounties are in USDG and stakes in $BRAIN, both bridged from Robinhood Chain (USDG `0x8eBFEce96c0AeF7Fd23425D846a302a552c8c451`, $BRAIN `0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37`). The protocol fee is 3%, paid to the BrainChain treasury.
+Bounties are in USDG and stakes in $BRAIN, both bridged from Robinhood Chain (USDG `0x8eBFEce96c0AeF7Fd23425D846a302a552c8c451`, $BRAIN `0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37`). The board takes a 3% fee from each bounty it pays and sends it to the admin Safe. `TaskBoard.feeRouter()` names that recipient; on mainnet it is the Safe itself, and no `FeeRouter` contract is deployed.
 
 ### Robinhood Chain
 
@@ -120,6 +120,17 @@ Explorer: [robinhoodchain.blockscout.com](https://robinhoodchain.blockscout.com)
 Rewards for accepted work are paid in ETH by `RewardDistributor`. Its publisher posts a round as a Merkle root over ETH the distributor already holds; claims open 24 hours after publishing, which leaves the treasury Safe time to revoke a bad round, and close 12 weeks after. Its ETH comes from `FeeSplitter`, which until 4 November 2026 received a quarter of the $BRAIN launch income from `ProofsIncome`. That share is now zero, and the splitter has no other income: its curve is not bound (`launchToken` is zero) and it holds no ETH. Two rounds have been published, on 2 and 8 November 2026, and both are fully claimed. The distributor holds 0.05 ETH for the next round. A round is published when there is income to distribute, not on a schedule.
 
 $BRAIN is at [`0xC80333bf7f4078e14Ce5b6e223aF607aDcA44418`](https://robinhoodchain.blockscout.com/token/0xC80333bf7f4078e14Ce5b6e223aF607aDcA44418). The token, the Proofs collection and the launch treasury listed in `deployments/mainnet.json` come from ripples.run; their source is not in this repository.
+
+### Treasuries
+
+Four different accounts are called a treasury in this repository and its contracts:
+
+| Name | Address | Chain | What it is |
+| --- | --- | --- | --- |
+| Admin Safe | `0xdFeFbdBF680568e8DC44abbbd657c0701964cC8c` | BrainChain | A Safe that needs both of its two owners to sign. It receives the board's fee and any appeal bond the board keeps (`TaskBoard.feeRouter()`), proposes, cancels and executes every AdminTimelock operation, and holds the guardian powers through `GuardianGate` |
+| House treasury | `0xFD268Ae2c1Ec0Db03C3C6b17E1AEDE973729FE29` (`DecisionExecutor`) | BrainChain | The executor's own USDG balance. The brain posts house tasks from it within the caps; any other transfer needs an adopted change and its timelock |
+| Treasury Safe | `0x9a4B2A33644D3a65059cAA8E0A46b988bcC1D52d` | Robinhood Chain | A Safe with the same two owners, both of whom must sign. It owns the Robinhood Chain contracts above, receives what `ProofsIncome` distributes and `FeeSplitter`'s other half, and proposes, cancels and executes every RollupAdminTimelock operation |
+| BrainLaunchTreasury | `0x396003b5Ffb940466325622D05f1b59acCF894A2` | Robinhood Chain | The $BRAIN launch's treasury on ripples.run, which pays the launch's creator income to `ProofsIncome` in WETH |
 
 ### Testnet
 
