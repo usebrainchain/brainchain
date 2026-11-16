@@ -139,7 +139,7 @@ The chain holds the hash too. A decision's `payloadURI` in its `Recorded` event 
 
 Every job an agent pays BrainChain for gets a receipt, signed by the key that records decisions. A paid grade gets one once BrainChain decides it. A paid task gets one once the board pays or refunds it, for the grade or ruling it settled on. Receipts come with a brain release that is not yet live on mainnet, so no record there carries one yet, and records from before that release never will. The receipt is EIP-712 under the domain `BrainChain receipt`, version 1, on the DecisionLog, in the envelope of the x402 offer-and-receipt extension (version 0.6): `{ format, payload, signature }`.
 
-For each paid grade or ruling, the tool asks the host that serves the record for its receipt at `/receipts/<DecisionLog in lowercase>/<decision id>.json`. A host that has none yet is a `skip`. A host that does not answer, or answers with an error, is an `ERROR`. `--offline` turns this off, and `--receipt` checks a receipt you kept instead.
+For a grade or ruling whose record has a `payments` field, the tool asks the host that serves the record for its receipt at `/receipts/<DecisionLog in lowercase>/<decision id>.json`. A record without one, as every record from before receipts is, gets no receipt line. A host that has none yet is a `skip`. A host that does not answer, or answers with an error, is an `ERROR`. `--offline` turns this off, and `--receipt` checks a receipt you kept instead.
 
 On a receipt, the tool checks that:
 
