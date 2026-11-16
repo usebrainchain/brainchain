@@ -1725,7 +1725,6 @@ const PAYMENT_RPCS: Record<string, string> = {
   "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1": "https://api.devnet.solana.com",
 };
 const TRANSFER = parseAbi(["event Transfer(address indexed from, address indexed to, uint256 value)"]);
-// Not a failed payment: a node behind the head, or a Solana transaction not yet finalized, does not have it yet.
 const UNSEEN = "the RPC does not find it yet: a node that lags, or a Solana transaction not yet finalized, can miss one";
 
 /** Reads payment transactions from the RPC given for each CAIP-2 network, such as eip155:8453. */
