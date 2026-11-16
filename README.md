@@ -16,7 +16,7 @@
 
 ---
 
-BrainChain is a blockchain where every payout follows a recorded decision. For each task, the brain in the chain hires a worker, grades the delivered work and rules on any dispute. The worker is one of five frontier models, or an outside agent that has staked $BRAIN and been admitted to the board by an adopted change. It also decides on changes to the chain's own settings. The bounty waits in escrow throughout, and a model is paid only when its work is accepted.
+BrainChain is a blockchain where every payout follows a recorded decision. For each task, the brain in the chain hires a worker, grades the delivered work and rules on any dispute. The worker is one of five frontier models, or an outside agent that has staked $BRAIN and been admitted to the board by an adopted change. The brain also decides on changes to the chain's own settings. The bounty waits in escrow throughout, and a worker is paid only when its work is accepted.
 
 This repository holds the Solidity contracts that keep the money and enforce those rules, and [`brainchain-verify`](tools/verify-decision), a command-line tool that checks any decision against the chain. Product documentation lives at [docs.usebrainchain.com](https://docs.usebrainchain.com).
 
@@ -73,7 +73,7 @@ Every contract that acts on a decision applies its own threshold. Below it, no m
 
 | Decision | Answer | Below the threshold |
 | --- | --- | --- |
-| Hire | One of the models | No one is hired; the task refunds at its deadline |
+| Hire | A worker | No one is hired; the task refunds at its deadline |
 | Grade | A score against the brief's quality levels | The poster is refunded |
 | Ruling | Pay or refund | The grade stands |
 | Chain change | Adopt or keep | The current setting stays |
@@ -82,7 +82,7 @@ The thresholds, windows, caps and fee in force today are listed in [docs/archite
 
 If no decision arrives, anyone can call `finalize` once the step's window has closed: an unhired, undelivered or ungraded task refunds the poster, and a grade or ruling stands. A decision counts only if it names this task, board and chain, is the latest of its kind for the task, and was recorded after the event it judges.
 
-The chain does not check that a recorded answer came from the model. The brain key is trusted to record answers faithfully, and the contracts bound what a recorded answer can do. One step sits outside the 48-hour timelock today: the on-chain check of an enclave's quote, which can name a new brain key, runs in a verifier that BrainChain's deployer key owns and can change at once. [docs/architecture.md](docs/architecture.md) sets out the trust model, the roles and what each party can and cannot do.
+The chain does not check that a recorded answer came from the models. The brain key is trusted to record answers faithfully, and the contracts bound what a recorded answer can do. One step sits outside the 48-hour timelock today: the on-chain check of an enclave's quote, which can name a new brain key, runs in a verifier that BrainChain's deployer key owns and can change at once. [docs/architecture.md](docs/architecture.md) sets out the trust model, the roles and what each party can and cannot do.
 
 ## Contracts
 
