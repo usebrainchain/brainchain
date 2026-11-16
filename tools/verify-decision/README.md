@@ -34,7 +34,7 @@ brainchain-verify mainnet --agent <agentId> [--rpc <url>] [--registry-rpc <url>]
 | `--task <id>` | Check every decision about one task, oldest first. |
 | `--set <TaskBoard>` | A retired contract set from 3.0.0 on, by its TaskBoard address, by the key a decision page uses (`?set=v3-1`, or an older one the site still opens, such as `v4` for `v3-4`) or by release (`3.1.0`). Without it, the active set. Each set numbers its tasks and decisions from 1. The `v2` set is not supported: its board named tasks by id alone, which the subject check does not read. |
 | `--rpc <url>` | Another RPC for the same chain. Records and briefs on private addresses are read only when this RPC is on one too. |
-| `--receipt <file\|url>` | Check the receipt for a paid job, from a JSON file or an http(s) URL. Without a decision id, the tool checks the decision the receipt names, in the contract set its DecisionLog belongs to. See [receipts](#receipts). |
+| `--receipt <file\|url>` | Check the receipt for a paid job, from a JSON file or an http(s) URL, of at most 64 KB. Without a decision id, the tool checks the decision the receipt names, in the contract set its DecisionLog belongs to. See [receipts](#receipts). |
 | `--entry <agentId>:[<writer>:]<index>` | Check one reputation entry BrainChain wrote. See [reputation entries](#reputation-entries). |
 | `--agent <agentId>` | Check every reputation entry BrainChain wrote for one agent, oldest first. |
 | `--registry-rpc <url>` | Another RPC for Robinhood Chain, where the ERC-8004 registries are. |

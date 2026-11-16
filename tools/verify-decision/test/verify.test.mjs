@@ -1510,6 +1510,18 @@ describe("records", () => {
   });
 });
 
+describe("receipt files", () => {
+  it("are read only up to the cap, and only when they are regular files", { timeout: 10_000 }, async () => {
+    const local = { transport: { url: "http://127.0.0.1:1" } };
+    await assert.rejects(readReceipt(local, "/dev/zero"), /\/dev\/zero is not a regular file, so it was not read$/);
+    const dir = await mkdtemp(join(tmpdir(), "receipt-"));
+    await assert.rejects(readReceipt(local, dir), /is not a regular file/);
+    const big = join(dir, "big.json");
+    await writeFile(big, Buffer.alloc(65 * 1024, 32));
+    await assert.rejects(readReceipt(local, big), /big\.json is larger than the 64 KB a receipt may be, so it was not read$/);
+  });
+});
+
 describe("the command line", () => {
   const cli = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
   const run = (...args) => spawnSync(process.execPath, [cli, ...args], { encoding: "utf8" });

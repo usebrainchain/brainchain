@@ -1,5 +1,5 @@
 import { lookup as dnsLookup, promises as dns, type LookupAddress } from "node:dns";
-import { readFile } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 import { Agent as HttpAgent, request as httpRequest } from "node:http";
 import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { BlockList, isIP } from "node:net";
@@ -1495,11 +1495,24 @@ function signerOf(receipt: Receipt): Promise<Address> {
   });
 }
 
+/** A file, read no further than one byte past `limit`. A device or a pipe can go on for ever, so only a regular file is read. */
+async function readCapped(path: string, limit: number): Promise<Uint8Array> {
+  if (!(await stat(path)).isFile()) throw new Refused(`${display(path)} is not a regular file, so it was not read`);
+  const file = await open(path);
+  try {
+    const bytes = new Uint8Array(limit + 1);
+    const { bytesRead } = await file.read(bytes, 0, bytes.length, 0);
+    return bytes.subarray(0, bytesRead);
+  } finally {
+    await file.close();
+  }
+}
+
 /** Reads a receipt from a file or an http(s) URL: the receipt itself, or a reply that carries it as `receipt`. */
 export async function readReceipt(client: PublicClient, source: string): Promise<GivenReceipt> {
   const bytes = /^https?:\/\//i.test(source)
     ? (await fetchBytes(source, { what: "receipt", limit: MAX_RECEIPT_BYTES, allowPrivate: await allowsPrivate(client) })).bytes
-    : await readFile(source);
+    : await readCapped(source, MAX_RECEIPT_BYTES);
   if (bytes.length > MAX_RECEIPT_BYTES) throw new TooLarge(`${display(source)} is larger than the ${MAX_RECEIPT_BYTES / 1024} KB a receipt may be, so it was not read`);
   const text = decodeText(bytes);
   const value = text === undefined ? undefined : parseJson(text);
