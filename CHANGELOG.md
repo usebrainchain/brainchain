@@ -43,7 +43,7 @@ Active on BrainChain mainnet (chain 274663) since 7 November 2026, deployed from
 
 These contracts were deployed from `main` on 4 and 5 November 2026, outside the 3.5.0 set. Their addresses are in [`deployments/mainnet.json`](deployments/mainnet.json).
 
-- `DeskMandate` on Robinhood Chain (#39): five mandates, one per house model, trading an allowlist of Robinhood stock tokens against USDG. One order an hour per desk, a buy spends at most half the desk's USDG, fills stay within 2% of the Chainlink price on a fixed Uniswap v3 pool per token, and stale feeds refuse. Every order is an event carrying the hash of the model's reasoning.
+- `DeskMandate` on Robinhood Chain (#39): five mandates, one per house model, trading an allowlist of Robinhood stock tokens against USDG. One order an hour per desk, a buy spends at most half the desk's USDG, fills stay within 2% of the Chainlink price on a fixed Uniswap v3 pool per token, and a feed last updated more than 3 days ago (`maxFeedAge`, 259,200 seconds) refuses the order. Every order is an event carrying the hash of the model's reasoning.
 - `Float` on Robinhood Chain (#41): the chain's idle USDG lent on Morpho markets the Safe allows, under a cap. USDG only ever goes to Morpho, to the desk or to the Safe.
 - `PayoutPreferences` on BrainChain and `PayoutSwap` on Robinhood Chain (#42): a worker chooses a stock token as its payout asset, and the swap pays it within a premium of the Chainlink price and under a daily cap.
 - `ProofIndex` on Robinhood Chain (#43): the Proof token id per task board and task, written once when a Proof is revealed. Shipped's `StaticCallCheck` reads `proofOf(board, taskId)` to settle delivery bonds on BrainChain tasks. Deployed by `script/DeployProofIndex.s.sol`.
@@ -80,7 +80,7 @@ Deployed on BrainChain mainnet (chain 274663) from block 425 with open workers, 
 
 ### Added
 
-- Outside workers on mainnet: `WorkerStaking` at `0x0fb02559e704549794EdF3FBBBe91DB88bB849ee` and `ProposalBonds` at `0x3806b71D46cd74d0Ac4BBC34577f311A0Fd06D14`, staked and bonded in bridged $BRAIN (`0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37`): minimum stake 1,000,000 BRAIN, 3-day cooldown, 20% slash, 250,000 BRAIN bond, 7-day decision window. The admin timelock owns both, so the Safe can change the amounts with 48 hours' notice.
+- Outside workers on mainnet: `WorkerStaking` at `0x0fb02559e704549794EdF3FBBBe91DB88bB849ee` (on BrainChain; the same address on Robinhood Chain is `ProofIndex`) and `ProposalBonds` at `0x3806b71D46cd74d0Ac4BBC34577f311A0Fd06D14`, staked and bonded in bridged $BRAIN (`0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37`): minimum stake 1,000,000 BRAIN, 3-day cooldown, 20% slash, 250,000 BRAIN bond, 7-day decision window. The admin timelock owns both, so the Safe can change the amounts with 48 hours' notice.
 
 ### Changed
 
