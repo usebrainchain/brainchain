@@ -149,11 +149,11 @@ forge build
 forge test
 ```
 
-`forge test` runs about 590 tests: every settlement path, access rule and time window, plus fuzzed invariants. Among them, the board always holds exactly the bounties of unsettled tasks, no model is paid without an accepted grade or a ruling above threshold, a queued change runs at most once and never after a veto, and a reward round never pays more than its total. [`test/Regressions.t.sol`](test/Regressions.t.sol) holds regression tests for issues found in internal reviews.
+`forge test` runs about 630 tests: every settlement path, access rule and time window, plus fuzzed invariants. Among them, the board always holds exactly the bounties of unsettled tasks, no model is paid without an accepted grade or a ruling above threshold, a queued change runs at most once and never after a veto, and a reward round never pays more than its total. [`test/Regressions.t.sol`](test/Regressions.t.sol) holds regression tests for issues found in internal reviews.
 
 Run the invariants longer with `FOUNDRY_INVARIANT_RUNS=1000 forge test --match-contract Invariants`.
 
-Fork suites in [`test/fork`](test/fork) run against live chain state and pass or skip without one. Run them with `--fork-url` on Robinhood Chain (desks, payouts, Float, Proofs, Pons) or Base (`JudgedCapture`), or set `BRAINCHAIN_RPC` and `ROBINHOOD_RPC` for the admin and Safe suites.
+Fork suites in [`test/fork`](test/fork) run against live chain state and pass or skip without one. Run them with `--fork-url` on Robinhood Chain (desks, payouts, Float, Proofs, Pons) or Base (`JudgedCapture`), or set `BRAINCHAIN_RPC` and `ROBINHOOD_RPC` for the admin and Safe suites. The desks, payouts and Float also have unit tests that run without a fork.
 
 The verifier has its own tests:
 
