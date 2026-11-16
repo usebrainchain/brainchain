@@ -1477,6 +1477,19 @@ describe("briefs", () => {
     assert.ok(!/[\x00-\x1f\x7f-\x9f‮]/.test(message), JSON.stringify(message));
     assert.equal(clean("a\x1b[31mb‮c d…"), "a?[31mb?c?d…");
   });
+
+  it("name the task by its title, or its first line, cut to 100 characters and cleaned, once read", async () => {
+    assert.equal((await verify({})).title, "T");
+    const own = async (text) => {
+      const bytes = JSON.stringify(text);
+      return (await verify({ briefURI: dataUri(bytes), briefHash: keccak256(toBytes(bytes)) })).title;
+    };
+    assert.equal(await own({ ...BRIEF, title: " ", brief: `\n  ${"Word ".repeat(30)}\nmore` }), `${"Word ".repeat(20).trimEnd()}…`);
+    assert.equal(await own({ ...BRIEF, title: "Sort\x1b[2J it‮\nsecond line" }), "Sort?[2J it?");
+    assert.equal(await own({ ...BRIEF, title: "", brief: "" }), undefined);
+    assert.equal((await verify({ briefURI: dataUri(JSON.stringify({ ...BRIEF, title: "FORGED" })) })).title, undefined);
+    assert.equal((await verify({ briefURI: `${base}/no-such-brief` })).title, undefined);
+  });
 });
 
 /** A record on a data URI and a public RPC, so only the brief's location is in question. */
@@ -1611,6 +1624,8 @@ describe("the command line", () => {
     return rpc;
   }
   const log = (address, topics, data, block) => ({ address, topics, data, blockNumber: toHex(block), blockHash: `0x${"ab".repeat(32)}`, transactionHash: `0x${"e1".repeat(32)}`, transactionIndex: "0x0", logIndex: "0x0", removed: false });
+  // A task the board paid, as TaskBoard.get returns it.
+  const paid = { poster: STRANGER, bounty: 1n, deadline: 0n, status: Status.Paid, accepted: true, disputed: false, disputedByModel: false, model: keccak256(toBytes("claude")), briefHash: NO, resultHash: NO, submittedAt: 0n, gradedAt: 0n, disputedAt: 0n, postedAt: 0n, payee: STRANGER, feeRecipient: STRANGER, feeBps: 0, hireThresholdBps: 0, gradeThresholdBps: 0, ruleThresholdBps: 0, gradeWindow: 0n, disputeWindow: 0n, ruleWindow: 0n };
   const onlyError = (stdout) => {
     const out = JSON.parse(stdout);
     assert.deepEqual(Object.keys(out), ["error"]);
@@ -1769,8 +1784,6 @@ describe("the command line", () => {
           ),
         );
     });
-    const zero = `0x${"0".repeat(64)}`;
-    const paid = { poster: STRANGER, bounty: 1n, deadline: 0n, status: Status.Paid, accepted: true, disputed: false, disputedByModel: false, model: keccak256(toBytes("claude")), briefHash: zero, resultHash: zero, submittedAt: 0n, gradedAt: 0n, disputedAt: 0n, postedAt: 0n, payee: STRANGER, feeRecipient: STRANGER, feeBps: 0, hireThresholdBps: 0, gradeThresholdBps: 0, ruleThresholdBps: 0, gradeWindow: 0n, disputeWindow: 0n, ruleWindow: 0n };
     // Task 50 is one this node cannot read, as a node that lags answers.
     const brainchain = await stubRpc(MAINNET, (method, [params] = []) => {
       if (method !== "eth_call") return [log(BOARD, encodeEventTopics({ abi: taskBoardAbi, eventName: "WorkerHired", args: { id: 49n, model: paid.model, decisionId: 7n } }), "0x", 900n)];
@@ -1849,6 +1862,37 @@ describe("the command line", () => {
       active = 40n;
       const alone = await runAsync("mainnet", "--task", "30", "--rpc", urlOf(rpc));
       assert.equal(alone.stderr, "Task 30 has no decisions on BrainChain mainnet, contract set v3-5.\n");
+    } finally {
+      rpc.close();
+    }
+  });
+
+  it("names the task by its brief under the header, so a decision read from the wrong set shows what it is about", async () => {
+    const [active] = NETWORKS.mainnet.sets;
+    const subject = keccak256(encodeAbiParameters([{ type: "uint256" }, { type: "address" }, { type: "uint256" }], [BigInt(MAINNET), active.board, 7n]));
+    const record = grade();
+    const body = JSON.stringify(record);
+    pages.set("/cli-record.json", { body });
+    const decision = { kind: 2, subject, inputHash: keccak256(toBytes(canonicalStringify(record.request))), answer: YES, confidenceBps: 9000, recordedAt: 1793000000n };
+    const brief = JSON.stringify({ ...BRIEF, title: "Port the CSV parser to streaming" });
+    const logs = [
+      log(active.log, encodeEventTopics({ abi: decisionLogAbi, eventName: "Recorded", args: { id: 1n, kind: 2, subject } }), encodeAbiParameters(parseAbiParameters("bytes32, bytes32, uint16, bytes32, string"), [decision.inputHash, YES, 9000, keccak256(toBytes(body)), `${base}/cli-record.json`]), 900n),
+      log(active.board, encodeEventTopics({ abi: taskBoardAbi, eventName: "Posted", args: { id: 7n, poster: STRANGER } }), encodeAbiParameters(parseAbiParameters("uint128, uint64, bytes32, string"), [1n, 0n, keccak256(toBytes(brief)), dataUri(brief)]), 800n),
+    ];
+    const rpc = await stubRpc(MAINNET, (method, [params] = []) => {
+      if (method === "eth_getLogs") return logs.filter((l) => l.topics[0] === params.topics[0]);
+      const abi = params.to.toLowerCase() === active.board.toLowerCase() ? taskBoardAbi : decisionLogAbi;
+      const { functionName } = decodeFunctionData({ abi, data: params.data });
+      const result = { count: abi === taskBoardAbi ? 7n : 1n, get: abi === taskBoardAbi ? paid : decision }[functionName];
+      return encodeFunctionResult({ abi, functionName, result });
+    });
+    try {
+      const one = await runAsync("mainnet", "1", "--rpc", urlOf(rpc));
+      assert.match(one.stdout, new RegExp(`^Decision 1 on BrainChain mainnet, contract set v3-5 \\(DecisionLog ${active.log}\\)\nTask 7: Port the CSV parser to streaming\n\n {2}ok {4}read `));
+      const task = await runAsync("mainnet", "--task", "7", "--rpc", urlOf(rpc));
+      assert.match(task.stdout, /^Task 7 on BrainChain mainnet, contract set v3-5 \(TaskBoard 0x\w+\): decision 1\nBrief: Port the CSV parser to streaming\n\nDecision 1\n/);
+      const { decisions } = JSON.parse((await runAsync("mainnet", "1", "--rpc", urlOf(rpc), "--json")).stdout);
+      assert.equal(decisions[0].title, "Port the CSV parser to streaming");
     } finally {
       rpc.close();
     }

@@ -67,6 +67,8 @@ export interface DecisionReport {
   id: number;
   kind?: string;
   task?: number;
+  /** The task's brief by its title, or its first line, cut to 100 characters. Set once the brief committed on chain was read. */
+  title?: string;
   /** A grade of work delivered outside BrainChain, so no task here. */
   outside?: boolean;
   /** Served without the work, as the chain shows it may be, so its hashes could not be checked. */
@@ -675,6 +677,14 @@ async function briefOf({ client, set }: Context, task: bigint): Promise<Brief> {
   return parseBrief(decodeText(bytes));
 }
 
+/** What a task is about: its brief's title, or the brief's first line, cut to 100 characters. */
+function headline({ title, brief }: Brief): string | undefined {
+  const line = [title, brief].flatMap((text) => text.split("\n")).map((l) => l.trim()).find((l) => l.length > 0);
+  if (line === undefined) return undefined;
+  const chars = [...line];
+  return clean(chars.length > 100 ? `${chars.slice(0, 99).join("").trimEnd()}…` : line);
+}
+
 /** Decision ids about one task on the set's board, oldest first. */
 export async function decisionsOf({ client, network, set }: Context, task: bigint): Promise<bigint[]> {
   const events = await client.getContractEvents({
@@ -874,6 +884,8 @@ export async function verifyDecision(ctx: Context, id: bigint, receipt?: GivenRe
   if (task !== undefined) {
     await checkBrief(ctx, c, task, decision, record, state);
     await checkTaskThreshold(ctx, c, id, task, decision, record);
+    const title = await ctx.briefs.get(task)?.then(headline, () => undefined);
+    if (title) report.title = title;
   }
   if (outside) {
     checkRun(c, decision, record, state, {

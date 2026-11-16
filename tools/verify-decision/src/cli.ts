@@ -198,6 +198,7 @@ function report(reports: DecisionReport[], header: string, task?: number): never
       id: r.id,
       kind: r.kind,
       task: r.task,
+      ...(r.title ? { title: r.title } : {}),
       ...(r.outside ? { outside: true } : {}),
       ...(r.withheld ? { withheld: true } : {}),
       ...(r.run ? { run: r.run } : {}),
@@ -378,7 +379,8 @@ try {
     if (ids.length === 0) fail(`Task ${task} has no decisions ${where}.${await otherBoards(task)}`);
     const reports: DecisionReport[] = [];
     for (const id of ids) reports.push(await verifyDecision(ctx, id).catch((error: unknown) => ({ id: Number(id), checks: [unread(`decision ${id}`, error)] })));
-    report(reports, `Task ${task} ${where} (TaskBoard ${set.board}): decision${ids.length === 1 ? "" : "s"} ${ids.join(", ")}`, Number(task));
+    const title = reports.find((r) => r.title)?.title;
+    report(reports, `Task ${task} ${where} (TaskBoard ${set.board}): decision${ids.length === 1 ? "" : "s"} ${ids.join(", ")}${title ? `\nBrief: ${title}` : ""}`, Number(task));
   }
 
   const id = BigInt(target);
@@ -388,7 +390,9 @@ try {
     const hint = others.length > 0 ? ` Each set numbers its own decisions; try --set ${others.join(" or ")}.` : "";
     fail(`DecisionLog ${set.log} (set ${set.key}) holds decisions 1 to ${decisions}.${hint}`);
   }
-  report([await verifyDecision(ctx, id, receipt)], `Decision ${id} ${where} (DecisionLog ${set.log})`);
+  const checked = await verifyDecision(ctx, id, receipt);
+  // What the task is about, so a decision read from the wrong set does not pass for the one meant.
+  report([checked], `Decision ${id} ${where} (DecisionLog ${set.log})${checked.title ? `\nTask ${checked.task}: ${checked.title}` : ""}`);
 } catch (error) {
   fail(errorMessage(error));
 }
