@@ -2182,3 +2182,26 @@ export function entryOutcome(reports: EntryReport[]): EntryOutcome {
   const outcome = outcomeOf(reports);
   return outcome === "match" && reports.every((r) => eq(r.feedbackHash, NO)) ? "no-receipt" : outcome;
 }
+
+export interface EntrySummary {
+  entries: number;
+  withReceipt: number;
+  /** Entries whose receipt and decision fully matched. A copy served without the work never does. */
+  verified: number;
+  withheld: number;
+  failed: number;
+  unverified: number;
+}
+
+export function entrySummary(reports: EntryReport[]): EntrySummary {
+  const outcomes = reports.map((r) => entryOutcome([r]));
+  const count = (outcome: EntryOutcome): number => outcomes.filter((o) => o === outcome).length;
+  return {
+    entries: reports.length,
+    withReceipt: reports.filter((r) => !eq(r.feedbackHash, NO)).length,
+    verified: count("match"),
+    withheld: count("withheld"),
+    failed: count("mismatch"),
+    unverified: count("unverified"),
+  };
+}

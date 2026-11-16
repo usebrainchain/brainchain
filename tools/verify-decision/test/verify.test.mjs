@@ -27,7 +27,7 @@ import { privateKeyToAccount } from "viem/accounts";
 
 import { taskBoardAbi } from "../dist/abi.js";
 import { canonicalStringify } from "../dist/canonical.js";
-import { balancesFrom, clean, entriesOf, entryName, entryOutcome, outcomeOf, readReceipt, receiptDecision, REPUTATION, verifyDecision, verifyEntry, withheldNotChecked } from "../dist/verify.js";
+import { balancesFrom, clean, entriesOf, entryName, entryOutcome, entrySummary, outcomeOf, readReceipt, receiptDecision, REPUTATION, verifyDecision, verifyEntry, withheldNotChecked } from "../dist/verify.js";
 
 const YES = `0x${"0".repeat(63)}1`;
 const NO = `0x${"0".repeat(64)}`;
@@ -1332,6 +1332,21 @@ describe("evidence and receipts", () => {
       assert.match(check(elsewhere, "entry-receipt").message, /^receipt: names decision 2, and DecisionLog 0x2222…2222 holds decisions 1 to 1 and decision 2 on DecisionLog 0x2222…2222, whose receipt the brain serves at \/receipts\/0x2222222222222222222222222222222222222222\/2\.json, not at /);
     });
 
+    it("counts an entry whose record is served without the work as withheld, never as verified", async () => {
+      const kept = sealed(rejected());
+      const refunded = await issued(kept, { outcome: "rejected" });
+      serve(refunded);
+      const onKept = onChain({ ...recorded(kept), serve: redacted(kept), withheld: true, task: { status: Status.Refunded, accepted: false }, balances: moved(), hired: CLAUDE, sets: [set] });
+      const withheld = await checked(onKept, entry({ receipt: refunded, value: 0n }));
+      assert.deepEqual(failed(withheld), []);
+      assert.equal(entryOutcome([withheld]), "withheld");
+
+      const { receipt, ctx } = await paidTask();
+      const verified = await checked(ctx, entry({ receipt }));
+      const plain = await checked(onChain({ task: { status: Status.Paid }, hired: CLAUDE, sets: [set] }), entry());
+      assert.deepEqual(entrySummary([verified, withheld, plain]), { entries: 3, withReceipt: 2, verified: 1, withheld: 1, failed: 0, unverified: 0 });
+    });
+
     it("lists an agent's entries from BrainChain's writers alone, oldest first, in spans the registry's RPC reads", async () => {
       const entries = [
         entry({ index: 2n, block: 24_000_000n }),
@@ -1685,7 +1700,7 @@ describe("the command line", () => {
       const asJson = await runAsync("mainnet", "--agent", "20424", ...rpcs, "--json");
       const out = JSON.parse(asJson.stdout);
       assert.equal(out.verdict, "no-receipt");
-      assert.deepEqual(out.summary, { entries: 2, withReceipt: 0, verified: 0, failed: 0, unverified: 0 });
+      assert.deepEqual(out.summary, { entries: 2, withReceipt: 0, verified: 0, withheld: 0, failed: 0, unverified: 0 });
       assert.deepEqual(out.entries.map((e) => [e.entry, e.verdict, e.set]), [[`20424:${FORMER}:1`, "no-receipt", undefined], ["20424:1", "no-receipt", "v3-5"]]);
 
       const missing = await runAsync("mainnet", "--entry", "20424:4", ...rpcs);

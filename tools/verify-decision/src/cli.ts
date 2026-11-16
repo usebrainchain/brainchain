@@ -11,6 +11,7 @@ import {
   entriesOf,
   entryName,
   entryOutcome,
+  entrySummary,
   errorMessage,
   outcomeOf,
   readReceipt,
@@ -263,14 +264,7 @@ function about(r: EntryReport): string {
 
 function reportEntries(reports: EntryReport[], header: string, agentId?: string): never {
   const outcomes = reports.map((r) => entryOutcome([r]));
-  const receipted = reports.filter((r) => BigInt(r.feedbackHash) !== 0n);
-  const summary = {
-    entries: reports.length,
-    withReceipt: receipted.length,
-    verified: receipted.filter((r) => ["match", "withheld"].includes(entryOutcome([r]))).length,
-    failed: outcomes.filter((o) => o === "mismatch").length,
-    unverified: outcomes.filter((o) => o === "unverified").length,
-  };
+  const summary = entrySummary(reports);
   const all = reports.flatMap((r) => r.checks);
   const status = tally(all, "fail") + tally(all, "error") > 0 ? 1 : 0;
   if (json) {
@@ -304,8 +298,8 @@ function reportEntries(reports: EntryReport[], header: string, agentId?: string)
       console.log(`  ${ENTRY_TAGS[outcomes[i]!].padEnd(10)} ${r.entry}  ${about(r)}`);
       for (const c of r.checks) if (c.status === "fail" || c.status === "error") console.log(`             ${TAGS[c.status].padEnd(5)} ${c.message}`);
     }
-    const { entries, withReceipt, verified, failed, unverified } = summary;
-    console.log(`\n${entries} entr${entries === 1 ? "y" : "ies"}, ${withReceipt} with a receipt, ${verified} verified, ${failed} failed${unverified > 0 ? `, ${unverified} could not be checked` : ""}.`);
+    const { entries, withReceipt, verified, withheld, failed, unverified } = summary;
+    console.log(`\n${entries} entr${entries === 1 ? "y" : "ies"}, ${withReceipt} with a receipt, ${verified} verified${withheld > 0 ? `, ${withheld} withheld` : ""}, ${failed} failed${unverified > 0 ? `, ${unverified} could not be checked` : ""}.`);
   }
   console.log(`Not checked: that Jev produced the answer. See ${TRUST_MODEL}`);
   process.exit(status);
