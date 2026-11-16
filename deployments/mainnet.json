@@ -18,6 +18,7 @@
     "AdminSafe": "0xdFeFbdBF680568e8DC44abbbd657c0701964cC8c",
     "GuardianGate": "0x71B2dc3dEC1aEB000936380981DfC51E47AA4fb8",
     "DcapAttestation": "0x94552cb7C8806fAD00c4EB59182E98C5Ba4bBfcb",
+    "DecisionLogAttestation": "0xdb2a8FA9018946438772DCB0756e39b17F81E416",
     "Inscriptions": "0x770D6756CA8a1627FFf01B846383b13d6fa0c514",
     "PayoutPreferences": "0x2b0d01f5D25F5894590b3281705a48db8740946F"
   },
