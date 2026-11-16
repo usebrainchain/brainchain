@@ -31,7 +31,7 @@ flowchart TB
 
 ## Trust model
 
-The brain is the service that asks the models and records their answer: Jev, a decision model served by TypeSafe, for every decision, and a second grader for grades and rulings, where the lower of the two probabilities of paying counts ([how a grade's confidence is formed](decisions.md#how-a-grades-confidence-is-formed)). **The chain does not verify that a recorded answer came from those models**: the brain key is trusted to record their answers faithfully. What the chain does enforce is how a recorded answer may be used:
+The brain is the service that asks the models and records their answer. It asks Jev, a decision model served by TypeSafe, and for a grade or ruling also a second grader, in which case the lower of the two probabilities of paying counts ([how a grade's confidence is formed](decisions.md#how-a-grades-confidence-is-formed)). **The chain does not verify that a recorded answer came from those models**: the brain key is trusted to record their answers faithfully. What the chain does enforce is how a recorded answer may be used:
 
 - a decision applies only to the task, board and chain its subject names, only if it is the latest decision of its kind about that task, and only if it was recorded after the event it judges (the post, the delivery, the dispute);
 - each contract applies its own confidence threshold; a task's thresholds are set when it is posted, and only its poster can change them, by raising the grade bar while the task is open (the ruling bar rises with it);
