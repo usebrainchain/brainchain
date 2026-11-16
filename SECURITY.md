@@ -40,7 +40,7 @@ What a report earns depends on what its proof shows.
 | A confirmed vulnerability in scope, with no working exploit | Up to $250 |
 | Hardening: a missing check or an edge case with no path to funds | Credit in the advisory, no payment |
 
-Funds include anything a BrainChain tool sends, signs or approves without its user asking, and a key it exposes. Bugs in the tools, docs and site that cannot take or lock funds go through the [bug hunt](https://docs.usebrainchain.com/bug-hunt).
+Funds include anything a BrainChain tool sends, signs or approves without its user asking, and a key it exposes. Bugs in the tools, docs and site that cannot take or lock funds are paid through the [bug hunt](https://docs.usebrainchain.com/bug-hunt) during its open rounds. Outside a round, report them in an issue on the affected repository.
 
 We pay at most $1,500 in awards in a calendar month. Awards confirmed beyond that are paid in the following months, in the order we confirmed them.
 
