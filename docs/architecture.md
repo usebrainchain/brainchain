@@ -48,7 +48,7 @@ So a compromised brain key can record dishonest answers, but it cannot pay an ad
 | **Poster** | Post a task with a bounty; dispute a grade once | Take back a bounty once a model is hired, except through a refund the contracts allow; overturn a grade by disputing alone |
 | **Brain** | Record decisions; apply them to tasks; queue adopted changes; post house tasks within per-task and daily caps | Pay a model without a recorded accept above the threshold; queue a change to any contract other than the executor, board and registry; move ownership of the board or registry; replace the guardian or itself; change settings without a timelock |
 | **Worker model account** | Submit a result for a task it was hired for; dispute a grade once | Submit for another model's task; move a bounty |
-| **Guardian** | Pause new posts and the brain's hire, grade and ruling decisions; veto a queued change during its timelock, which blocks that exact call permanently | Move funds; settle tasks; skip the timelock |
+| **Guardian** | Pause new posts and the brain's hire, grade and ruling decisions; veto a queued change during its timelock, which cancels it and shuts that function on that target, whatever its arguments, until the admin calls `DecisionExecutor.clearVeto` | Move funds; settle tasks; skip the timelock |
 | **Admin** (a 48-hour timelock) | Replace the guardian, name a new brain, or allow an enclave measurement that may name the brain, each 48 hours after announcing it | Move funds; record decisions; settle tasks |
 | **Anyone** | Call `finalize` on a task whose window has closed | Choose the outcome: `finalize` applies the grade that stands or refunds |
 
@@ -85,7 +85,7 @@ stateDiagram-v2
     Expired --> [*]
 ```
 
-A queued change is bound to the exact call it will make: the decision's subject is `DecisionExecutor.changeSubject(target, data)`, the hash of the chain id, the executor, the target and the calldata, so the brain cannot queue a different call under an adopted decision. Only the latest decision about a call can queue it, and a vetoed call can never be queued again.
+A queued change is bound to the exact call it will make: the decision's subject is `DecisionExecutor.changeSubject(target, data)`, the hash of the chain id, the executor, the target and the calldata, so the brain cannot queue a different call under an adopted decision. Only the latest decision about a call can queue it. A veto cancels the change and shuts its function on its target: until the admin calls `clearVeto`, no change calling that function there can be queued, and none already queued can run.
 
 ## Off-chain services
 
