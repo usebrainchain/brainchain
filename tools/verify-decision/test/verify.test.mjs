@@ -1675,11 +1675,17 @@ describe("the command line", () => {
     }
   });
 
-  it("reports bad arguments as one JSON object with --json, and as text without it", () => {
-    for (const args of [
-      [], ["mainnet"], ["mainnet", "--task"], ["mainnet", "abc"], ["mainnet", "1", "2"], ["mainnet", "1", "--nope"], ["mainnet", "1", "--rpc", "ftp://x"], ["nowhere", "1"], ["mainnet", "1", "--set", "v2"], ["mainnet", "1", "--set", "nope"], ["mainnet", "1", "--receipt"], ["mainnet", "--task", "1", "--receipt", "r.json"],
-      ["mainnet", "--entry", "20424"], ["mainnet", "--entry", "20424:0"], ["mainnet", "--entry", `20424:${STRANGER}:1`], ["testnet", "--entry", "20424:1"], ["mainnet", "1", "--entry", "20424:1"], ["mainnet", "--entry", "20424:1", "--agent", "20424"], ["mainnet", "--agent", "x"], ["mainnet", "--agent", "1", "--set", "v4"], ["mainnet", "--agent", "1", "--offline"], ["mainnet", "--agent", "1", "--registry-rpc", "ftp://x"], ["mainnet", "1", "--registry-rpc", "https://x.invalid"],
-    ]) {
+  it("reports bad arguments as one JSON object with --json, and as text without it, with the usage only for a command line of the wrong shape", () => {
+    const shape = [
+      [], ["mainnet"], ["mainnet", "--task"], ["mainnet", "1", "2"], ["mainnet", "1", "--nope"], ["mainnet", "1", "--receipt"], ["mainnet", "--task", "1", "--receipt", "r.json"],
+      ["mainnet", "1", "--rpc", "https://a.invalid", "--rpc", "https://b.invalid"], ["mainnet", "1", "--set", "v3", "--set", "v4"],
+      ["mainnet", "1", "--entry", "20424:1"], ["mainnet", "--entry", "20424:1", "--agent", "20424"], ["mainnet", "--agent", "1", "--set", "v4"], ["mainnet", "--agent", "1", "--offline"], ["mainnet", "1", "--registry-rpc", "https://x.invalid"],
+    ];
+    const values = [
+      ["mainnet", "abc"], ["mainnet", "1", "--rpc", "ftp://x"], ["nowhere", "1"], ["mainnet", "1", "--set", "v2"], ["mainnet", "1", "--set", "nope"],
+      ["mainnet", "--entry", "20424"], ["mainnet", "--entry", "20424:0"], ["mainnet", "--entry", `20424:${STRANGER}:1`], ["testnet", "--entry", "20424:1"], ["mainnet", "--agent", "x"], ["mainnet", "--agent", "1", "--registry-rpc", "ftp://x"],
+    ];
+    for (const args of [...shape, ...values]) {
       const asJson = run(...args, "--json");
       assert.equal(asJson.status, 2, args.join(" "));
       assert.equal(asJson.stderr, "", args.join(" "));
@@ -1688,8 +1694,16 @@ describe("the command line", () => {
       const asText = run(...args);
       assert.equal(asText.status, 2, args.join(" "));
       assert.equal(asText.stdout, "", args.join(" "));
-      assert.match(asText.stderr, /\n\nUsage:\n/, args.join(" "));
+      if (shape.includes(args)) assert.match(asText.stderr, /^[^\n]+\n\nUsage:\n/, args.join(" "));
+      else assert.match(asText.stderr, /^[^\n]+\n$/, args.join(" "));
     }
+    assert.match(run("mainnet", "1", "--set", "v3", "--set", "v4").stderr, /^--set given twice\n/);
+  });
+
+  it("takes a switch given twice as given once", () => {
+    const { status, stdout } = run("mainnet", "1", "--set", "nope", "--json", "--offline", "--json", "--offline");
+    assert.equal(status, 2);
+    assert.match(onlyError(stdout), /^No contract set nope on BrainChain mainnet\. Sets: /);
   });
 
   it("reads a receipt first, and takes from it the decision and the set its log belongs to", async () => {
@@ -1727,13 +1741,17 @@ describe("the command line", () => {
     }
   });
 
-  it("reports an RPC on another chain as one JSON object with --json", async () => {
+  it("reports an RPC on another chain without the usage, and as one JSON object with --json", async () => {
     const rpc = await stubRpc(274630);
     try {
       const { code, stdout, stderr } = await runAsync("mainnet", "1", "--rpc", urlOf(rpc), "--json");
       assert.equal(code, 2);
       assert.equal(stderr, "");
       assert.match(onlyError(stdout), /^The RPC serves chain 274630, not /);
+      // Not a usage error: the command line was right, and the RPC was not.
+      const text = await runAsync("mainnet", "1", "--rpc", urlOf(rpc));
+      assert.equal(text.code, 2);
+      assert.equal(text.stderr, "The RPC serves chain 274630, not BrainChain mainnet (274663)\n");
     } finally {
       rpc.close();
     }
