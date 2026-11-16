@@ -935,7 +935,7 @@ async function withholding(ctx: Context, decision: Decision, record: Published, 
     if (decision.answer !== YES) return { allowed: true, why: `a paid grade is published only once accepted, and Jev answered ${named(record.answer)}` };
     const bar = await gradeBar(ctx, block);
     if (decision.confidenceBps >= bar) return refuse(`this paid grade cleared the ${percent(bar)} bar, so its record is public`);
-    return { allowed: true, why: `a paid grade is published only once accepted, and ${percent(decision.confidenceBps)} is below the ${percent(bar)} bar` };
+    return { allowed: true, why: `a paid grade is published only once accepted, and this one was not: Jev answered ${named(record.answer)}, but at ${percent(decision.confidenceBps)} confidence, below the ${percent(bar)} bar` };
   }
   if (task === undefined || taskSubject(network.chainId, set.board, task) !== decision.subject) return refuse("the record does not name the task on chain");
   const on = await client.readContract({ address: set.board, abi: taskBoardAbi, functionName: "get", args: [task] });

@@ -292,7 +292,7 @@ describe("the withheld header", () => {
     accepted.jevPaid = 0.64;
     const low = await verify({ subject, bps: 6400, publish: accepted, serve: redacted(accepted), withheld: true });
     assert.equal(low.withheld, true);
-    assert.match(check(low, "withheld").message, /64% is below the 70% bar/);
+    assert.equal(check(low, "withheld").message, "withheld: a paid grade is published only once accepted, and this one was not: Jev answered accept, but at 64% confidence, below the 70% bar");
     assert.deepEqual(failed(low), []);
 
     const cleared = await verify({ subject, bps: 6400, bar: 6000, publish: accepted, serve: redacted(accepted), withheld: true });
