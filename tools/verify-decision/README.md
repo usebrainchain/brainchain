@@ -42,7 +42,7 @@ brainchain-verify mainnet --agent <agentId> [--rpc <url>] [--registry-rpc <url>]
 | `--json` | One JSON object on stdout. |
 | `--version` | Print the version. |
 
-The package carries the active and retired contract sets from [`deployments/`](../../deployments) as they stood when it was built. An unknown `--set` lists them.
+The package carries the active and retired contract sets from [`deployments/`](https://github.com/usebrainchain/brainchain/tree/main/deployments) as they stood when it was built. An unknown `--set` lists them.
 
 ## Output
 
