@@ -354,6 +354,18 @@ async function checkEntries(): Promise<never> {
   }
 }
 
+/** The other sets whose boards hold a task with this id, for a task this set's board does not hold or decided nothing on. */
+async function otherBoards(task: bigint): Promise<string> {
+  const others = network.sets.filter((s) => s !== set);
+  // Only a hint, so a board the RPC cannot read is left out of it.
+  const counts = await Promise.allSettled(others.map((s) => client.readContract({ address: s.board, abi: taskBoardAbi, functionName: "count" })));
+  const holding = others.filter((_, i) => {
+    const count = counts[i]!;
+    return count.status === "fulfilled" && count.value >= task;
+  });
+  return holding.length > 0 ? ` Each set numbers its own tasks; try --set ${holding.map((s) => s.key).join(" or ")}.` : "";
+}
+
 try {
   await sameChain();
   const where = `on ${network.name}, contract set ${set.key}`;
@@ -361,9 +373,9 @@ try {
   if (taskArg !== undefined) {
     const task = BigInt(taskArg);
     const tasks = await ctx.client.readContract({ address: set.board, abi: taskBoardAbi, functionName: "count" });
-    if (task > tasks) fail(`TaskBoard ${set.board} (set ${set.key}) holds tasks 1 to ${tasks}`);
+    if (task > tasks) fail(`TaskBoard ${set.board} (set ${set.key}) holds tasks 1 to ${tasks}.${await otherBoards(task)}`);
     const ids = await decisionsOf(ctx, task);
-    if (ids.length === 0) fail(`Task ${task} has no decisions ${where}`);
+    if (ids.length === 0) fail(`Task ${task} has no decisions ${where}.${await otherBoards(task)}`);
     const reports: DecisionReport[] = [];
     for (const id of ids) reports.push(await verifyDecision(ctx, id).catch((error: unknown) => ({ id: Number(id), checks: [unread(`decision ${id}`, error)] })));
     report(reports, `Task ${task} ${where} (TaskBoard ${set.board}): decision${ids.length === 1 ? "" : "s"} ${ids.join(", ")}`, Number(task));

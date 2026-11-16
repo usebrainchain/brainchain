@@ -1827,6 +1827,33 @@ describe("the command line", () => {
     }
   });
 
+  it("points a task this set's board does not hold, or decided nothing on, to the sets whose boards hold one", async () => {
+    const counts = new Map(NETWORKS.mainnet.sets.map((s, i) => [s.board.toLowerCase(), [40n, 5n, undefined, 20n, 11n][i]]));
+    let active = 7n;
+    const rpc = await stubRpc(MAINNET, (method, [params] = []) => {
+      if (method === "eth_getLogs") return [];
+      const board = params.to.toLowerCase();
+      const count = board === NETWORKS.mainnet.sets[0].board.toLowerCase() ? active : counts.get(board);
+      return count === undefined ? new Error("header not found") : encodeFunctionResult({ abi: taskBoardAbi, functionName: "count", result: count });
+    });
+    const [board] = NETWORKS.mainnet.sets.map((s) => s.board);
+    try {
+      const outside = await runAsync("mainnet", "--task", "11", "--rpc", urlOf(rpc));
+      assert.equal(outside.code, 1);
+      assert.equal(outside.stderr, `TaskBoard ${board} (set v3-5) holds tasks 1 to 7. Each set numbers its own tasks; try --set v3-1 or v3.\n`);
+
+      const empty = await runAsync("mainnet", "--task", "5", "--rpc", urlOf(rpc), "--json");
+      assert.equal(empty.code, 1);
+      assert.equal(onlyError(empty.stdout), "Task 5 has no decisions on BrainChain mainnet, contract set v3-5. Each set numbers its own tasks; try --set v3-4 or v3-1 or v3.");
+
+      active = 40n;
+      const alone = await runAsync("mainnet", "--task", "30", "--rpc", urlOf(rpc));
+      assert.equal(alone.stderr, "Task 30 has no decisions on BrainChain mainnet, contract set v3-5.\n");
+    } finally {
+      rpc.close();
+    }
+  });
+
   it("checks the rest of a task's decisions when the RPC cannot read one", async () => {
     const [active] = NETWORKS.mainnet.sets;
     const subject = keccak256(encodeAbiParameters([{ type: "uint256" }, { type: "address" }, { type: "uint256" }], [BigInt(MAINNET), active.board, 7n]));
