@@ -1537,7 +1537,10 @@ function signerOf(receipt: Receipt): Promise<Address> {
 
 /** A file, read no further than one byte past `limit`. A device or a pipe can go on for ever, so only a regular file is read. */
 async function readCapped(path: string, limit: number): Promise<Uint8Array> {
-  if (!(await stat(path)).isFile()) throw new Refused(`${display(path)} is not a regular file, so it was not read`);
+  const found = await stat(path).catch((error: NodeJS.ErrnoException) => {
+    throw ["ENOENT", "ENOTDIR"].includes(error.code ?? "") ? new Refused(`No file at ${display(path)}.`) : error;
+  });
+  if (!found.isFile()) throw new Refused(`${display(path)} is not a regular file, so it was not read`);
   const file = await open(path);
   try {
     const bytes = new Uint8Array(limit + 1);

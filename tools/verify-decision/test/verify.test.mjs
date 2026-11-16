@@ -1574,7 +1574,7 @@ describe("rpc errors", () => {
 });
 
 describe("receipt files", () => {
-  it("are read only up to the cap, and only when they are regular files", { timeout: 10_000 }, async () => {
+  it("are read only up to the cap, only when they are regular files, and say so when there is none", { timeout: 10_000 }, async () => {
     const local = { transport: { url: "http://127.0.0.1:1" } };
     await assert.rejects(readReceipt(local, "/dev/zero"), /\/dev\/zero is not a regular file, so it was not read$/);
     const dir = await mkdtemp(join(tmpdir(), "receipt-"));
@@ -1582,6 +1582,8 @@ describe("receipt files", () => {
     const big = join(dir, "big.json");
     await writeFile(big, Buffer.alloc(65 * 1024, 32));
     await assert.rejects(readReceipt(local, big), /big\.json is larger than the 64 KB a receipt may be, so it was not read$/);
+    await assert.rejects(readReceipt(local, join(dir, "none.json")), { message: `No file at ${join(dir, "none.json")}.` });
+    await assert.rejects(readReceipt(local, join(big, "inside.json")), { message: `No file at ${join(big, "inside.json")}.` });
   });
 });
 
@@ -1679,7 +1681,10 @@ describe("the command line", () => {
     const dir = await mkdtemp(join(tmpdir(), "receipt-cli-"));
     const missing = run("mainnet", "--receipt", join(dir, "none.json"), "--json");
     assert.equal(missing.status, 1);
-    assert.match(onlyError(missing.stdout), /no such file/);
+    assert.equal(onlyError(missing.stdout), `No file at ${join(dir, "none.json")}.`);
+    const asText = run("mainnet", "--receipt", "none.json");
+    assert.equal(asText.status, 1);
+    assert.equal(asText.stderr, "No file at none.json.\n");
 
     // A reply kept before the receipt was in it is unreadable as a receipt, with an id or without.
     await writeFile(join(dir, "reply.json"), JSON.stringify({ order: "o-1", state: "running" }));
