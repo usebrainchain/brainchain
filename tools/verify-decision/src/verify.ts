@@ -456,7 +456,7 @@ interface Wanted {
   allowPrivate: boolean;
 }
 
-/** A location the tool will not read. Trying again would not help. */
+/** A location or payment network the tool will not read. Trying again would not help. */
 class Refused extends Error {}
 
 /** More than the thing fetched may be. Not tried again either, but unlike a refused location, a check that could not run. */
@@ -616,8 +616,8 @@ function readDecision({ client, set }: Context, id: bigint) {
   return client.readContract({ address: set.log, abi: decisionLogAbi, functionName: "get", args: [id] });
 }
 
-/** Bytes that are not what the chain committed to: a disagreement, where an unreachable host is only a check that could not run. */
-class BriefMismatch extends Error {}
+/** What the chain contradicts, such as bytes that miss their hash: a disagreement, where an unreachable host is only a check that could not run. */
+class Mismatch extends Error {}
 
 async function briefOf({ client, set }: Context, task: bigint): Promise<Brief> {
   const [posted] = await client.getContractEvents({
@@ -630,7 +630,7 @@ async function briefOf({ client, set }: Context, task: bigint): Promise<Brief> {
   });
   if (!posted) throw new Error(`task ${task} has no Posted event on board ${set.board}`);
   const { bytes } = await fetchBytes(posted.args.briefURI, { what: "brief", limit: MAX_BRIEF_BYTES, allowPrivate: await allowsPrivate(client) });
-  if (keccak256(bytes) !== posted.args.briefHash.toLowerCase()) throw new BriefMismatch(`task ${task}'s brief does not match its briefHash on chain`);
+  if (keccak256(bytes) !== posted.args.briefHash.toLowerCase()) throw new Mismatch(`task ${task}'s brief does not match its briefHash on chain`);
   return parseBrief(decodeText(bytes));
 }
 
@@ -906,7 +906,7 @@ async function checkBrief(ctx: Context, c: Checks, task: bigint, decision: Decis
   try {
     brief = await pending;
   } catch (error) {
-    c.add("brief", error instanceof BriefMismatch ? "fail" : absent(error) ? "skip" : "error", `brief: ${errorMessage(error)}`);
+    c.add("brief", error instanceof Mismatch ? "fail" : absent(error) ? "skip" : "error", `brief: ${errorMessage(error)}`);
     checkRun(c, decision, record, state);
     if (decision.kind !== Kind.Grade) return;
     if (predatesPaidLevels(record)) return c.add("confidence-recomputed", "skip", PREDATES_PAID_LEVELS);
@@ -1528,7 +1528,7 @@ async function servedReceipt(ctx: Context, c: Checks, d: Decided): Promise<Given
       error instanceof NotFound
         ? `${display(url)} has none. A task's receipt is signed once the board pays or refunds it, for the grade or ruling it settled on`
         : `could not fetch one: ${errorMessage(error)}`;
-    c.add("receipt", "skip", `receipt: ${why}`);
+    c.add("receipt", absent(error) ? "skip" : "error", `receipt: ${why}`);
     return undefined;
   }
 }
@@ -1627,13 +1627,16 @@ async function checkPayment(ctx: Context, c: Checks, d: Decided, claimed: Partia
   const tx = `transaction ${short(transaction)} on ${network}`;
   const origin = hostOf(d.payloadURI);
   if (!origin) return c.add("receipt-payment", "skip", `payment: the receipt's payment is the record's. The record is not served by a host, so no network.json names the desk to check ${tx} against`);
-  let desk: Desk;
-  let moved: Map<string, bigint> | undefined;
-  try {
-    [desk, moved] = await Promise.all([deskOf(ctx, origin), (ctx.balances ?? balancesOnChain)(network, transaction, asset)]);
-  } catch (error) {
-    return c.add("receipt-payment", "skip", `payment: the receipt's payment is the record's, and ${tx} was not checked: ${errorMessage(error)}`);
+  const [deskRead, movedRead] = await Promise.allSettled([deskOf(ctx, origin), (ctx.balances ?? balancesOnChain)(network, transaction, asset)]);
+  if (deskRead.status === "rejected" || movedRead.status === "rejected") {
+    // A manifest the chain contradicts fails whatever else could not be read, and a host that did not answer outweighs one that has nothing.
+    const reasons = [deskRead, movedRead].flatMap((read) => (read.status === "rejected" ? [read.reason as unknown] : []));
+    const reason = reasons.find((r) => r instanceof Mismatch) ?? reasons.find((r) => !absent(r)) ?? reasons[0];
+    if (reason instanceof Mismatch) return c.add("receipt-payment", "fail", `payment: the receipt's payment is the record's, but ${errorMessage(reason)}`);
+    return c.add("receipt-payment", absent(reason) ? "skip" : "error", `payment: the receipt's payment is the record's, and ${tx} was not checked: ${errorMessage(reason)}`);
   }
+  const desk = deskRead.value;
+  const moved = movedRead.value;
   if (!moved) return c.add("receipt-payment", "fail", `payment: ${tx} did not succeed, or is not on that network`);
   const evm = network.startsWith("eip155:");
   const key = (owner: string): string => (evm ? owner.toLowerCase() : owner);
@@ -1680,11 +1683,11 @@ async function readDesk({ client, network, set }: Context, origin: string): Prom
     recoverMessageAddress({ message: signed, signature: body.signature as Hex }),
     client.readContract({ address: log, abi: decisionLogAbi, functionName: "brain" }),
   ]);
-  if (!eq(signer, brain)) throw new Error(`${display(uri)} is signed by ${short(signer)}, not by ${short(brain)}, the brain on DecisionLog ${short(log)}`);
+  if (!eq(signer, brain)) throw new Mismatch(`${display(uri)} is signed by ${short(signer)}, not by ${short(brain)}, the brain on DecisionLog ${short(log)}`);
   const manifest = parseJson(signed.slice(MANIFEST_PREFIX.length)) as { chainId?: unknown; payees?: unknown; formerDesks?: unknown } | undefined;
   const payees = manifest?.payees;
   const valid = Array.isArray(payees) && payees.every((p: Record<string, unknown> | null) => typeof p === "object" && p !== null && ["network", "asset", "payTo"].every((k) => typeof p[k] === "string"));
-  if (manifest?.chainId !== network.chainId || !valid) throw new Error(`${display(uri)} does not list the payees of chain ${network.chainId}`);
+  if (manifest?.chainId !== network.chainId || !valid) throw new Mismatch(`${display(uri)} does not list the payees of chain ${network.chainId}`);
   const former = Array.isArray(manifest.formerDesks) ? manifest.formerDesks.filter((d): d is string => typeof d === "string") : [];
   return { payees: payees as Desk["payees"], formerDesks: former };
 }
@@ -1704,7 +1707,7 @@ const paymentClients = new Map<string, PublicClient>();
 
 const balancesOnChain: Balances = async (network, transaction, asset) => {
   const rpc = Object.hasOwn(PAYMENT_RPCS, network) ? PAYMENT_RPCS[network] : undefined;
-  if (!rpc) throw new Error(`the tool has no RPC for ${clean(network)}`);
+  if (!rpc) throw new Refused(`the tool has no RPC for ${clean(network)}`);
   if (network.startsWith("solana:")) return solanaBalances(rpc, transaction, asset);
   if (!BYTES32.test(transaction)) return undefined;
   let client = paymentClients.get(network);

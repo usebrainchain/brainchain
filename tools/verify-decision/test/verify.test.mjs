@@ -789,8 +789,8 @@ describe("evidence and receipts", () => {
     return { format: "eip712", payload, signature };
   }
   /** GET /network.json: the manifest, the exact text signed, and its personal_sign signature. */
-  async function manifest(key = BRAIN, payees = [{ network: PAYMENT.network, asset: USDC, payTo: DESK }]) {
-    const document = { issuedAt: "2026-11-15T00:00:00.000Z", chainId: network.chainId, paymentChainId: 4663, brain: key.address, desk: DESK, formerDesks: [], payees, minClients: {} };
+  async function manifest(key = BRAIN, payees = [{ network: PAYMENT.network, asset: USDC, payTo: DESK }], fields = {}) {
+    const document = { issuedAt: "2026-11-15T00:00:00.000Z", chainId: network.chainId, paymentChainId: 4663, brain: key.address, desk: DESK, formerDesks: [], payees, minClients: {}, ...fields };
     const signed = `BrainChain network manifest\n${canonicalStringify(document)}`;
     pages.set("/network.json", { body: JSON.stringify({ manifest: document, signed, signature: await key.signMessage({ message: signed }) }) });
   }
@@ -1041,7 +1041,7 @@ describe("evidence and receipts", () => {
     assert.deepEqual(failed(await paid(record, { receipt: given(await extension({ payer: STRANGER })) })), ["receipt-payment"]);
   });
 
-  it("skips what it cannot read: no receipt yet, offline, or a network.json the brain did not sign", async () => {
+  it("skips what is not there to read: no receipt yet, or none fetched offline", async () => {
     const record = sealed(accepted());
     const none = await paid(record);
     assert.equal(status(none, "receipt"), "skip");
@@ -1054,17 +1054,40 @@ describe("evidence and receipts", () => {
     const offline = await paid(record, { offline: true });
     assert.equal(check(offline, "receipt").message, "receipt: none was given, and none is fetched offline");
     assert.ok(!hits.some((hit) => hit.startsWith("/receipts/")));
+    assert.equal(status(await paid(record, { receipt: given({ format: "eip712", payload: {}, signature: "0x" }) }), "receipt"), "fail");
+  });
 
-    await manifest(OTHER);
+  it("fails a network.json the brain did not sign or that names another chain, and skips one the host does not have", async () => {
+    const record = sealed(accepted());
+    const receipt = given(await issued(record));
     try {
-      const unsigned = await paid(record);
-      assert.deepEqual(failed(unsigned), []);
-      assert.equal(status(unsigned, "receipt-payment"), "skip");
-      assert.match(check(unsigned, "receipt-payment").message, /^payment: the receipt's payment is the record's, and transaction 0xabab…abab on eip155:8453 was not checked: \S+\/network\.json is signed by \S+, not by \S+, the brain on DecisionLog 0x2222…2222$/);
+      await manifest(OTHER);
+      const unsigned = await paid(record, { receipt });
+      assert.deepEqual(failed(unsigned), ["receipt-payment"]);
+      assert.match(check(unsigned, "receipt-payment").message, /^payment: the receipt's payment is the record's, but \S+\/network\.json is signed by \S+, not by \S+, the brain on DecisionLog 0x2222…2222$/);
+      assert.equal(outcomeOf([unsigned]), "mismatch");
+
+      await manifest(BRAIN, undefined, { chainId: 274630 });
+      const elsewhere = await paid(record, { receipt });
+      assert.deepEqual(failed(elsewhere), ["receipt-payment"]);
+      assert.match(check(elsewhere, "receipt-payment").message, /network\.json does not list the payees of chain 274663$/);
+
+      pages.delete("/network.json");
+      const none = await paid(record, { receipt });
+      assert.equal(status(none, "receipt-payment"), "skip");
+      assert.match(check(none, "receipt-payment").message, /^payment: the receipt's payment is the record's, and transaction 0xabab…abab on eip155:8453 was not checked: \S+\/network\.json answered with status 404: the host has none$/);
+      assert.equal(outcomeOf([none]), "match");
     } finally {
       await manifest();
     }
-    assert.equal(status(await paid(record, { receipt: given({ format: "eip712", payload: {}, signature: "0x" }) }), "receipt"), "fail");
+  });
+
+  it("is an error where the receipt host fails to answer, never a match", async () => {
+    pages.set(new URL(RECEIPT_URL()).pathname, { status: 500, body: "down" });
+    const report = await paid(sealed(accepted()));
+    assert.equal(status(report, "receipt"), "error");
+    assert.match(check(report, "receipt").message, /^receipt: could not fetch one: \S+\/1\.json answered with status 500$/);
+    assert.equal(outcomeOf([report]), "unverified");
   });
 
   it("leaves a record from before evidence was kept exactly as it was", async () => {

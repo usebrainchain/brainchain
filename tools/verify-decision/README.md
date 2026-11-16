@@ -139,7 +139,7 @@ The chain holds the hash too. A decision's `payloadURI` in its `Recorded` event 
 
 Every job an agent pays BrainChain for gets a receipt, signed by the key that records decisions. A paid grade gets one once BrainChain decides it. A paid task gets one once the board pays or refunds it, for the grade or ruling it settled on. The receipt is EIP-712 under the domain `BrainChain receipt`, version 1, on the DecisionLog, in the envelope of the x402 offer-and-receipt extension (version 0.6): `{ format, payload, signature }`.
 
-For each paid grade or ruling, the tool asks the host that serves the record for its receipt at `/receipts/<DecisionLog in lowercase>/<decision id>.json`. A host that has none yet is a `skip`. `--offline` turns this off, and `--receipt` checks a receipt you kept instead.
+For each paid grade or ruling, the tool asks the host that serves the record for its receipt at `/receipts/<DecisionLog in lowercase>/<decision id>.json`. A host that has none yet is a `skip`. A host that does not answer, or answers with an error, is an `ERROR`. `--offline` turns this off, and `--receipt` checks a receipt you kept instead.
 
 On a receipt, the tool checks that:
 
@@ -148,7 +148,7 @@ On a receipt, the tool checks that:
 - for a task, the board paid it for `accepted` and refunded it for `rejected`, and the last grade or ruling it applied is this decision. For a paid grade, `accepted` means accept at or above the board's grade bar when the decision was recorded.
 - `network`, `asset`, `amount`, `payer` and `transaction` are those of a payment in the record, and on that network the transaction moved `amount` of `asset` from `payer` to the desk. The desk is the `payTo` for that network in the brain host's `/network.json`, which the tool believes only when `brain()` on the active DecisionLog signed it. A desk's former addresses count on EVM networks.
 
-The tool reads payments on Base, Robinhood Chain and Solana, and on their testnets, from their public RPCs. When `/network.json` or the payment's network cannot be read, `receipt-payment` skips and says why.
+The tool reads payments on Base, Robinhood Chain and Solana, and on their testnets, from their public RPCs. A `/network.json` signed by another key, or naming another chain, fails `receipt-payment`. A host with no `/network.json`, or a payment on a network the tool has no RPC for, skips it. A host or RPC that does not answer is an `ERROR`.
 
 ### Keeping a receipt
 
