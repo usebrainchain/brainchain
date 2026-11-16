@@ -975,7 +975,7 @@ describe("evidence and receipts", () => {
       assert.deepEqual(failed(offline), []);
       assert.equal(offline.receipt.from, kept.from);
     }
-    await assert.rejects(readReceipt(local, `${base}/no-such-receipt`), /answered with status 404/);
+    await assert.rejects(readReceipt(local, `${base}/no-such-receipt`), /answered with status 404: the host has no receipt at this address$/);
   });
 
   it("fails an amount the record and the chain do not show, signed so or changed after", async () => {
@@ -1395,10 +1395,10 @@ describe("briefs", () => {
     assert.equal(outcomeOf([report]), "mismatch");
   });
 
-  it("skip when the host no longer has one, and recompute a grade's confidence from the record's own pass level", async () => {
+  it("skip when the host has none, and recompute a grade's confidence from the record's own pass level", async () => {
     const report = await verify({ briefURI: `${base}/no-such-brief` });
     assert.equal(status(report, "brief"), "skip");
-    assert.match(check(report, "brief").message, /no longer has this brief/);
+    assert.match(check(report, "brief").message, /answered with status 404: the host has no brief at this address$/);
     assert.equal(check(report, "levels").message, "levels: the brief could not be read, so the confidence is recomputed from the record's own 3 levels, paid from level 1");
     assert.equal(status(report, "confidence-recomputed"), "ok");
     assert.equal(outcomeOf([report]), "match");

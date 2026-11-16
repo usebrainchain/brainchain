@@ -68,7 +68,7 @@ Verdict: match. The published record is exactly what the chain recorded, and the
 Not checked: that Jev produced the answer. See https://docs.usebrainchain.com/trust-model
 ```
 
-Each line is one check. `ok` passed and `FAIL` means the record and the chain disagree. `skip` is a check with nothing to run on, such as a brief the host no longer has, with the reason on the line. `ERROR` is a check that could not run because something it reads could not be read: the host did not answer in up to three tries and 30 seconds in all, answered with an error, or sent more than the tool reads. A record the host no longer has, or one the tool refuses to read (see `fetch`), is an `ERROR` too, since no other check can run without it. With `--task` or `--agent`, a decision or entry the RPC cannot read gets one `ERROR` line, named `rpc`, and the others are still checked. Each RPC call gets two tries of 8 seconds, and an RPC error names the RPC by chain and origin, such as `BrainChain RPC https://rpc.usebrainchain.com` or `Robinhood Chain RPC https://rpc.mainnet.chain.robinhood.com`.
+Each line is one check. `ok` passed and `FAIL` means the record and the chain disagree. `skip` is a check with nothing to run on, such as a brief the host does not have, with the reason on the line. `ERROR` is a check that could not run because something it reads could not be read: the host did not answer in up to three tries and 30 seconds in all, answered with an error, or sent more than the tool reads. A record the host does not have, or one the tool refuses to read (see `fetch`), is an `ERROR` too, since no other check can run without it. With `--task` or `--agent`, a decision or entry the RPC cannot read gets one `ERROR` line, named `rpc`, and the others are still checked. Each RPC call gets two tries of 8 seconds, and an RPC error names the RPC by chain and origin, such as `BrainChain RPC https://rpc.usebrainchain.com` or `Robinhood Chain RPC https://rpc.mainnet.chain.robinhood.com`.
 
 The verdict is `match`, `withheld`, `UNVERIFIED` or `MISMATCH`. `withheld` means a record served without the work passed the checks that could run, and says what they leave out.
 
@@ -106,7 +106,7 @@ The verdict is `match`, `withheld`, `UNVERIFIED` or `MISMATCH`. `withheld` means
 Some checks skip by design:
 
 - A decision the board never applied, because a later decision or a closed window settled the task, skips `threshold`.
-- A brief the host no longer has, or one at a location the tool refuses, skips `brief`. A grade's confidence is then recomputed from the record's own pass level, and `levels` skips.
+- A brief the host does not have, or one at a location the tool refuses, skips `brief`. A grade's confidence is then recomputed from the record's own pass level, and `levels` skips.
 - A grade recorded before the chain gated on the paid levels skips `confidence-recomputed`: its confidence is Jev's score confidence, which the probabilities alone do not give.
 - A grade or ruling recorded before BrainChain ran a brief's checks skips `checks` when its brief carries some. Such a record has no `jevPaid`, which every later grade and ruling states unless its panel decided without Jev.
 - A grade of outside work skips `checks` when its brief ends in a checks block and its record holds no run. The section on grades of outside work says why.

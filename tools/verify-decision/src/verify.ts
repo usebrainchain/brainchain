@@ -607,7 +607,7 @@ async function get(uri: string, url: URL, wanted: Wanted, deadline: AbortSignal)
 async function readBytes(uri: string, url: URL, wanted: Wanted, deadline: AbortSignal): Promise<Fetched> {
   const response = await get(uri, url, wanted, deadline);
   if (response.status === 404) {
-    const gone = wanted.what === "network manifest" ? "the host has none" : `the host no longer has this ${wanted.what}, so trying again will not help`;
+    const gone = wanted.what === "network manifest" ? "the host has none" : `the host has no ${wanted.what} at this address`;
     throw new NotFound(`${display(uri)} answered with status 404: ${gone}`);
   }
   if (response.status < 200 || response.status >= 300) throw new Error(`${display(uri)} answered with status ${response.status}`);
