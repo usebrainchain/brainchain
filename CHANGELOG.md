@@ -18,6 +18,11 @@ All notable changes to the contracts are documented here. The format follows [Ke
 - Deploy scripts check more before they finish. `DeployTestnet` runs only on chain 274630 and checks a reused admin timelock. `DeployRewards` checks its inputs and the deployed wiring, and refuses a treasury without code. `DeployMainnet` lists `WATCHER` and checks the board thresholds and windows, the executor's threshold, timelock and house caps, the stake and bond settings, and that the watcher is not zero, the deploying key or the brain. `DeployProofIndex` requires an owner with code.
 - `TaskBoard.setPayouts(registry, house)`: once the owner sets it, a worker with a stock-token payout preference gets the house as payee at delivery, and keeps its right to dispute and appeal. While it is unset, nothing changes. The deployed 3.5.0 board does not have it; the next set carries it.
 
+### Fixed
+
+- The `Float` and `DeskMandate` fork tests take their funding floors from the WETH/USDG pool's own price, so they pass at any ETH price. Before, `Float` failed whenever 0.05 ETH was worth less than 100 USDG.
+- The `Float`, `DeskMandate`, `PayoutSwap` and `JudgedCapture` fork tests skip on any other chain. Before, they returned early and passed without checking anything.
+
 ## [3.5.0] - 2026-11-07
 
 Active on BrainChain mainnet (chain 274663) since 7 November 2026, deployed from block 965, replacing the 3.4.0 set. Testnet (274630) runs it from block 2288 since 3 November, replacing 3.4.1. Retired sets are under `retired` in [`deployments/`](deployments). The source deployed is tagged `v3.5.0`.

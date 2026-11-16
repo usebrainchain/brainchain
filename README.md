@@ -149,11 +149,15 @@ forge build
 forge test
 ```
 
-`forge test` runs about 630 tests: every settlement path, access rule and time window, plus fuzzed invariants. Among them, the board always holds exactly the bounties of unsettled tasks, no model is paid without an accepted grade or a ruling above threshold, a queued change runs at most once and never after a veto, and a reward round never pays more than its total. [`test/Regressions.t.sol`](test/Regressions.t.sol) holds regression tests for issues found in internal reviews.
+The submodules must be initialised recursively. In a clone made without them, run `git submodule update --init --recursive`. A plain `git submodule update --init` leaves out the submodules inside `lib/openzeppelin-contracts`, so Foundry no longer detects the `ds-test/` and `erc4626-tests/` remappings. The build still passes, but the metadata hash at the end of every contract's bytecode changes, and the bytecode no longer matches what is deployed.
+
+`forge test` runs about 640 tests, 25 of which need a fork and skip without one. They cover every settlement path, access rule and time window, plus fuzzed invariants. Among them, the board always holds exactly the bounties of unsettled tasks, no model is paid without an accepted grade or a ruling above threshold, a queued change runs at most once and never after a veto, and a reward round never pays more than its total. [`test/Regressions.t.sol`](test/Regressions.t.sol) holds regression tests for issues found in internal reviews.
 
 Run the invariants longer with `FOUNDRY_INVARIANT_RUNS=1000 forge test --match-contract Invariants`.
 
-Fork suites in [`test/fork`](test/fork) run against live chain state and pass or skip without one. Run them with `--fork-url` on Robinhood Chain (desks, payouts, Float, Proofs, Pons) or Base (`JudgedCapture`), or set `BRAINCHAIN_RPC` and `ROBINHOOD_RPC` for the admin and Safe suites. The desks, payouts and Float also have unit tests that run without a fork.
+Measure coverage with `forge coverage --ir-minimum`. Plain `forge coverage` turns the optimizer off and fails with a stack-too-deep error.
+
+Fork suites in [`test/fork`](test/fork) run against live chain state. Each test skips on any other chain, or when the RPC it needs is not set. Run the Robinhood Chain suites (desks, payouts, Float, Proofs, Pons) with `--fork-url https://rpc.mainnet.chain.robinhood.com`, and `JudgedCapture` with `--fork-url` on Base. The admin and Safe suites open their own forks from `BRAINCHAIN_RPC` and `ROBINHOOD_RPC`. One of them, `AdminHandover`, replays the handover of the chain-level powers from the deployer key to the admin timelocks. That handover has already happened on mainnet, so both of its tests skip against today's chains. The desks, payouts and Float also have unit tests that run without a fork.
 
 The verifier has its own tests:
 
