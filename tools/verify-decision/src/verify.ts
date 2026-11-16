@@ -1,5 +1,5 @@
 import { lookup as dnsLookup, promises as dns, type LookupAddress } from "node:dns";
-import { readFile } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 import { Agent as HttpAgent, request as httpRequest } from "node:http";
 import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { BlockList, isIP } from "node:net";
@@ -26,6 +26,7 @@ import {
   type Address,
   type EncodeFunctionDataParameters,
   type Hex,
+  type HttpTransport,
   type PublicClient,
   toHex,
   zeroAddress,
@@ -66,6 +67,8 @@ export interface DecisionReport {
   id: number;
   kind?: string;
   task?: number;
+  /** The task's brief by its title, or its first line, cut to 100 characters. Set once the brief committed on chain was read. */
+  title?: string;
   /** A grade of work delivered outside BrainChain, so no task here. */
   outside?: boolean;
   /** Served without the work, as the chain shows it may be, so its hashes could not be checked. */
@@ -97,8 +100,9 @@ export interface Payment {
 
 /**
  * How a transaction changed each owner's balance of `asset`, by owner, in
- * lowercase on EVM networks. Undefined when it is not on `network` or did not
- * succeed.
+ * lowercase on EVM networks. Undefined when it did not succeed, or cannot be on
+ * `network`. Throws when the network's RPC does not find it, which a lagging
+ * node can explain.
  */
 export type Balances = (network: string, transaction: string, asset: string) => Promise<Map<string, bigint> | undefined>;
 
@@ -107,7 +111,7 @@ export interface Context {
   network: Network;
   set: ContractSet;
   briefs: Map<bigint, Promise<Brief>>;
-  /** Reads payment transactions; public RPCs for Base, Robinhood Chain and Solana when absent. */
+  /** Reads payment transactions; public RPCs for Base, Robinhood Chain and Solana when absent. balancesFrom builds one from other RPCs. */
   balances?: Balances;
   /** Fetches no receipt from the brain host, so only one given to verifyDecision is checked. */
   offline?: boolean;
@@ -257,14 +261,53 @@ function rootCause(error: Error): string | undefined {
   return reason;
 }
 
+function describe(error: Error): string {
+  const reason = rootCause(error);
+  if (!(error instanceof BaseError)) return reason ? `${error.message}: ${reason}` : error.message;
+  const detail = reason ?? error.details;
+  return detail ? `${error.shortMessage} (${detail})` : error.shortMessage;
+}
+
 export function errorMessage(error: unknown): string {
   if (!(error instanceof Error)) return clean(String(error));
-  const reason = rootCause(error);
-  if (error instanceof BaseError) {
-    const detail = reason ?? error.details;
-    return clean(detail ? `${error.shortMessage} (${detail})` : error.shortMessage);
+  const rpc = rpcOf(error);
+  return clean(rpc ? `${rpc}: ${describe(error)}` : describe(error));
+}
+
+// Which RPC an error came from, so a failure on --rpc reads apart from one on --registry-rpc.
+const rpcNames = new WeakMap<object, string>();
+
+// Only the origin: providers put API keys in the path.
+const rpcLabel = (name: string, url: string): string => (URL.canParse(url) ? `${name} RPC ${new URL(url).origin}` : `${name} RPC`);
+
+function fromRpc<T>(error: T, rpc: string): T {
+  if (error instanceof Error) rpcNames.set(error, rpc);
+  return error;
+}
+
+function rpcOf(error: Error): string | undefined {
+  for (let next: unknown = error; next instanceof Error; next = next.cause) {
+    const rpc = rpcNames.get(next);
+    if (rpc) return rpc;
   }
-  return clean(reason ? `${error.message}: ${reason}` : error.message);
+  return undefined;
+}
+
+// viem's own default, four tries of 10 seconds, held the tool 40 seconds on an RPC that never answers.
+const RPC_TIMEOUT_MS = 8_000;
+
+/** An http transport for one RPC, with two tries of 8 seconds, whose errors say which RPC failed: `name` is its chain, as in "BrainChain RPC <origin>". */
+export function rpcTransport(name: string, url: string): HttpTransport {
+  const transport = http(url, { timeout: RPC_TIMEOUT_MS, retryCount: 1 });
+  const rpc = rpcLabel(name, url);
+  return (config) => {
+    const built = transport(config);
+    const request = ((args, options) =>
+      built.request(args, options).catch((error: unknown) => {
+        throw fromRpc(error, rpc);
+      })) as typeof built.request;
+    return { ...built, request };
+  };
 }
 
 function parseJson(text: string): unknown {
@@ -456,11 +499,17 @@ interface Wanted {
   allowPrivate: boolean;
 }
 
-/** A location the tool will not read. Trying again would not help. */
+/** A location or payment network the tool will not read. Trying again would not help. */
 class Refused extends Error {}
+
+/** More than the thing fetched may be. Not tried again either, but unlike a refused location, a check that could not run. */
+class TooLarge extends Refused {}
 
 /** A host that answered 404, which for a receipt means it has not been signed yet. */
 class NotFound extends Error {}
+
+/** Not there to check: a host's 404, or a location the tool will not read. A host that fails to answer, or sends too much, is a check that could not run. */
+const absent = (error: unknown): boolean => error instanceof NotFound || (error instanceof Refused && !(error instanceof TooLarge));
 
 const PRIVATE = new BlockList();
 for (const [net, bits] of [["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.168.0.0", 16], ["224.0.0.0", 4], ["240.0.0.0", 4]] as const) {
@@ -525,7 +574,7 @@ function readOnce(uri: string, url: URL, wanted: Wanted, signal: AbortSignal): P
       let size = 0;
       response.on("data", (chunk: Buffer) => {
         size += chunk.length;
-        if (size > wanted.limit) request.destroy(new Refused(`${display(uri)} is larger than the ${Math.round(wanted.limit / 1024)} KB a ${wanted.what} may be, so it was not read`));
+        if (size > wanted.limit) request.destroy(new TooLarge(`${display(uri)} is larger than the ${Math.round(wanted.limit / 1024)} KB a ${wanted.what} may be, so it was not read`));
         else chunks.push(chunk);
       });
       response.on("end", () =>
@@ -560,7 +609,7 @@ async function get(uri: string, url: URL, wanted: Wanted, deadline: AbortSignal)
 async function readBytes(uri: string, url: URL, wanted: Wanted, deadline: AbortSignal): Promise<Fetched> {
   const response = await get(uri, url, wanted, deadline);
   if (response.status === 404) {
-    const gone = wanted.what === "network manifest" ? "the host has none" : `the host no longer has this ${wanted.what}, so trying again will not help`;
+    const gone = wanted.what === "network manifest" ? "the host has none" : `the host has no ${wanted.what} at this address`;
     throw new NotFound(`${display(uri)} answered with status 404: ${gone}`);
   }
   if (response.status < 200 || response.status >= 300) throw new Error(`${display(uri)} answered with status ${response.status}`);
@@ -570,9 +619,9 @@ async function readBytes(uri: string, url: URL, wanted: Wanted, deadline: AbortS
 async function fetchBytes(uri: string, wanted: Wanted): Promise<Fetched> {
   if (uri.startsWith("data:")) {
     const comma = uri.indexOf(",");
-    if (comma < 0 || !uri.slice(0, comma).endsWith(";base64")) throw new Error("only base64 data URIs are supported");
+    if (comma < 0 || !uri.slice(0, comma).endsWith(";base64")) throw new Refused("only base64 data URIs are supported");
     const bytes = Uint8Array.from(Buffer.from(uri.slice(comma + 1), "base64"));
-    if (bytes.length > wanted.limit) throw new Refused(`the ${wanted.what} is larger than the ${Math.round(wanted.limit / 1024)} KB it may be, so it was not read`);
+    if (bytes.length > wanted.limit) throw new TooLarge(`the ${wanted.what} is larger than the ${Math.round(wanted.limit / 1024)} KB it may be, so it was not read`);
     return { bytes, withheld: false };
   }
   if (!URL.canParse(uri)) throw new Refused(`${display(uri)} is not a URL`);
@@ -610,8 +659,8 @@ function readDecision({ client, set }: Context, id: bigint) {
   return client.readContract({ address: set.log, abi: decisionLogAbi, functionName: "get", args: [id] });
 }
 
-/** Bytes that are not what the chain committed to: a disagreement, where an unreachable host is only a check that could not run. */
-class BriefMismatch extends Error {}
+/** What the chain contradicts, such as bytes that miss their hash: a disagreement, where an unreachable host is only a check that could not run. */
+class Mismatch extends Error {}
 
 async function briefOf({ client, set }: Context, task: bigint): Promise<Brief> {
   const [posted] = await client.getContractEvents({
@@ -624,8 +673,16 @@ async function briefOf({ client, set }: Context, task: bigint): Promise<Brief> {
   });
   if (!posted) throw new Error(`task ${task} has no Posted event on board ${set.board}`);
   const { bytes } = await fetchBytes(posted.args.briefURI, { what: "brief", limit: MAX_BRIEF_BYTES, allowPrivate: await allowsPrivate(client) });
-  if (keccak256(bytes) !== posted.args.briefHash.toLowerCase()) throw new BriefMismatch(`task ${task}'s brief does not match its briefHash on chain`);
+  if (keccak256(bytes) !== posted.args.briefHash.toLowerCase()) throw new Mismatch(`task ${task}'s brief does not match its briefHash on chain`);
   return parseBrief(decodeText(bytes));
+}
+
+/** What a task is about: its brief's title, or the brief's first line, cut to 100 characters. */
+function headline({ title, brief }: Brief): string | undefined {
+  const line = [title, brief].flatMap((text) => text.split("\n")).map((l) => l.trim()).find((l) => l.length > 0);
+  if (line === undefined) return undefined;
+  const chars = [...line];
+  return clean(chars.length > 100 ? `${chars.slice(0, 99).join("").trimEnd()}…` : line);
 }
 
 /** Decision ids about one task on the set's board, oldest first. */
@@ -692,6 +749,11 @@ export async function verifyDecision(ctx: Context, id: bigint, receipt?: GivenRe
   }
   const text = decodeText(fetched.bytes);
   const record = text === undefined ? undefined : parseJson(text);
+  // A proxy's error page says nothing about the record. JSON that is not one is the host's answer.
+  if (record === undefined) {
+    c.add("fetch", "error", `could not read the record: ${display(location)} sent something other than JSON, such as an error page`);
+    return report;
+  }
   if (!isPublished(record)) {
     c.add("fetch", "fail", `${display(location)} is not a decision record`);
     return report;
@@ -735,7 +797,7 @@ export async function verifyDecision(ctx: Context, id: bigint, receipt?: GivenRe
     c.check(
       "subject",
       record.subject.toLowerCase() === decision.subject,
-      `subject: ${short(decision.subject)}, the exact call this change names`,
+      `subject: ${short(decision.subject)}, as recorded on chain. It is tied to the call Jev was shown only once the change is queued`,
       "the record's subject differs from the one on chain",
     );
   } else if (outside) {
@@ -822,6 +884,8 @@ export async function verifyDecision(ctx: Context, id: bigint, receipt?: GivenRe
   if (task !== undefined) {
     await checkBrief(ctx, c, task, decision, record, state);
     await checkTaskThreshold(ctx, c, id, task, decision, record);
+    const title = await ctx.briefs.get(task)?.then(headline, () => undefined);
+    if (title) report.title = title;
   }
   if (outside) {
     checkRun(c, decision, record, state, {
@@ -871,7 +935,7 @@ async function withholding(ctx: Context, decision: Decision, record: Published, 
     if (decision.answer !== YES) return { allowed: true, why: `a paid grade is published only once accepted, and Jev answered ${named(record.answer)}` };
     const bar = await gradeBar(ctx, block);
     if (decision.confidenceBps >= bar) return refuse(`this paid grade cleared the ${percent(bar)} bar, so its record is public`);
-    return { allowed: true, why: `a paid grade is published only once accepted, and ${percent(decision.confidenceBps)} is below the ${percent(bar)} bar` };
+    return { allowed: true, why: `a paid grade is published only once accepted, and this one was not: Jev answered ${named(record.answer)}, but at ${percent(decision.confidenceBps)} confidence, below the ${percent(bar)} bar` };
   }
   if (task === undefined || taskSubject(network.chainId, set.board, task) !== decision.subject) return refuse("the record does not name the task on chain");
   const on = await client.readContract({ address: set.board, abi: taskBoardAbi, functionName: "get", args: [task] });
@@ -900,9 +964,15 @@ async function checkBrief(ctx: Context, c: Checks, task: bigint, decision: Decis
   try {
     brief = await pending;
   } catch (error) {
-    c.add("brief", error instanceof BriefMismatch ? "fail" : "skip", `brief: ${errorMessage(error)}`);
+    c.add("brief", error instanceof Mismatch ? "fail" : absent(error) ? "skip" : "error", `brief: ${errorMessage(error)}`);
     checkRun(c, decision, record, state);
-    if (decision.kind === Kind.Grade) c.add("confidence-recomputed", "skip", "grade confidence: needs the brief's pass level");
+    if (decision.kind !== Kind.Grade) return;
+    if (predatesPaidLevels(record)) return c.add("confidence-recomputed", "skip", PREDATES_PAID_LEVELS);
+    // Without the brief, the record's own pass level still ties the answer to the probabilities.
+    const own = ownPassLevel(c, record);
+    if (!own) return;
+    c.add("levels", "skip", `levels: the brief could not be read, so the confidence is recomputed from the record's own ${own.levels} levels, paid from level ${own.passFrom}`);
+    checkGradeConfidence(c, record, own.paidKeys);
     return;
   }
 
@@ -934,14 +1004,7 @@ async function checkBrief(ctx: Context, c: Checks, task: bigint, decision: Decis
     "the levels Jev scored against are the brief's, lowest first",
     "the levels in the question are not the brief's",
   );
-  if (record.scoreConfidence === undefined && record.panel === undefined) {
-    c.add(
-      "confidence-recomputed",
-      "skip",
-      "grade confidence: this grade predates the rule that gates on the paid levels, so its confidence is Jev's score confidence, which the probabilities alone do not give",
-    );
-    return;
-  }
+  if (predatesPaidLevels(record)) return c.add("confidence-recomputed", "skip", PREDATES_PAID_LEVELS);
   checkGradeConfidence(c, record, ascending.map((_, i) => String(i)).slice(ascending.length - 1 - brief.passIndex));
 }
 
@@ -995,22 +1058,33 @@ function checkRun(c: Checks, decision: Decision, record: Published, state: State
   );
 }
 
-// No brief on chain to compare with. payloadHash commits a whole record's levels and pass level, and nothing commits a withheld record's.
-function checkOutsideGrade(c: Checks, record: Published, withheld: boolean): void {
+const predatesPaidLevels = (record: Published): boolean => record.scoreConfidence === undefined && record.panel === undefined;
+const PREDATES_PAID_LEVELS =
+  "grade confidence: this grade predates the rule that gates on the paid levels, so its confidence is Jev's score confidence, which the probabilities alone do not give";
+
+/** The question's levels and the record's own pass level, where no brief says them. Undefined once a line says why there are none to use. */
+function ownPassLevel(c: Checks, record: Published): { levels: number; passFrom: number; paidKeys: string[] } | undefined {
   const levels = record.request.questions.decision.criteria;
   const { passFrom } = record;
   if (!Array.isArray(levels) || passFrom === undefined) {
     c.add("confidence-recomputed", "skip", "grade confidence: the record does not name its pass level");
-    return;
+    return undefined;
   }
   // The lowest level never passes, or every result would.
   if (typeof passFrom !== "number" || !Number.isInteger(passFrom) || passFrom < 1 || passFrom >= levels.length) {
     c.add("levels", "fail", `levels: the record's pass level ${JSON.stringify(passFrom)} is not one of levels 1 to ${levels.length - 1} of the ${levels.length} the question lists`);
     c.add("confidence-recomputed", "skip", "grade confidence: needs a valid pass level");
-    return;
+    return undefined;
   }
-  c.add("levels", "skip", `levels: the record's own ${levels.length} levels, paid from level ${passFrom}. No brief on chain says what they should be${withheld ? ", and no hash commits them on this copy" : ""}`);
-  checkGradeConfidence(c, record, levels.map((_, i) => String(i)).slice(passFrom));
+  return { levels: levels.length, passFrom, paidKeys: levels.map((_, i) => String(i)).slice(passFrom) };
+}
+
+// No brief on chain to compare with. payloadHash commits a whole record's levels and pass level, and nothing commits a withheld record's.
+function checkOutsideGrade(c: Checks, record: Published, withheld: boolean): void {
+  const own = ownPassLevel(c, record);
+  if (!own) return;
+  c.add("levels", "skip", `levels: the record's own ${own.levels} levels, paid from level ${own.passFrom}. No brief on chain says what they should be${withheld ? ", and no hash commits them on this copy" : ""}`);
+  checkGradeConfidence(c, record, own.paidKeys);
 }
 
 function checkGradeConfidence(c: Checks, record: Published, paidKeys: string[]): void {
@@ -1473,18 +1547,37 @@ function signerOf(receipt: Receipt): Promise<Address> {
   });
 }
 
+/** A file, read no further than one byte past `limit`. A device or a pipe can go on for ever, so only a regular file is read. */
+async function readCapped(path: string, limit: number): Promise<Uint8Array> {
+  const found = await stat(path).catch((error: NodeJS.ErrnoException) => {
+    throw ["ENOENT", "ENOTDIR"].includes(error.code ?? "") ? new Refused(`No file at ${display(path)}.`) : error;
+  });
+  if (!found.isFile()) throw new Refused(`${display(path)} is not a regular file, so it was not read`);
+  const file = await open(path);
+  try {
+    const bytes = new Uint8Array(limit + 1);
+    const { bytesRead } = await file.read(bytes, 0, bytes.length, 0);
+    return bytes.subarray(0, bytesRead);
+  } finally {
+    await file.close();
+  }
+}
+
 /** Reads a receipt from a file or an http(s) URL: the receipt itself, or a reply that carries it as `receipt`. */
 export async function readReceipt(client: PublicClient, source: string): Promise<GivenReceipt> {
   const bytes = /^https?:\/\//i.test(source)
     ? (await fetchBytes(source, { what: "receipt", limit: MAX_RECEIPT_BYTES, allowPrivate: await allowsPrivate(client) })).bytes
-    : await readFile(source);
-  if (bytes.length > MAX_RECEIPT_BYTES) throw new Refused(`${display(source)} is larger than the ${MAX_RECEIPT_BYTES / 1024} KB a receipt may be, so it was not read`);
+    : await readCapped(source, MAX_RECEIPT_BYTES);
+  if (bytes.length > MAX_RECEIPT_BYTES) throw new TooLarge(`${display(source)} is larger than the ${MAX_RECEIPT_BYTES / 1024} KB a receipt may be, so it was not read`);
   const text = decodeText(bytes);
   const value = text === undefined ? undefined : parseJson(text);
   if (value === undefined) throw new Error(`${display(source)} is not JSON`);
   const carried = (value as { receipt?: unknown } | null)?.receipt;
   return { from: clean(source), value: typeof carried === "object" && carried !== null ? carried : value };
 }
+
+/** Whether a value is a receipt as BrainChain or the x402 extension signs one. */
+export const isReceipt = (value: unknown): boolean => parseReceipt(value) !== undefined;
 
 /** The decision and log a BrainChain receipt names. The x402 extension's receipt names neither. */
 export function receiptDecision(value: unknown): { decision: string; decisionLog: Address } | undefined {
@@ -1512,7 +1605,7 @@ async function servedReceipt(ctx: Context, c: Checks, d: Decided): Promise<Given
       error instanceof NotFound
         ? `${display(url)} has none. A task's receipt is signed once the board pays or refunds it, for the grade or ruling it settled on`
         : `could not fetch one: ${errorMessage(error)}`;
-    c.add("receipt", "skip", `receipt: ${why}`);
+    c.add("receipt", absent(error) ? "skip" : "error", `receipt: ${why}`);
     return undefined;
   }
 }
@@ -1611,13 +1704,16 @@ async function checkPayment(ctx: Context, c: Checks, d: Decided, claimed: Partia
   const tx = `transaction ${short(transaction)} on ${network}`;
   const origin = hostOf(d.payloadURI);
   if (!origin) return c.add("receipt-payment", "skip", `payment: the receipt's payment is the record's. The record is not served by a host, so no network.json names the desk to check ${tx} against`);
-  let desk: Desk;
-  let moved: Map<string, bigint> | undefined;
-  try {
-    [desk, moved] = await Promise.all([deskOf(ctx, origin), (ctx.balances ?? balancesOnChain)(network, transaction, asset)]);
-  } catch (error) {
-    return c.add("receipt-payment", "skip", `payment: the receipt's payment is the record's, and ${tx} was not checked: ${errorMessage(error)}`);
+  const [deskRead, movedRead] = await Promise.allSettled([deskOf(ctx, origin), (ctx.balances ?? balancesOnChain)(network, transaction, asset)]);
+  if (deskRead.status === "rejected" || movedRead.status === "rejected") {
+    // A manifest the chain contradicts fails whatever else could not be read, and a host that did not answer outweighs one that has nothing.
+    const reasons = [deskRead, movedRead].flatMap((read) => (read.status === "rejected" ? [read.reason as unknown] : []));
+    const reason = reasons.find((r) => r instanceof Mismatch) ?? reasons.find((r) => !absent(r)) ?? reasons[0];
+    if (reason instanceof Mismatch) return c.add("receipt-payment", "fail", `payment: the receipt's payment is the record's, but ${errorMessage(reason)}`);
+    return c.add("receipt-payment", absent(reason) ? "skip" : "error", `payment: the receipt's payment is the record's, and ${tx} was not checked: ${errorMessage(reason)}`);
   }
+  const desk = deskRead.value;
+  const moved = movedRead.value;
   if (!moved) return c.add("receipt-payment", "fail", `payment: ${tx} did not succeed, or is not on that network`);
   const evm = network.startsWith("eip155:");
   const key = (owner: string): string => (evm ? owner.toLowerCase() : owner);
@@ -1664,16 +1760,24 @@ async function readDesk({ client, network, set }: Context, origin: string): Prom
     recoverMessageAddress({ message: signed, signature: body.signature as Hex }),
     client.readContract({ address: log, abi: decisionLogAbi, functionName: "brain" }),
   ]);
-  if (!eq(signer, brain)) throw new Error(`${display(uri)} is signed by ${short(signer)}, not by ${short(brain)}, the brain on DecisionLog ${short(log)}`);
+  if (!eq(signer, brain)) throw new Mismatch(`${display(uri)} is signed by ${short(signer)}, not by ${short(brain)}, the brain on DecisionLog ${short(log)}`);
   const manifest = parseJson(signed.slice(MANIFEST_PREFIX.length)) as { chainId?: unknown; payees?: unknown; formerDesks?: unknown } | undefined;
   const payees = manifest?.payees;
   const valid = Array.isArray(payees) && payees.every((p: Record<string, unknown> | null) => typeof p === "object" && p !== null && ["network", "asset", "payTo"].every((k) => typeof p[k] === "string"));
-  if (manifest?.chainId !== network.chainId || !valid) throw new Error(`${display(uri)} does not list the payees of chain ${network.chainId}`);
+  if (manifest?.chainId !== network.chainId || !valid) throw new Mismatch(`${display(uri)} does not list the payees of chain ${network.chainId}`);
   const former = Array.isArray(manifest.formerDesks) ? manifest.formerDesks.filter((d): d is string => typeof d === "string") : [];
   return { payees: payees as Desk["payees"], formerDesks: former };
 }
 
 const ROBINHOOD_RPC = "https://rpc.mainnet.chain.robinhood.com";
+const CHAINS: Record<string, string> = {
+  "eip155:8453": "Base",
+  "eip155:84532": "Base Sepolia",
+  "eip155:4663": "Robinhood Chain",
+  "eip155:46630": "Robinhood Chain testnet",
+  "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": "Solana",
+  "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1": "Solana devnet",
+};
 // Public RPCs for the networks the desk takes payment on.
 const PAYMENT_RPCS: Record<string, string> = {
   "eip155:8453": "https://mainnet.base.org",
@@ -1684,29 +1788,35 @@ const PAYMENT_RPCS: Record<string, string> = {
   "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1": "https://api.devnet.solana.com",
 };
 const TRANSFER = parseAbi(["event Transfer(address indexed from, address indexed to, uint256 value)"]);
-const paymentClients = new Map<string, PublicClient>();
+const UNSEEN = "the RPC does not find it yet: a node that lags, or a Solana transaction not yet finalized, can miss one";
 
-const balancesOnChain: Balances = async (network, transaction, asset) => {
-  const rpc = Object.hasOwn(PAYMENT_RPCS, network) ? PAYMENT_RPCS[network] : undefined;
-  if (!rpc) throw new Error(`the tool has no RPC for ${clean(network)}`);
-  if (network.startsWith("solana:")) return solanaBalances(rpc, transaction, asset);
-  if (!BYTES32.test(transaction)) return undefined;
-  let client = paymentClients.get(network);
-  if (!client) paymentClients.set(network, (client = createPublicClient({ transport: http(rpc) }) as PublicClient));
-  const receipt = await client.getTransactionReceipt({ hash: transaction as Hex }).catch((error: unknown) => {
-    if (error instanceof TransactionReceiptNotFoundError) return undefined;
-    throw error;
-  });
-  if (receipt?.status !== "success") return undefined;
-  const changes = new Map<string, bigint>();
-  const add = (owner: string, value: bigint) => changes.set(owner.toLowerCase(), (changes.get(owner.toLowerCase()) ?? 0n) + value);
-  for (const { address, args } of parseEventLogs({ abi: TRANSFER, logs: receipt.logs, eventName: "Transfer", strict: true })) {
-    if (!eq(address, asset)) continue;
-    add(args.from, -args.value);
-    add(args.to, args.value);
-  }
-  return changes;
-};
+/** Reads payment transactions from the RPC given for each CAIP-2 network, such as eip155:8453. */
+export function balancesFrom(rpcs: Readonly<Record<string, string>>): Balances {
+  const clients = new Map<string, PublicClient>();
+  return async (network, transaction, asset) => {
+    const rpc = Object.hasOwn(rpcs, network) ? rpcs[network] : undefined;
+    if (!rpc) throw new Refused(`the tool has no RPC for ${clean(network)}`);
+    const name = Object.hasOwn(CHAINS, network) ? CHAINS[network]! : clean(network);
+    if (network.startsWith("solana:")) return solanaBalances(name, rpc, transaction, asset);
+    if (!BYTES32.test(transaction)) return undefined;
+    let client = clients.get(network);
+    if (!client) clients.set(network, (client = createPublicClient({ transport: rpcTransport(name, rpc) }) as PublicClient));
+    const receipt = await client.getTransactionReceipt({ hash: transaction as Hex }).catch((error: unknown) => {
+      throw error instanceof TransactionReceiptNotFoundError ? new Error(UNSEEN) : error;
+    });
+    if (receipt.status !== "success") return undefined;
+    const changes = new Map<string, bigint>();
+    const add = (owner: string, value: bigint) => changes.set(owner.toLowerCase(), (changes.get(owner.toLowerCase()) ?? 0n) + value);
+    for (const { address, args } of parseEventLogs({ abi: TRANSFER, logs: receipt.logs, eventName: "Transfer", strict: true })) {
+      if (!eq(address, asset)) continue;
+      add(args.from, -args.value);
+      add(args.to, args.value);
+    }
+    return changes;
+  };
+}
+
+const balancesOnChain = balancesFrom(PAYMENT_RPCS);
 
 interface TokenBalance {
   mint?: unknown;
@@ -1715,19 +1825,27 @@ interface TokenBalance {
 }
 
 /** A Solana transaction's change to each owner's balance of the mint, from its token balances before and after. */
-async function solanaBalances(rpc: string, signature: string, mint: string): Promise<Map<string, bigint> | undefined> {
-  const response = await fetch(rpc, {
+async function solanaBalances(name: string, rpc: string, signature: string, mint: string): Promise<Map<string, bigint> | undefined> {
+  type Meta = { err?: unknown; preTokenBalances?: TokenBalance[]; postTokenBalances?: TokenBalance[] };
+  type Reply = { result?: { meta?: Meta } | null; error?: { message?: unknown } };
+  const label = rpcLabel(name, rpc);
+  const { result, error } = await fetch(rpc, {
     method: "POST",
     headers: { "content-type": "application/json", "user-agent": "brainchain-verify" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getTransaction", params: [signature, { encoding: "jsonParsed", commitment: "finalized", maxSupportedTransactionVersion: 0 }] }),
-    signal: AbortSignal.timeout(FETCH_MS),
-  });
-  if (!response.ok) throw new Error(`${rpc} answered with status ${response.status}`);
-  type Meta = { err?: unknown; preTokenBalances?: TokenBalance[]; postTokenBalances?: TokenBalance[] };
-  const { result, error } = (await response.json()) as { result?: { meta?: Meta } | null; error?: { message?: unknown } };
-  if (error) throw new Error(`${rpc} answered: ${clean(String(error.message))}`);
+    signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
+  })
+    .then(async (response) => {
+      if (!response.ok) throw new Error(`answered with status ${response.status}`);
+      return (await response.json()) as Reply;
+    })
+    .catch((reason: unknown) => {
+      throw fromRpc(reason, label);
+    });
+  if (error) throw fromRpc(new Error(clean(String(error.message))), label);
   const meta = result?.meta;
-  if (!meta || meta.err !== null) return undefined;
+  if (!meta) throw new Error(UNSEEN);
+  if (meta.err !== null) return undefined;
   const changes = new Map<string, bigint>();
   for (const [sign, balances] of [[-1n, meta.preTokenBalances], [1n, meta.postTokenBalances]] as const) {
     for (const { mint: of, owner, uiTokenAmount } of balances ?? []) {
@@ -1858,6 +1976,23 @@ export interface EntryReport {
 export const entryName = (registry: Registry, f: Pick<Feedback, "agentId" | "clientAddress" | "feedbackIndex">): string =>
   `${f.agentId}:${eq(f.clientAddress, registry.writers[0] ?? "") ? "" : `${f.clientAddress}:`}${f.feedbackIndex}`;
 
+/** An entry as its NewFeedback event states it, with `checks` as its own. */
+export function entryReport(registry: Registry, f: Feedback, checks: Check[]): EntryReport {
+  return {
+    entry: entryName(registry, f),
+    agentId: f.agentId.toString(),
+    clientAddress: f.clientAddress,
+    feedbackIndex: Number(f.feedbackIndex),
+    value: Number(f.value),
+    block: Number(f.block),
+    transaction: f.transaction,
+    endpoint: clean(f.endpoint),
+    feedbackURI: clean(f.feedbackURI),
+    feedbackHash: f.feedbackHash,
+    checks,
+  };
+}
+
 /** Every entry BrainChain wrote for an agent, from the writers given or all of its own, oldest first. */
 export async function entriesOf(registry: Registry, agentId: bigint, writers: readonly Address[] = registry.writers): Promise<Feedback[]> {
   const { client, address } = registry;
@@ -1884,19 +2019,7 @@ export async function entriesOf(registry: Registry, agentId: bigint, writers: re
  */
 export async function verifyEntry(ctx: Context, registry: Registry, f: Feedback): Promise<EntryReport> {
   const c = new Checks();
-  const report: EntryReport = {
-    entry: entryName(registry, f),
-    agentId: f.agentId.toString(),
-    clientAddress: f.clientAddress,
-    feedbackIndex: Number(f.feedbackIndex),
-    value: Number(f.value),
-    block: Number(f.block),
-    transaction: f.transaction,
-    endpoint: clean(f.endpoint),
-    feedbackURI: clean(f.feedbackURI),
-    feedbackHash: f.feedbackHash,
-    checks: c.list,
-  };
+  const report = entryReport(registry, f, c.list);
   await checkStored(registry, c, f);
 
   const page = taskPage(ctx.network.sets, f.endpoint);
@@ -2149,4 +2272,27 @@ export type EntryOutcome = Outcome | "no-receipt";
 export function entryOutcome(reports: EntryReport[]): EntryOutcome {
   const outcome = outcomeOf(reports);
   return outcome === "match" && reports.every((r) => eq(r.feedbackHash, NO)) ? "no-receipt" : outcome;
+}
+
+export interface EntrySummary {
+  entries: number;
+  withReceipt: number;
+  /** Entries whose receipt and decision fully matched. A copy served without the work never does. */
+  verified: number;
+  withheld: number;
+  failed: number;
+  unverified: number;
+}
+
+export function entrySummary(reports: EntryReport[]): EntrySummary {
+  const outcomes = reports.map((r) => entryOutcome([r]));
+  const count = (outcome: EntryOutcome): number => outcomes.filter((o) => o === outcome).length;
+  return {
+    entries: reports.length,
+    withReceipt: reports.filter((r) => !eq(r.feedbackHash, NO)).length,
+    verified: count("match"),
+    withheld: count("withheld"),
+    failed: count("mismatch"),
+    unverified: count("unverified"),
+  };
 }

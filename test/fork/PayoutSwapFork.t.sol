@@ -19,7 +19,7 @@ contract PayoutSwapForkTest is Test {
     PayoutSwap swap;
 
     modifier onFork() {
-        if (block.chainid != 4663) return;
+        vm.skip(block.chainid != 4663);
         _;
     }
 

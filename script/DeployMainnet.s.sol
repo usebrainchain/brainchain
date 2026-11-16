@@ -26,9 +26,9 @@ import {GuardianGate, IGuardedBoard, IGuardedExecutor} from "../src/GuardianGate
 /// handover (see AdminHandover.s.sol). The deployer is the guardian at first
 /// and binds the board; the admin moves the guardian to the Safe afterwards.
 ///
-/// A chain change needs Jev to adopt it with at least 60% confidence in its
-/// answer. Measured that way, Jev's adopt decisions on well-supported changes
-/// land at 59 to 69%, so a higher bar blocks every change.
+/// A chain change needs the brain to adopt it with at least 60% confidence in
+/// its answer. Measured that way, Jev's adopt decisions on well-supported
+/// changes land at 59 to 69%, so a higher bar blocks every change.
 ///
 /// The admin timelock owns WorkerStaking and ProposalBonds, unlike testnet
 /// where the executor does: the stake minimum, cooldown, slash share, bond and
@@ -40,17 +40,24 @@ import {GuardianGate, IGuardedBoard, IGuardedExecutor} from "../src/GuardianGate
 ///
 /// Env: ADMIN_SAFE, BRAIN, USDG (bridged USDG on BrainChain), BRAIN_TOKEN
 /// (bridged $BRAIN on BrainChain, 18 decimals), FEE_RECIPIENT, WORKER_CLAUDE,
-/// WORKER_GPT, WORKER_GEMINI, WORKER_GROK, WORKER_DEEPSEEK, optional
-/// ADMIN_DELAY (seconds, default 48 hours), optional ADMIN_TIMELOCK (reuse a
-/// timelock the Safe already proposes to, such as the one that holds the
-/// chain-ownership powers, instead of deploying a new one), optional STAKE_MIN
-/// (whole $BRAIN a worker stakes to be hireable, default 1000000), optional
-/// STAKE_COOLDOWN (seconds before unstaked $BRAIN can be withdrawn, default
-/// 3 days), optional SLASH_BPS (share of stake burned when a worker loses a
-/// dispute, default 2000), optional BOND (whole $BRAIN bonded per proposal,
-/// default 250000), optional BOND_DECIDE_WITHIN (seconds Jev has to decide a
-/// proposal before its bond is returned, default 7 days).
+/// WORKER_GPT, WORKER_GEMINI, WORKER_GROK, WORKER_DEEPSEEK, WATCHER (the agent
+/// key that may veto and pause through the GuardianGate; not the deploying key
+/// or BRAIN), optional ADMIN_DELAY (seconds, default 48 hours), optional
+/// ADMIN_TIMELOCK (reuse a timelock the Safe already proposes to, such as the
+/// one that holds the chain-ownership powers, instead of deploying a new one),
+/// optional STAKE_MIN (whole $BRAIN a worker stakes to be hireable, default
+/// 1000000), optional STAKE_COOLDOWN (seconds before unstaked $BRAIN can be
+/// withdrawn, default 3 days), optional SLASH_BPS (share of stake burned when a
+/// worker loses a dispute, default 2000), optional BOND (whole $BRAIN bonded
+/// per proposal, default 250000), optional BOND_DECIDE_WITHIN (seconds the brain
+/// has to decide a proposal before its bond is returned, default 7 days).
 contract DeployMainnet is Script {
+    uint16 constant CHANGE_THRESHOLD_BPS = 6_000;
+    uint64 constant CHANGE_TIMELOCK = 48 hours;
+    uint32 constant HOUSE_TASKS_PER_DAY = 5;
+    uint128 constant MAX_HOUSE_BOUNTY = 2e6;
+    uint128 constant HOUSE_SPEND_PER_DAY = 10e6;
+
     struct Config {
         address safe;
         address brain;
@@ -139,28 +146,19 @@ contract DeployMainnet is Script {
     function _deploy(Config memory c, address deployer) internal returns (Deployment memory d) {
         d.admin = _admin(c.safe, c.adminDelay);
         d.decisionLog = new DecisionLog(address(d.admin), c.brain);
-        d.executor = new DecisionExecutor(d.decisionLog, c.usdg, deployer, 6_000, 48 hours, 5, 2e6, 10e6);
+        d.executor = new DecisionExecutor(
+            d.decisionLog,
+            c.usdg,
+            deployer,
+            CHANGE_THRESHOLD_BPS,
+            CHANGE_TIMELOCK,
+            HOUSE_TASKS_PER_DAY,
+            MAX_HOUSE_BOUNTY,
+            HOUSE_SPEND_PER_DAY
+        );
         d.registry = new ModelRegistry(deployer);
         d.staking = new WorkerStaking(c.brainToken, deployer, c.stakeMin, c.stakeCooldown, c.slashBps);
-        d.board = new TaskBoard(
-            c.usdg,
-            d.decisionLog,
-            d.registry,
-            d.staking,
-            deployer,
-            deployer,
-            TaskBoard.Config({
-                hireThresholdBps: 1_500,
-                gradeThresholdBps: 8_000,
-                ruleThresholdBps: 8_000,
-                minDuration: 30 minutes,
-                maxDuration: 3 days,
-                gradeWindow: 6 hours,
-                disputeWindow: 6 hours,
-                ruleWindow: 6 hours,
-                minBounty: 1e6
-            })
-        );
+        d.board = new TaskBoard(c.usdg, d.decisionLog, d.registry, d.staking, deployer, deployer, _boardConfig());
         d.bonds = new ProposalBonds(
             c.brainToken,
             d.decisionLog,
@@ -211,7 +209,20 @@ contract DeployMainnet is Script {
         require(
             d.staking.token() == c.brainToken && d.bonds.token() == c.brainToken, "staking or bonds take another token"
         );
-        require(d.bonds.bond() == c.bond, "the proposal bond is mis-set");
+        require(
+            d.staking.minStake() == c.stakeMin && d.staking.cooldown() == c.stakeCooldown
+                && d.staking.slashBps() == c.slashBps,
+            "the stake minimum, cooldown or slash share is mis-set"
+        );
+        require(
+            d.bonds.bond() == c.bond && d.bonds.decideWithin() == c.decideWithin,
+            "the proposal bond or decision window is mis-set"
+        );
+        _checkBoard(d.board);
+        _checkExecutor(d.executor, d.decisionLog, c.usdg);
+        require(c.watcher != address(0), "WATCHER is unset");
+        require(c.watcher != deployer, "WATCHER is the deploying key");
+        require(c.watcher != c.brain, "WATCHER is the brain");
         require(d.gate.safe() == c.safe && d.gate.watcher() == c.watcher, "the gate is mis-wired");
         require(
             d.executor.guardian() == deployer && d.board.guardian() == deployer,
@@ -221,6 +232,56 @@ contract DeployMainnet is Script {
         require(
             !admin.hasRole(admin.PROPOSER_ROLE(), deployer) && !admin.hasRole(admin.EXECUTOR_ROLE(), deployer),
             "the deployer holds an admin role"
+        );
+    }
+
+    function _boardConfig() internal pure returns (TaskBoard.Config memory) {
+        return TaskBoard.Config({
+            hireThresholdBps: 1_500,
+            gradeThresholdBps: 8_000,
+            ruleThresholdBps: 8_000,
+            minDuration: 30 minutes,
+            maxDuration: 3 days,
+            gradeWindow: 6 hours,
+            disputeWindow: 6 hours,
+            ruleWindow: 6 hours,
+            minBounty: 1e6
+        });
+    }
+
+    function _checkBoard(TaskBoard board) private view {
+        TaskBoard.Config memory want = _boardConfig();
+        (uint16 hireBps, uint16 gradeBps, uint16 ruleBps,,,,,,) = board.config();
+        require(
+            hireBps == want.hireThresholdBps && gradeBps == want.gradeThresholdBps && ruleBps == want.ruleThresholdBps,
+            "the board thresholds are mis-set"
+        );
+        (
+            ,,,
+            uint64 minDuration,
+            uint64 maxDuration,
+            uint64 gradeWindow,
+            uint64 disputeWindow,
+            uint64 ruleWindow,
+            uint128 minBounty
+        ) = board.config();
+        require(
+            minDuration == want.minDuration && maxDuration == want.maxDuration && gradeWindow == want.gradeWindow
+                && disputeWindow == want.disputeWindow && ruleWindow == want.ruleWindow && minBounty == want.minBounty,
+            "the board durations, windows or minimum bounty are mis-set"
+        );
+    }
+
+    function _checkExecutor(DecisionExecutor executor, DecisionLog decisionLog, IERC20 usdg) private view {
+        require(executor.decisions() == decisionLog && executor.token() == usdg, "the executor is mis-wired");
+        require(
+            executor.changeThresholdBps() == CHANGE_THRESHOLD_BPS && executor.timelock() == CHANGE_TIMELOCK,
+            "the change threshold or timelock is mis-set"
+        );
+        require(
+            executor.houseTasksPerDay() == HOUSE_TASKS_PER_DAY && executor.maxHouseBounty() == MAX_HOUSE_BOUNTY
+                && executor.houseSpendPerDay() == HOUSE_SPEND_PER_DAY,
+            "the house task caps are mis-set"
         );
     }
 

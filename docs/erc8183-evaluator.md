@@ -82,7 +82,7 @@ When the evaluator completes or rejects a job, it passes the digest of the decid
 
 ## The confidence rule
 
-`minConfidenceBps` is fixed when the evaluator is deployed. A decision below it takes the safe default, as on BrainChain's own task board:
+`minConfidenceBps` is fixed when the evaluator is deployed. Below it, a decision falls back as it does on BrainChain's own task board:
 
 | Decision | At or above the bar | Below the bar |
 | --- | --- | --- |

@@ -187,8 +187,6 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         judged.execute(JudgedCapture.Setting.Brain);
     }
 
-    // Construction
-
     function test_constructorRejectsZeroAddresses() public {
         vm.expectRevert(JudgedCapture.ZeroAddress.selector);
         new JudgedCapture(IAuthCaptureEscrow(address(0)), token, owner, brain, CAP);
@@ -253,8 +251,6 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         );
         assertEq(judged.digestOf(d), keccak256(abi.encodePacked("\x19\x01", domain, structHash)));
     }
-
-    // Authorize
 
     function test_anyoneSubmitsTheAuthorizationAndTheFullAmountIsHeld() public {
         _authorized();
@@ -366,8 +362,6 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         judged.charge(p, AMOUNT, ERC3009_COLLECTOR, sig, 0, feeRecipient);
         assertEq(usdc.balanceOf(payer), 1_000e6);
     }
-
-    // Capture
 
     function test_captureAfterTheWindowsPaysThePayeeLessTheFee() public {
         _authorized();
@@ -544,8 +538,6 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         assertEq(usdc.balanceOf(payee), AMOUNT - uint256(AMOUNT) / 100);
     }
 
-    // Final decisions only
-
     function test_aPreliminaryAcceptanceCannotCaptureAfterTheWindows() public {
         _authorized();
         JudgedCapture.Decision memory early = _accept();
@@ -583,8 +575,6 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         vm.expectRevert(bytes4(keccak256("ZeroAmount()")));
         judged.capture(p, accepted, sig);
     }
-
-    // Void
 
     function test_aFinalRefusalReturnsTheFullAmountAtOnce() public {
         _authorized();
@@ -676,8 +666,6 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         assertEq(_held(p), 0);
     }
 
-    // Reclaim
-
     function test_thePayerReclaimsAfterTheDeadlineWithoutTheOperator() public {
         _authorized();
         vm.prank(payer);
@@ -704,8 +692,6 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         ESCROW.reclaim(p);
         assertEq(usdc.balanceOf(payer), 1_000e6);
     }
-
-    // Brain key
 
     function test_aNewBrainKeyTakesEffectAfterTheDelay() public {
         uint256 nextKey = uint256(keccak256("next brain key"));
@@ -857,8 +843,6 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         judged.void(later, d, _sign(nextKey, d));
     }
 
-    // Cap
-
     function test_aNewCapTakesEffectAfterTheDelayForNewPaymentsOnly() public {
         _authorized();
         vm.prank(owner);
@@ -887,8 +871,6 @@ contract JudgedCaptureTest is JudgedCaptureSetup {
         judged.execute(JudgedCapture.Setting.Cap);
         assertEq(judged.cap(), CAP);
     }
-
-    // Ownership
 
     function test_ownershipMovesInTwoSteps() public {
         vm.prank(stranger);

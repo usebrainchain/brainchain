@@ -1,9 +1,37 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+
 import {DecisionLog} from "../src/DecisionLog.sol";
 import {TaskBoard} from "../src/TaskBoard.sol";
+import {WorkerStaking} from "../src/flywheel/WorkerStaking.sol";
 import {BrainChainSetup} from "./BrainChain.t.sol";
+
+/// @dev A token whose 1% transfer fee the test switches on once the bounty is in escrow.
+contract SwitchableFeeToken is ERC20 {
+    bool public feeOn;
+
+    constructor() ERC20("Fee", "FEE") {}
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+
+    function setFee(bool on) external {
+        feeOn = on;
+    }
+
+    function _update(address from, address to, uint256 value) internal override {
+        if (feeOn && from != address(0) && to != address(0)) {
+            uint256 fee = value / 100;
+            super._update(from, address(0xFEE), fee);
+            value -= fee;
+        }
+        super._update(from, to, value);
+    }
+}
 
 contract AppealsTest is BrainChainSetup {
     uint64 internal constant APPEAL_WINDOW = 1 days;
@@ -151,6 +179,68 @@ contract AppealsTest is BrainChainSetup {
         vm.prank(brain);
         vm.expectRevert(TaskBoard.IsPaused.selector);
         board.ruleAppeal(id, d);
+    }
+
+    function test_aPauseOutlastingTheSecondRulingWindowSettlesTheFirstAndReturnsTheBond() public {
+        uint256 id = ruled(NO, claudeAccount, NO, 9_000);
+        vm.prank(claudeAccount);
+        board.appeal(id);
+        vm.prank(guardian);
+        board.setPaused(true);
+        uint256 d = decide(DecisionLog.Kind.Ruling, board.subjectOf(id), YES, 9_000);
+        vm.prank(brain);
+        vm.expectRevert(TaskBoard.IsPaused.selector);
+        board.ruleAppeal(id, d);
+
+        vm.warp(block.timestamp + 6 hours + 1);
+        board.finalize(id);
+        assertEq(uint8(status(id)), uint8(TaskBoard.Status.Refunded));
+        assertEq(usdg.balanceOf(poster), 1_000e6);
+        assertEq(usdg.balanceOf(claudeAccount), 100e6, "the bond comes back");
+    }
+
+    function test_aBondThatArrivesShortIsRefused() public {
+        SwitchableFeeToken fot = new SwitchableFeeToken();
+        TaskBoard fotBoard = new TaskBoard(
+            IERC20(address(fot)),
+            decisionLog,
+            registry,
+            WorkerStaking(address(0)),
+            address(this),
+            guardian,
+            defaultConfig()
+        );
+        fotBoard.setAppealConfig(TaskBoard.AppealConfig({window: APPEAL_WINDOW, bondBps: 2_500}));
+        fot.mint(poster, 100e6);
+        fot.mint(claudeAccount, 100e6);
+        vm.prank(poster);
+        fot.approve(address(fotBoard), type(uint256).max);
+        vm.prank(claudeAccount);
+        fot.approve(address(fotBoard), type(uint256).max);
+
+        vm.prank(poster);
+        uint256 id = fotBoard.post(BOUNTY, uint64(block.timestamp + DAY), keccak256("brief"), "");
+        bytes32 subject = fotBoard.subjectOf(id);
+        uint256 d = decide(DecisionLog.Kind.Hire, subject, CLAUDE, 9_000);
+        vm.prank(brain);
+        fotBoard.hire(id, d);
+        vm.prank(claudeAccount);
+        fotBoard.submit(id, keccak256("result"), "");
+        d = decide(DecisionLog.Kind.Grade, subject, NO, 9_000);
+        vm.prank(brain);
+        fotBoard.grade(id, d);
+        vm.prank(claudeAccount);
+        fotBoard.dispute(id);
+        d = decide(DecisionLog.Kind.Ruling, subject, NO, 9_000);
+        vm.prank(brain);
+        fotBoard.rule(id, d);
+
+        fot.setFee(true);
+        vm.prank(claudeAccount);
+        vm.expectRevert(TaskBoard.TransferMismatch.selector);
+        fotBoard.appeal(id);
+        assertEq(uint8(fotBoard.get(id).status), uint8(TaskBoard.Status.Ruled));
+        assertEq(fotBoard.appealOf(id).bond, 0);
     }
 
     function test_aConfidentReversalSettlesTheOtherWayAndReturnsTheBond() public {

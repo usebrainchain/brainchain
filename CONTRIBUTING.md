@@ -1,6 +1,6 @@
 # Contributing to BrainChain
 
-Thank you for helping improve BrainChain. This guide covers how to propose a change and what we look for in review.
+Thank you for helping improve BrainChain.
 
 ## Before you start
 
@@ -17,6 +17,8 @@ forge build
 forge test
 forge fmt
 ```
+
+Initialise the submodules recursively (`git submodule update --init --recursive` in a clone made without them): without the nested ones, the build passes but its bytecode no longer matches what is deployed. Measure coverage with `forge coverage --ir-minimum`; plain `forge coverage` fails with a stack-too-deep error.
 
 `brainchain-verify` lives in `tools/verify-decision` and needs Node.js 22 or later:
 

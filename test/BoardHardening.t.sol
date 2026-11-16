@@ -63,8 +63,6 @@ contract BoardHardeningTest is Test {
         usdg.approve(address(board), type(uint256).max);
     }
 
-    // ---- helpers
-
     function _decide(DecisionLog.Kind kind, bytes32 subject, bytes32 answer, uint16 confidence)
         internal
         returns (uint256)
@@ -110,11 +108,8 @@ contract BoardHardeningTest is Test {
         board.rule(id, d);
     }
 
-    // =====================================================================
-    // 1. hold/release counter: sanity across several in-flight tasks,
-    //    one lost dispute, one refund by deadline, one paid by finalize.
-    //    Expectation: held returns to exactly 0 and withdraw works.
-    // =====================================================================
+    /// Three tasks of one staked worker settle three ways, and its hold count returns to zero, so it
+    /// can withdraw.
     function test_heldReturnsToZeroAcrossMixedSettlements() public {
         _stake(agent, 1_000e18);
         uint256 a = _post();
@@ -126,7 +121,7 @@ contract BoardHardeningTest is Test {
         _hire(c, wid);
         assertEq(staking.held(agent), 3);
 
-        // a: rejected, worker disputes, loses -> slash + release
+        // Rejected, disputed and lost: slashed and released.
         _submit(a, agent);
         _grade(a, false);
         vm.prank(agent);
@@ -135,19 +130,19 @@ contract BoardHardeningTest is Test {
         assertEq(staking.held(agent), 2);
         assertEq(staking.get(agent).staked, 800e18);
 
-        // b: accepted, finalize after dispute window -> paid + release
+        // Accepted and finalized after the dispute window: paid and released.
         _submit(b, agent);
         _grade(b, true);
         vm.warp(block.timestamp + 1 hours + 1);
         board.finalize(b);
         assertEq(staking.held(agent), 1);
 
-        // c: never delivered, refund at deadline -> release
+        // Never delivered: refunded at the deadline and released.
         vm.warp(block.timestamp + 1 days);
         board.finalize(c);
         assertEq(staking.held(agent), 0);
 
-        // every settled task refuses a second settlement
+        // A settled task refuses a second settlement.
         vm.expectRevert(TaskBoard.BadStatus.selector);
         board.finalize(a);
         vm.expectRevert(TaskBoard.BadStatus.selector);
@@ -155,7 +150,7 @@ contract BoardHardeningTest is Test {
         vm.expectRevert(TaskBoard.BadStatus.selector);
         board.finalize(c);
 
-        // the worker can leave
+        // Nothing holds the stake any more.
         vm.startPrank(agent);
         staking.requestUnstake(800e18);
         vm.warp(block.timestamp + 3 days);
@@ -165,13 +160,10 @@ contract BoardHardeningTest is Test {
         assertEq(usdg.balanceOf(address(board)), 0, "escrow fully drained");
     }
 
-    // =====================================================================
-    // 2. Attempted attack: worker tries to dodge the slash by moving stake
-    //    into unstaking right after hire and waiting out the cooldown.
-    //    Expectation: withdraw is Locked while held, slash hits unstaking.
-    // =====================================================================
+    /// Unstaking right after the hire does not dodge a slash: the hold blocks the withdrawal after the
+    /// cooldown, and the slash reaches the unstaking balance.
     function test_attack_workerCannotDodgeSlashViaUnstake() public {
-        staking.setConfig(500e18, 1 hours, 2_000); // short cooldown so it elapses inside the 6h rule window
+        staking.setConfig(500e18, 1 hours, 2_000); // short enough to run out inside the 6-hour rule window
         _stake(agent, 500e18);
         uint256 id = _post();
         _hire(id, staking.idOf(agent));
@@ -181,7 +173,7 @@ contract BoardHardeningTest is Test {
         _grade(id, false);
         vm.prank(agent);
         board.dispute(id);
-        // cooldown passes during the dispute, but the hold blocks withdraw
+        // The cooldown runs out during the dispute, and the hold still blocks the withdrawal.
         vm.warp(block.timestamp + 1 hours);
         vm.prank(agent);
         vm.expectRevert(WorkerStaking.Locked.selector);
@@ -192,12 +184,9 @@ contract BoardHardeningTest is Test {
         assertEq(staking.held(agent), 0);
     }
 
-    // =====================================================================
-    // 3. Attempted attack: worker races the ruling with finalize to avoid
-    //    the slash. Expectation: inside the window finalize is TooEarly;
-    //    after the window rule is TooLate. No overlap. If the brain misses
-    //    the window the worker is NOT slashed (operational, not a bug).
-    // =====================================================================
+    /// A worker cannot race the ruling with `finalize`: at the rule window's last second `finalize` is
+    /// too early, and a second later a ruling is too late. A ruling the brain misses leaves the grade
+    /// standing and the stake whole.
     function test_attack_noOverlapBetweenRuleAndFinalizeWindows() public {
         _stake(agent, 500e18);
         uint256 id = _post();
@@ -211,7 +200,6 @@ contract BoardHardeningTest is Test {
         vm.warp(edge);
         vm.expectRevert(TaskBoard.TooEarly.selector);
         board.finalize(id);
-        // rule still allowed at the edge
         uint256 d = _decide(DecisionLog.Kind.Ruling, board.subjectOf(id), bytes32(0), 9_000);
         vm.warp(edge + 1);
         vm.prank(brain);
@@ -222,12 +210,7 @@ contract BoardHardeningTest is Test {
         assertEq(usdg.balanceOf(poster), 1_000e6);
     }
 
-    // =====================================================================
-    // 4. Window boundaries: hire/submit/finalize around the deadline,
-    //    grade/finalize around gradeWindow, dispute/finalize around
-    //    disputeWindow. Expectation: no timestamp where two conflicting
-    //    transitions are both open.
-    // =====================================================================
+    /// At each window's edge, two conflicting steps are never open at once.
     function test_boundaries_deadline() public {
         uint256 id = _post();
         uint64 deadline = board.get(id).deadline;
@@ -285,9 +268,6 @@ contract BoardHardeningTest is Test {
         assertEq(usdg.balanceOf(poster), 1_000e6);
     }
 
-    // =====================================================================
-    // 5. Decision binding probes. Expectation: all rejected.
-    // =====================================================================
     function test_binding_gradeRecordedBeforeSubmitIsRejected() public {
         uint256 id = _post();
         _hire(id, CLAUDE);
@@ -332,10 +312,6 @@ contract BoardHardeningTest is Test {
         board.hire(id, first);
     }
 
-    // =====================================================================
-    // 6. A second board on the staking contract: the first keeps releasing,
-    //    so neither its bounties nor a worker's stake can be stranded.
-    // =====================================================================
     /// Adding a board to the staking contract leaves the old board releasing
     /// and slashing, so neither its bounties nor a worker's stake get stranded.
     function test_addendum_aNewBoardDoesNotStrandTheOldBoardsTasks() public {
@@ -364,13 +340,6 @@ contract BoardHardeningTest is Test {
         staking.hold(agent);
     }
 
-    // =====================================================================
-    // 7. Governance footgun: a house model registered under an
-    //    address-shaped id is routed to staking, never to the registry.
-    //    (a) it cannot be hired at all; (b) if that address happens to be a
-    //    staked, allow-listed worker, the bounty pays that address, not the
-    //    registry account.
-    // =====================================================================
     /// The registry refuses account-shaped ids, which the board would route to
     /// staking instead of the registry.
     function test_footgun_theRegistryRefusesAccountShapedIds() public {
@@ -380,10 +349,7 @@ contract BoardHardeningTest is Test {
         registry.setModel(keccak256("house"), makeAddr("house"), 1, true);
     }
 
-    // =====================================================================
-    // 8. Pausing through a dispute lets the grade stand with no ruling: the
-    //    pause blocks the brain's actions, not the clock. Documented behaviour.
-    // =====================================================================
+    /// A pause through a dispute blocks the ruling but not the clock, so the grade stands.
     function test_variant_pauseThroughDisputeLetsGradeStand() public {
         _stake(agent, 500e18);
         uint256 id = _post();
@@ -404,27 +370,21 @@ contract BoardHardeningTest is Test {
         assertEq(staking.get(agent).staked, 500e18);
     }
 
-    // =====================================================================
-    // 9. Informational: requestUnstake restarts the cooldown for the whole
-    //    unstaking balance.
-    // =====================================================================
+    /// A second unstake request restarts the cooldown for the whole unstaking balance.
     function test_info_topUpUnstakeRestartsCooldownForEverything() public {
         _stake(agent, 600e18);
         vm.startPrank(agent);
         staking.requestUnstake(500e18);
         vm.warp(block.timestamp + 3 days - 1);
         staking.requestUnstake(1e18);
-        vm.warp(block.timestamp + 1); // original batch would have unlocked now
+        vm.warp(block.timestamp + 1); // when the first request would have unlocked
         vm.expectRevert(WorkerStaking.Locked.selector);
         staking.withdraw();
         vm.stopPrank();
     }
 
-    // =====================================================================
-    // 10. Attempted attack: payee front-runs the poster's dispute. Expect:
-    //     only the opener's identity changes; a confident NO then slashes
-    //     the worker, so the front-run only hurts the worker.
-    // =====================================================================
+    /// A worker that disputes its own acceptance before the poster can only hurt itself: the poster's
+    /// dispute is refused, and a confident refund slashes the worker.
     function test_attack_workerFrontRunningPosterDisputeOnlyExposesWorker() public {
         _stake(agent, 500e18);
         uint256 id = _post();
@@ -441,10 +401,8 @@ contract BoardHardeningTest is Test {
         assertEq(usdg.balanceOf(poster), 1_000e6);
     }
 
-    // =====================================================================
-    // 11. Attempted attack: poster disputes an acceptance and the ruling is
-    //     unconfident. Expect: paid, no slash. Poster dispute is free.
-    // =====================================================================
+    /// A poster's dispute costs nothing, and a ruling below the bar leaves the acceptance standing:
+    /// the worker is paid and keeps its stake.
     function test_attack_posterDisputeIsFreeButCannotOverturnWithoutConfidence() public {
         _stake(agent, 500e18);
         uint256 id = _post();
@@ -459,10 +417,7 @@ contract BoardHardeningTest is Test {
         assertEq(staking.held(agent), 0);
     }
 
-    // =====================================================================
-    // 12. Attempted attack: un-allow-listed worker mid-task still delivers
-    //     and is paid (documented behaviour); a fresh hire is refused.
-    // =====================================================================
+    /// A worker taken off the allowlist mid-task still delivers and is paid, and cannot be hired again.
     function test_attack_delistedWorkerFinishesCurrentTaskOnly() public {
         _stake(agent, 500e18);
         uint256 id = _post();
@@ -480,9 +435,7 @@ contract BoardHardeningTest is Test {
         board.hire(id2, d);
     }
 
-    // =====================================================================
-    // 13. Escrow conservation with fee: paid path moves exactly bounty.
-    // =====================================================================
+    /// A paid task moves exactly its bounty, to the worker and the fee router.
     function test_escrowConservationWithFee() public {
         uint256 id = _post();
         _hire(id, CLAUDE);
@@ -492,5 +445,35 @@ contract BoardHardeningTest is Test {
         board.finalize(id);
         assertEq(usdg.balanceOf(address(board)), 0);
         assertEq(usdg.balanceOf(claude) + usdg.balanceOf(address(router)), BOUNTY);
+    }
+
+    /// Known behaviour of the deployed board: a ruling below the bar lets the rejection stand and
+    /// still slashes the worker that disputed it, while a dispute that gets no ruling ends the same
+    /// way without the slash.
+    function test_known_anUnconfidentRulingSlashesADisputingWorkerButNoRulingDoesNot() public {
+        _stake(agent, 500e18);
+        _stake(agent2, 500e18);
+
+        uint256 ruled = _post();
+        _hire(ruled, staking.idOf(agent));
+        _submit(ruled, agent);
+        _grade(ruled, false);
+        vm.prank(agent);
+        board.dispute(ruled);
+        _rule(ruled, true, 1_000); // pay, far below the 70% bar
+        assertEq(uint8(board.get(ruled).status), uint8(TaskBoard.Status.Refunded));
+        assertEq(staking.get(agent).staked, 400e18, "slashed on a ruling below the bar");
+
+        uint256 unruled = _post();
+        _hire(unruled, staking.idOf(agent2));
+        _submit(unruled, agent2);
+        _grade(unruled, false);
+        vm.prank(agent2);
+        board.dispute(unruled);
+        vm.warp(block.timestamp + 6 hours + 1);
+        board.finalize(unruled);
+        assertEq(uint8(board.get(unruled).status), uint8(TaskBoard.Status.Refunded));
+        assertEq(staking.get(agent2).staked, 500e18, "no ruling, no slash");
+        assertEq(usdg.balanceOf(poster), 1_000e6);
     }
 }

@@ -157,7 +157,7 @@ contract ExecutorHandler is Test {
         _queue(target, data, decisionId, staleBrain);
     }
 
-    /// Jev adopts a call, then decides on it again; the brain tries the superseded adoption.
+    /// The brain adopts a call, decides on it again, then tries to queue the superseded adoption.
     function reconsider(uint256 callSeed, bool yes, uint16 confidence) external {
         (address target, bytes memory data) = _call(callSeed);
         uint256 first = _record(DecisionLog.Kind.Change, target, data, true, 10_000);
@@ -165,7 +165,7 @@ contract ExecutorHandler is Test {
         _queue(target, data, first, false);
     }
 
-    /// Jev adopts the call of an earlier change again, vetoed or not.
+    /// The brain adopts the call of an earlier change again, vetoed or not.
     function readopt(uint256 seed, uint16 confidence) external {
         uint256 n = executor.changeCount();
         if (n == 0) return;
