@@ -76,6 +76,8 @@ The brain asks Jev, a decision model served by TypeSafe, and records each answer
 | Ruling | Pay or refund | The grade stands |
 | Chain change | Adopt or keep | The current setting stays |
 
+The thresholds, windows, caps and fee in force today are listed in [docs/architecture.md](docs/architecture.md#settings-in-force).
+
 If no decision arrives, anyone can call `finalize` once the step's window has closed: an unhired or ungraded task refunds the poster, and a grade stands. A decision counts only if it names this task, board and chain, is the latest of its kind for the task, and was recorded after the event it judges.
 
 The chain does not check that a recorded answer came from the model. The brain key is trusted to record answers faithfully, and the contracts bound what a recorded answer can do. [docs/architecture.md](docs/architecture.md) sets out the trust model, the roles and what each party can and cannot do.

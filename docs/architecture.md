@@ -64,6 +64,38 @@ The quote check itself is outside the timelock today. `DecisionLog.attestation()
 
 The brain records each decision with its confidence, but it does not decide whether that confidence is enough. `TaskBoard` keeps its own hire, grade and ruling thresholds, and `DecisionExecutor` keeps the change threshold. A task copies the thresholds, windows and fee in force when it is posted, so a later change applies only to new tasks. Nothing lowers a task's bars afterwards; its poster may raise the grade bar while the task is open (`TaskBoard.raiseGradeBar`), and the ruling bar rises with it. The settings of the board, the registry and the executor change only through an adopted change and its timelock; windows are capped at seven days, task durations at 30 days, the fee at 10%, the timelock between one hour and 30 days, and the change threshold cannot go below 50%. On mainnet the settings of `WorkerStaking` (stake minimum, cooldown, slash share, slashers) and `ProposalBonds` (bond, decision window) change by an admin operation 48 hours after it is announced, with no decision.
 
+## Settings in force
+
+These are the mainnet settings on 16 November 2026, read from the contracts. Each getter returns the current value, and a task keeps the values in force when it was posted.
+
+| Setting | Value | Getter |
+| --- | --- | --- |
+| Hire threshold | 15% | `TaskBoard.config()`: `hireThresholdBps` |
+| Grade threshold | 80% | `TaskBoard.config()`: `gradeThresholdBps` |
+| Ruling threshold, for rulings and appeal rulings | 80% | `TaskBoard.config()`: `ruleThresholdBps` |
+| Grade window | 6 hours after delivery | `TaskBoard.config()`: `gradeWindow` |
+| Dispute window | 6 hours after the grade | `TaskBoard.config()`: `disputeWindow` |
+| Ruling window | 6 hours after a dispute or an appeal | `TaskBoard.config()`: `ruleWindow` |
+| Task duration | 30 minutes to 3 days from posting | `TaskBoard.config()`: `minDuration`, `maxDuration` |
+| Minimum bounty | 1 USDG | `TaskBoard.config()`: `minBounty` |
+| Fee | 3% of a bounty that is paid, to the admin Safe | `TaskBoard.feeBps()`, `TaskBoard.feeRouter()` |
+| Appeal window | 24 hours after a ruling | `TaskBoard.appealConfig()`: `window` |
+| Appeal bond | 25% of the bounty | `TaskBoard.appealConfig()`: `bondBps` |
+| Change threshold | 60% | `DecisionExecutor.changeThresholdBps()` |
+| Change timelock | 48 hours | `DecisionExecutor.timelock()` |
+| House tasks | Up to 5 a day, at most 2 USDG each and 10 USDG a day in all | `DecisionExecutor.houseTasksPerDay()`, `maxHouseBounty()`, `houseSpendPerDay()` |
+| Worker stake | 250,000 BRAIN minimum, 3-day cooldown, 20% slashed when a disputing worker loses | `WorkerStaking.minStake()`, `cooldown()`, `slashBps()` |
+| Proposal bond | 62,500 BRAIN, decided within 7 days | `ProposalBonds.bond()`, `decideWithin()` |
+| Admin delay | 48 hours | `AdminTimelock.getMinDelay()` |
+
+On Robinhood Chain:
+
+| Contract | Settings | Getters |
+| --- | --- | --- |
+| `DeskMandate` | One order an hour per desk. A buy spends at most 50% of the desk's USDG. A fill must be within 2% of the Chainlink price, and a feed last updated more than 3 days ago refuses the order | `interval()`, `maxBuyBps()`, `premiumBps()`, `maxFeedAge()` |
+| `PayoutSwap` | A payout fills within 2% of the Chainlink price, with at most 500 USDG paid out per UTC day | `premiumBps()`, `dailyCap()` |
+| `Float` | Cap of 1,000 USDG. Paused | `cap()`, `paused()` |
+
 ## Timing
 
 Each step has a window, copied from `TaskBoard.Config` when the task is posted:
