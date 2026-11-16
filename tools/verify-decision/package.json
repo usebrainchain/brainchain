@@ -49,7 +49,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "viem": "2.57.13"
+    "viem": "2.57.19"
   },
   "devDependencies": {
     "@types/node": "22.20.5",
