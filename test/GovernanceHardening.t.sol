@@ -8,6 +8,7 @@ import {DecisionExecutor} from "../src/DecisionExecutor.sol";
 import {DecisionLog} from "../src/DecisionLog.sol";
 import {ModelRegistry} from "../src/ModelRegistry.sol";
 import {TaskBoard} from "../src/TaskBoard.sol";
+import {GuardianGate, IGuardedBoard, IGuardedExecutor} from "../src/GuardianGate.sol";
 import {IDecisionExecutor, ProposalBonds} from "../src/flywheel/ProposalBonds.sol";
 import {WorkerStaking} from "../src/flywheel/WorkerStaking.sol";
 import {TestBRAIN} from "../src/testnet/TestBRAIN.sol";
@@ -271,5 +272,67 @@ contract GovernanceHardeningTest is Test {
         vm.expectRevert();
         executor.execute(c);
         assertEq(usdg.balanceOf(address(board)), 0);
+    }
+
+    // ---- E. a watcher's pause, as the deployed board applies it
+
+    function _gateWithWatcher(address watcher) internal returns (GuardianGate gate) {
+        gate = new GuardianGate(
+            makeAddr("safe"), IGuardedExecutor(address(executor)), IGuardedBoard(address(board)), watcher
+        );
+        vm.prank(address(executor));
+        board.setGuardian(address(gate));
+    }
+
+    /// Known behaviour: a pause stops the brain's grade but not `finalize`, so a delivered task whose
+    /// grade window closes while the board is paused refunds the poster, and the worker is not paid.
+    function test_known_aWatcherPauseOutlastingTheGradeWindowRefundsDeliveredWork() public {
+        address watcher = makeAddr("watcher");
+        GuardianGate gate = _gateWithWatcher(watcher);
+        vm.prank(poster);
+        uint256 id = board.post(10e6, uint64(block.timestamp + 1 days), 0, "");
+        bytes32 subject = board.subjectOf(id);
+        vm.prank(brain);
+        uint256 h = decisionLog.record(DecisionLog.Kind.Hire, subject, 0, CLAUDE, 9_000, 0, "");
+        vm.prank(brain);
+        board.hire(id, h);
+        vm.prank(claude);
+        board.submit(id, keccak256("result"), "");
+
+        vm.prank(watcher);
+        gate.setPaused(true, "grades look wrong");
+        vm.prank(brain);
+        uint256 g = decisionLog.record(DecisionLog.Kind.Grade, subject, 0, YES, 9_900, 0, "");
+        vm.prank(brain);
+        vm.expectRevert(TaskBoard.IsPaused.selector);
+        board.grade(id, g);
+
+        vm.warp(block.timestamp + 6 hours + 1);
+        vm.expectEmit(true, true, false, true, address(board));
+        emit TaskBoard.BountyRefunded(id, poster, 10e6, TaskBoard.RefundReason.NotGraded);
+        board.finalize(id);
+        assertEq(usdg.balanceOf(poster), 1_000e6);
+        assertEq(usdg.balanceOf(claude), 0);
+    }
+
+    /// The watcher cannot unpause and neither can the brain directly, but the board's owner, the
+    /// executor, can: an adopted change calling `setPaused(false)` lifts the pause once its timelock
+    /// passes, unless the guardian vetoes it first.
+    function test_known_anAdoptedChangeLiftsAWatcherPause() public {
+        address watcher = makeAddr("watcher");
+        GuardianGate gate = _gateWithWatcher(watcher);
+        vm.startPrank(watcher);
+        gate.setPaused(true, "");
+        vm.expectRevert(GuardianGate.NotAllowed.selector);
+        gate.setPaused(false, "");
+        vm.stopPrank();
+        vm.prank(brain);
+        vm.expectRevert(TaskBoard.NotGuardian.selector);
+        board.setPaused(false);
+
+        uint256 c = _queue(address(board), abi.encodeCall(TaskBoard.setPaused, (false)));
+        vm.warp(block.timestamp + 2 hours);
+        executor.execute(c);
+        assertFalse(board.paused());
     }
 }

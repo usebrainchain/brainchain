@@ -472,6 +472,16 @@ contract TaskBoardTest is BrainChainSetup {
         board.setConfig(defaultConfig());
     }
 
+    function test_onlyOwnerSetsTheFee() public {
+        vm.expectRevert(TaskBoard.NotOwner.selector);
+        board.setFee(300, makeAddr("router"));
+        vm.prank(guardian);
+        vm.expectRevert(TaskBoard.NotOwner.selector);
+        board.setFee(0, address(0));
+        assertEq(board.feeBps(), 0);
+        assertEq(board.feeRouter(), address(0));
+    }
+
     function test_configRejectsNonsense() public {
         TaskBoard.Config memory c = defaultConfig();
         c.hireThresholdBps = 10_001;

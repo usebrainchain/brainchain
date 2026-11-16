@@ -493,4 +493,36 @@ contract BoardHardeningTest is Test {
         assertEq(usdg.balanceOf(address(board)), 0);
         assertEq(usdg.balanceOf(claude) + usdg.balanceOf(address(router)), BOUNTY);
     }
+
+    // =====================================================================
+    // 14. Known behaviour: a ruling below the bar lets the rejection stand
+    //     and still slashes the worker that disputed it, while a dispute
+    //     that gets no ruling at all ends the same way without the slash.
+    // =====================================================================
+    function test_known_anUnconfidentRulingSlashesADisputingWorkerButNoRulingDoesNot() public {
+        _stake(agent, 500e18);
+        _stake(agent2, 500e18);
+
+        uint256 ruled = _post();
+        _hire(ruled, staking.idOf(agent));
+        _submit(ruled, agent);
+        _grade(ruled, false);
+        vm.prank(agent);
+        board.dispute(ruled);
+        _rule(ruled, true, 1_000); // pay, far below the 70% bar
+        assertEq(uint8(board.get(ruled).status), uint8(TaskBoard.Status.Refunded));
+        assertEq(staking.get(agent).staked, 400e18, "slashed on a ruling below the bar");
+
+        uint256 unruled = _post();
+        _hire(unruled, staking.idOf(agent2));
+        _submit(unruled, agent2);
+        _grade(unruled, false);
+        vm.prank(agent2);
+        board.dispute(unruled);
+        vm.warp(block.timestamp + 6 hours + 1);
+        board.finalize(unruled);
+        assertEq(uint8(board.get(unruled).status), uint8(TaskBoard.Status.Refunded));
+        assertEq(staking.get(agent2).staked, 500e18, "no ruling, no slash");
+        assertEq(usdg.balanceOf(poster), 1_000e6);
+    }
 }
