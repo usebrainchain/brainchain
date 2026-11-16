@@ -1,12 +1,12 @@
 # Operator roles
 
-BrainChain's operator key, `0x70C665780E43BA1496a4E691e408F24844dB58eC`, runs routine jobs around the clock. Two of those jobs wait for both Safe owners to sign: topping up the desk's USDG, and executing a timelock operation once its delay has passed. This page describes a narrow power for each. Neither is in place yet: `CappedTransferModule` is not deployed, and the operator does not hold the timelock's executor role. With both in place, the owners keep every other power and can take either one back with a Safe transaction.
+BrainChain's operator key, `0x70C665780E43BA1496a4E691e408F24844dB58eC`, runs routine jobs around the clock. Two of those jobs wait for both Safe owners to sign: topping up the desk's USDG, and executing a timelock operation once its delay has passed. This page describes a narrow power for each. Neither is in place for these jobs yet: the desk's copies of `CappedTransferModule` are not deployed, and the operator does not hold the timelock's executor role. One copy of the module is live for another recipient, described below. With both in place, the owners keep every other power and can take either one back with a Safe transaction.
 
 ## Desk top-ups
 
-[`CappedTransferModule`](../src/safe/CappedTransferModule.sol) is a Safe module. Each copy pays one recipient from one Safe, so a Safe can hold several copies. The desk's copies, one on the treasury Safe on Robinhood Chain and one on the admin Safe on BrainChain, are not deployed yet. One copy is live: it pays the wallet behind BrainChain's reviews of its own pull requests, from the treasury Safe on Robinhood Chain, at most 3 USDG per UTC day. Each copy's address is added to `deployments/mainnet.json` when it is deployed.
+[`CappedTransferModule`](../src/safe/CappedTransferModule.sol) is a Safe module. Each copy pays one recipient from one Safe, so a Safe can hold several copies. The desk's copies, one on the treasury Safe on Robinhood Chain and one on the admin Safe on BrainChain, are not deployed yet. One copy is live, `ReviewTopUpModule` at `0xBA0bA04a99Ad2e0e938d611B0F2bAE64780f3c5c`: it pays the wallet behind BrainChain's reviews of its own pull requests, from the treasury Safe on Robinhood Chain, at most 3 USDG per UTC day. Each copy's address is added to `deployments/mainnet.json` when it is deployed.
 
-The operator can call `send(amount)`, which moves USDG from the Safe to the module's recipient, the desk. All sends in one UTC day together stay within the cap. Days are calendar days, so across midnight the operator can send up to twice the cap within seconds: the full cap at 23:59:59 and again at 00:00:00.
+The operator can call `send(amount)`, which moves USDG from the Safe to the module's recipient (the desk, for the desk's copies). All sends in one UTC day together stay within the cap. Days are calendar days, so across midnight the operator can send up to twice the cap within seconds: the full cap at 23:59:59 and again at 00:00:00.
 
 The operator cannot:
 
