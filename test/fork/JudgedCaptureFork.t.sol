@@ -35,11 +35,11 @@ contract JudgedCaptureForkTest is JudgedCaptureBase {
     }
 
     modifier onFork() {
-        if (block.chainid != 8453) return;
+        vm.skip(block.chainid != 8453);
         _;
     }
 
-    function test_theLocalTestsRunTheCodeDeployedOnBase() public view onFork {
+    function test_theLocalTestsRunTheCodeDeployedOnBase() public onFork {
         string memory json = vm.readFile("test/fixtures/commerce-payments-v1.1.0.json");
         assertEq(address(ESCROW).code, vm.parseJsonBytes(json, ".AuthCaptureEscrow.code"));
         assertEq(ERC3009_COLLECTOR.code, vm.parseJsonBytes(json, ".ERC3009PaymentCollector.code"));

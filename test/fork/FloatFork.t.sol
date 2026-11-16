@@ -49,7 +49,7 @@ contract FloatForkTest is Test {
     }
 
     modifier onFork() {
-        if (block.chainid != 4663) return;
+        vm.skip(block.chainid != 4663);
         _;
     }
 
