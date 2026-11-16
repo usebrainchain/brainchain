@@ -747,7 +747,7 @@ export async function verifyDecision(ctx: Context, id: bigint, receipt?: GivenRe
     c.check(
       "subject",
       record.subject.toLowerCase() === decision.subject,
-      `subject: ${short(decision.subject)}, the exact call this change names`,
+      `subject: ${short(decision.subject)}, as recorded on chain. It is tied to the call Jev was shown only once the change is queued`,
       "the record's subject differs from the one on chain",
     );
   } else if (outside) {

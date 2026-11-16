@@ -309,7 +309,7 @@ describe("a queued change", () => {
   const exact = encodeFunctionData({ abi: taskBoardAbi, functionName: "setWorkerAllowed", args: [STRANGER, true] });
   const decoded = { target: set.board, function: "setWorkerAllowed", args: [STRANGER, true] };
   const unknown = (data) => ({ target: set.board, function: "unknown", selector: data.slice(0, 10), data });
-  const shown = (data, call) => {
+  const shown = (data, call, queue = true) => {
     const subject = keccak256(encodeAbiParameters([{ type: "uint256" }, { type: "address" }, { type: "address" }, { type: "bytes" }], [BigInt(network.chainId), set.executor, set.board, data]));
     const publish = {
       answer: "adopt",
@@ -321,7 +321,7 @@ describe("a queued change", () => {
       request: { state: JSON.stringify({ call }), questions: { decision: { type: "choice", criteria: { adopt: "a", keep: "k" }, instructions: "i" } } },
       subject,
     };
-    return verify({ kind: 4, subject, queued: data, publish });
+    return verify({ kind: 4, subject, queued: queue ? data : undefined, publish });
   };
 
   it("compares an exact call by what it decodes to", async () => {
@@ -329,6 +329,16 @@ describe("a queued change", () => {
     assert.deepEqual(failed(report), []);
     assert.equal(status(report, "change-call"), "ok");
     assert.equal(status(await shown(exact, unknown(exact)), "change-call"), "fail");
+  });
+
+  it("does not claim the subject of a change never queued is the call Jev was shown", async () => {
+    const queued = await shown(exact, decoded);
+    assert.match(check(queued, "subject").message, /^subject: 0x\w{4}…\w{4}, as recorded on chain\. It is tied to the call Jev was shown only once the change is queued$/);
+    const pending = await shown(exact, decoded, false);
+    assert.deepEqual(failed(pending), []);
+    assert.equal(check(pending, "subject").message, check(queued, "subject").message);
+    assert.equal(check(pending, "change-call"), undefined);
+    assert.equal(status(pending, "threshold"), "skip");
   });
 
   it("compares a call that is not the exact encoding as unknown, as the brain showed Jev", async () => {

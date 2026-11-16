@@ -82,7 +82,7 @@ The verdict is `match`, `withheld`, `UNVERIFIED` or `MISMATCH`. `withheld` means
 | `record-hash` | `keccak256` of the fetched bytes equals `payloadHash`. |
 | `input-hash` | `keccak256` of the record's `request`, serialized canonically (keys sorted, no whitespace), equals `inputHash`. |
 | `kind` | The record's kind is the one on chain. |
-| `subject` | A task decision names `TaskBoard.subjectOf(task)` for this chain and board. A change names its exact call. A grade of outside work is matched by the rules below. |
+| `subject` | A task decision names `TaskBoard.subjectOf(task)` for this chain and board. A change's subject is the one on chain; it is tied to the call Jev was shown only once the change is queued, by `change-subject` and `change-call`. A grade of outside work is matched by the rules below. |
 | `options` | The probabilities cover exactly the options in the question. A panel that decided without Jev records none of Jev's, and `panel` checks that it names Jev as missing. |
 | `answer` | The record's answer encodes to the one on chain: the hired model's id or worker address, or 1 for accept, pay, adopt and allow and 0 for their opposites. |
 | `confidence` | The record's confidence times 10,000, rounded, equals `confidenceBps`. |
