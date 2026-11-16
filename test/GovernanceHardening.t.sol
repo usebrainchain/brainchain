@@ -93,11 +93,6 @@ contract GovernanceHardeningTest is Test {
         vm.stopPrank();
     }
 
-    // ---- A. a veto does not block the same call with non-canonical calldata
-
-    /// The veto keys on exact calldata. Solidity's dispatcher ignores trailing
-    /// bytes, so the brain re-queues the vetoed call with 32 junk bytes appended:
-    /// new subject, new veto key, identical effect.
     /// A veto is keyed on the function, not the exact bytes: the dispatcher
     /// ignores trailing calldata, so the exact bytes alone would not shut it.
     function test_A_aVetoShutsTheFunctionWhateverTheCalldataUntilTheAdminClearsIt() public {
@@ -131,7 +126,7 @@ contract GovernanceHardeningTest is Test {
         assertEq(executor.changeThresholdBps(), 5_000);
     }
 
-    /// Same bypass against the treasury: a vetoed transfer runs when re-encoded.
+    /// A vetoed treasury transfer stays vetoed with a byte of padding appended.
     function test_A_aVetoedTreasuryTransferCannotBeReEncoded() public {
         bytes memory data = abi.encodeCall(DecisionExecutor.transfer, (attacker, 1_000e6));
         uint256 changeA = _queue(address(executor), data);
@@ -163,8 +158,6 @@ contract GovernanceHardeningTest is Test {
         assertTrue(board.paused());
     }
 
-    // ---- B. settle accepts a decision recorded after the proposal's deadline
-
     /// A decision recorded after a proposal's window cannot settle it, and the
     /// same call cannot be proposed again while it is open.
     function test_B_aDecisionAfterTheWindowCannotBurnAnUndecidedBond() public {
@@ -189,9 +182,7 @@ contract GovernanceHardeningTest is Test {
         assertEq(bonds.openProposal(subject), 0);
     }
 
-    // ---- C. an in-window keep is dodged once a later decision lands after the deadline
-
-    /// Jev says keep inside Alice's window and nobody settles. The call cannot
+    /// The brain decides keep inside Alice's window and nobody settles. The call cannot
     /// be proposed again while hers is open, so the keep stays the latest
     /// decision and settles her bond; expiring is refused.
     function test_C_anInWindowKeepCannotBeDodgedThroughASecondProposal() public {
@@ -217,8 +208,6 @@ contract GovernanceHardeningTest is Test {
         uint256 p2 = _propose(bob, data);
         assertEq(bonds.openProposal(subject), p2, "once settled, the call can be proposed again");
     }
-
-    // ---- disproofs: paths that hold
 
     function test_D_executorCannotExecuteOrQueueThroughItself() public {
         uint256 inner = _queue(address(executor), abi.encodeCall(DecisionExecutor.transfer, (attacker, 1e6)));
@@ -273,8 +262,6 @@ contract GovernanceHardeningTest is Test {
         executor.execute(c);
         assertEq(usdg.balanceOf(address(board)), 0);
     }
-
-    // ---- E. a watcher's pause, as the deployed board applies it
 
     function _gateWithWatcher(address watcher) internal returns (GuardianGate gate) {
         gate = new GuardianGate(

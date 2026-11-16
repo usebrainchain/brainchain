@@ -335,7 +335,7 @@ contract TaskBoardTest is BrainChainSetup {
         assertEq(usdg.balanceOf(claudeAccount), 0);
     }
 
-    /// v2 refunded here too, after the rule window, even though Jev had accepted the work.
+    /// v2 refunded here too, after the rule window, even though the brain had accepted the work.
     function test_unruledDisputeKeepsTheGradeAfterTheRuleWindow() public {
         uint256 id = postTask();
         hireClaude(id);

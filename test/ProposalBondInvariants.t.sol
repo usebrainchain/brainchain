@@ -111,7 +111,7 @@ contract ProposalBondHandler is Test {
         _record(target, data, kind, yes, uint16(bound(confidence, 0, 10_000)));
     }
 
-    /// Jev adopts a call outright and it runs, which can move the change threshold.
+    /// The brain adopts a call outright and it runs, which can move the change threshold.
     function enact(uint256 callSeed) external {
         (address target, bytes memory data) = _call(callSeed);
         uint256 d = _record(target, data, DecisionLog.Kind.Change, true, 10_000);
@@ -152,7 +152,7 @@ contract ProposalBondHandler is Test {
         } catch {}
     }
 
-    /// Counts a settlement on anything but Jev's latest Change decision on the
+    /// Counts a settlement on anything but the latest Change decision on the
     /// call, recorded after the proposal; returns whether it adopted the call.
     function _checkDecision(ProposalBonds.Proposal memory p, uint256 decisionId, uint16 threshold)
         internal
@@ -172,7 +172,7 @@ contract ProposalBondHandler is Test {
         uint256 before = token.balanceOf(p.proposer);
         uint256 latest = decisionLog.latestOf(p.subject, DecisionLog.Kind.Change);
         uint64 decidedAt = latest == 0 ? 0 : decisionLog.get(latest).recordedAt;
-        // A proposal Jev decided inside its window is settled on that decision, never expired.
+        // A proposal decided inside its window is settled on that decision, never expired.
         bool decidedInTime = latest != 0 && decidedAt >= p.createdAt && decidedAt <= p.deadline;
         try bonds.expire(id) {
             if (

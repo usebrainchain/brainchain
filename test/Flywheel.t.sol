@@ -121,8 +121,6 @@ contract FlywheelTest is Test {
         board.finalize(id);
     }
 
-    // ---- fee
-
     function test_paidBountySendsTheFeeToTheRouter() public {
         _runToPaid(CLAUDE, claude);
         assertEq(usdg.balanceOf(address(router)), 0.3e6);
@@ -141,8 +139,6 @@ contract FlywheelTest is Test {
         vm.expectRevert(TaskBoard.BadFee.selector);
         board.setFee(1_001, address(router));
     }
-
-    // ---- buyback
 
     function test_buybackWaitsForTheTokenAddress() public {
         _runToPaid(CLAUDE, claude);
@@ -225,8 +221,6 @@ contract FlywheelTest is Test {
         vm.expectRevert(FeeRouter.NotKeeper.selector);
         router.buyback(1, 0);
     }
-
-    // ---- staking
 
     function _stake(uint128 amount) internal {
         brainToken.transfer(agent, amount);
@@ -395,8 +389,6 @@ contract FlywheelTest is Test {
         assertTrue(staking.isWorkerId(staking.idOf(agent)));
     }
 
-    // ---- proposal bonds
-
     function _propose() internal returns (uint256 id, bytes memory data) {
         data = abi.encodeCall(TaskBoard.setPaused, (true));
         brainToken.transfer(agent, 100e18);
@@ -427,7 +419,7 @@ contract FlywheelTest is Test {
         assertEq(brainToken.balanceOf(BURN), 100e18);
     }
 
-    /// v2 let anyone settle with an older decision after Jev had decided again.
+    /// v2 let anyone settle with an older decision after the brain had decided again.
     function test_onlyTheLatestDecisionSettles() public {
         (uint256 id, bytes memory data) = _propose();
         bytes32 subject = executor.changeSubject(address(board), data);
@@ -455,7 +447,7 @@ contract FlywheelTest is Test {
         assertEq(bonds.openProposal(executor.changeSubject(address(board), data)), second);
     }
 
-    /// 3.3.0 let a proposer expire a bond after the window even though Jev had decided "keep" in time.
+    /// 3.3.0 let a proposer expire a bond after the window even though the brain had decided "keep" in time.
     function test_aDecisionInTheWindowCannotBeDodgedByExpiring() public {
         (uint256 id, bytes memory data) = _propose();
         uint256 keep = _decide(DecisionLog.Kind.Change, executor.changeSubject(address(board), data), bytes32(0), 9_000);
