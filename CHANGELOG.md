@@ -23,6 +23,7 @@ All notable changes to the contracts are documented here. The format follows [Ke
 These changes were made on chain by the contracts' owners, with no new code.
 
 - The worker stake minimum fell from 1,000,000 to 250,000 BRAIN and the proposal bond from 250,000 to 62,500 BRAIN. The admin Safe scheduled `setConfig` on `WorkerStaking` and `ProposalBonds` through the admin timelock and ran it once the 48-hour delay had passed: for the 3.4.0 contracts at BrainChain block 1389 on 5 November 2026 (scheduled at block 914), and for the 3.5.0 contracts at block 1706 on 7 November 2026 (scheduled at block 1390), in the same operation that moved the 3.5.0 guardian seat to `GuardianGate`. The 3-day cooldown, 20% slash share and 7-day decision window did not change. The 3.3.0 contracts keep 1,000,000 and 250,000, and `DeployMainnet` still defaults to them (`STAKE_MIN`, `BOND`).
+- `ProofsIncome` sends all of the $BRAIN launch income to the treasury Safe on Robinhood Chain. The Safe, which owns it, set the holders' and the splitter's shares to zero (`setShares(0, 0)`) at Robinhood Chain blocks 106221314 and 106224768 on 4 November 2026. Until then a distribution sent half to Proof holders, a quarter to `FeeSplitter` and a quarter to the Safe, as 3.2.0 describes.
 
 ### Fixed
 
