@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
 
-import { createPublicClient, http, isAddress } from "viem";
+import { createPublicClient, isAddress } from "viem";
 
 import { decisionLogAbi, taskBoardAbi } from "./abi.js";
 import { NETWORKS } from "./deployments.js";
@@ -19,6 +19,7 @@ import {
   readReceipt,
   receiptDecision,
   REPUTATION,
+  rpcTransport,
   verifyDecision,
   verifyEntry,
   withheldNotChecked,
@@ -132,7 +133,7 @@ const foundNetwork = Object.hasOwn(NETWORKS, networkArg)
   : Object.values(NETWORKS).find((n) => String(n.chainId) === networkArg);
 if (!foundNetwork) usage(`Unknown network "${networkArg}": use mainnet, testnet, 274663 or 274630`);
 const network = foundNetwork;
-const client = createPublicClient({ transport: http(rpcArg ?? network.rpc) });
+const client = createPublicClient({ transport: rpcTransport("BrainChain", rpcArg ?? network.rpc) });
 const TAGS = { ok: "ok", fail: "FAIL", skip: "skip", error: "ERROR" } as const;
 const tally = (checks: Check[], status: Status): number => checks.filter((c) => c.status === status).length;
 // With --task or --agent, one decision or entry the RPC cannot read is an error line of its own, and the rest still run.
@@ -313,7 +314,7 @@ function reportEntries(reports: EntryReport[], header: string, agentId?: string)
 /** --entry and --agent: BrainChain's entries in the ERC-8004 reputation registry, each checked through its receipt to the chain. */
 async function checkEntries(): Promise<never> {
   if (network.chainId !== REPUTATION.network) usage("BrainChain writes reputation entries for mainnet tasks only, so --entry and --agent read mainnet");
-  const registry: Registry = { ...REPUTATION, client: createPublicClient({ transport: http(registryRpcArg ?? REPUTATION.rpc) }) };
+  const registry: Registry = { ...REPUTATION, client: createPublicClient({ transport: rpcTransport("Robinhood Chain", registryRpcArg ?? REPUTATION.rpc) }) };
   const [current, ...earlier] = registry.writers;
   const where = `in the ERC-8004 reputation registry on Robinhood Chain (${registry.address})`;
   const ctx: Context = { client, network, set: network.sets[0]!, briefs: new Map() };

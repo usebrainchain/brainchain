@@ -28,7 +28,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { decisionLogAbi, taskBoardAbi } from "../dist/abi.js";
 import { canonicalStringify } from "../dist/canonical.js";
 import { NETWORKS } from "../dist/deployments.js";
-import { balancesFrom, clean, entriesOf, entryName, entryOutcome, entrySummary, outcomeOf, readReceipt, receiptDecision, REPUTATION, verifyDecision, verifyEntry, withheldNotChecked } from "../dist/verify.js";
+import { balancesFrom, clean, entriesOf, entryName, entryOutcome, entrySummary, errorMessage, outcomeOf, readReceipt, receiptDecision, REPUTATION, rpcTransport, verifyDecision, verifyEntry, withheldNotChecked } from "../dist/verify.js";
 
 const YES = `0x${"0".repeat(63)}1`;
 const NO = `0x${"0".repeat(64)}`;
@@ -110,6 +110,15 @@ before(async () => {
   base = `http://127.0.0.1:${server.address().port}`;
 });
 after(() => server.close());
+
+/** A local port nothing listens on, so a connection to it is refused. */
+async function closedPort() {
+  const probe = createServer();
+  await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
+  const { port } = probe.address();
+  await new Promise((resolve) => probe.close(resolve));
+  return port;
+}
 
 /**
  * A stub chain holding one decision, served by the local host. `publish` is the
@@ -1521,6 +1530,49 @@ describe("records", () => {
   });
 });
 
+describe("rpc errors", () => {
+  it("name the RPC by its chain and origin, and leave out a key in the path or the userinfo", async () => {
+    const port = await closedPort();
+    const client = createPublicClient({ transport: rpcTransport("BrainChain", `http://user:secret@127.0.0.1:${port}/v2/key-in-path?k=key-in-query`) });
+    const message = errorMessage(await client.getChainId().catch((error) => error));
+    assert.match(message, new RegExp(`^BrainChain RPC http://127\\.0\\.0\\.1:${port}: HTTP request failed\\. \\(.*ECONNREFUSED.*\\)$`));
+    assert.doesNotMatch(message, /secret|key-in/);
+  });
+
+  it("name the RPC through a contract read, and on a JSON-RPC error", async () => {
+    const node = createServer((request, response) => {
+      let body = "";
+      request.on("data", (chunk) => (body += chunk));
+      request.on("end", () => response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: JSON.parse(body).id, error: { code: -32000, message: "header not found" } })));
+    });
+    await new Promise((resolve) => node.listen(0, "127.0.0.1", resolve));
+    try {
+      const url = `http://127.0.0.1:${node.address().port}`;
+      const client = createPublicClient({ transport: rpcTransport("Robinhood Chain", url) });
+      const error = await client.readContract({ address: set.board, abi: taskBoardAbi, functionName: "count" }).catch((e) => e);
+      assert.match(errorMessage(error), new RegExp(`^Robinhood Chain RPC ${url}: .*header not found`));
+    } finally {
+      node.close();
+    }
+  });
+
+  it("give up after two tries of 8 seconds", () => {
+    const { transport } = createPublicClient({ transport: rpcTransport("BrainChain", "http://127.0.0.1:1") });
+    assert.equal(transport.timeout, 8_000);
+    assert.equal(transport.retryCount, 1);
+  });
+
+  it("name the payment network's RPC, Solana's too", async () => {
+    const port = await closedPort();
+    const url = `http://127.0.0.1:${port}`;
+    const balances = balancesFrom({ "eip155:8453": url, "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": url, "eip155:1": url });
+    const reason = async (network, transaction) => errorMessage(await balances(network, transaction, STRANGER).catch((e) => e));
+    assert.match(await reason("eip155:8453", `0x${"ab".repeat(32)}`), new RegExp(`^Base RPC ${url}: HTTP request failed`));
+    assert.match(await reason("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp", "sig"), new RegExp(`^Solana RPC ${url}: fetch failed`));
+    assert.match(await reason("eip155:1", `0x${"ab".repeat(32)}`), new RegExp(`^eip155:1 RPC ${url}: `));
+  });
+});
+
 describe("receipt files", () => {
   it("are read only up to the cap, and only when they are regular files", { timeout: 10_000 }, async () => {
     const local = { transport: { url: "http://127.0.0.1:1" } };
@@ -1662,6 +1714,21 @@ describe("the command line", () => {
       assert.equal(code, 2);
       assert.equal(stderr, "");
       assert.match(onlyError(stdout), /^The RPC serves chain 274630, not /);
+    } finally {
+      rpc.close();
+    }
+  });
+
+  it("names the RPC that failed, --rpc or --registry-rpc", async () => {
+    const closed = `http://127.0.0.1:${await closedPort()}`;
+    const decision = await runAsync("mainnet", "1", "--rpc", closed);
+    assert.equal(decision.code, 1);
+    assert.match(decision.stderr, new RegExp(`^BrainChain RPC ${closed}: HTTP request failed`));
+    const rpc = await stubRpc(MAINNET);
+    try {
+      const entry = await runAsync("mainnet", "--entry", "20424:1", "--rpc", urlOf(rpc), "--registry-rpc", closed, "--json");
+      assert.equal(entry.code, 1);
+      assert.match(onlyError(entry.stdout), new RegExp(`^Robinhood Chain RPC ${closed}: HTTP request failed`));
     } finally {
       rpc.close();
     }

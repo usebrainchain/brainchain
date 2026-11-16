@@ -26,6 +26,7 @@ import {
   type Address,
   type EncodeFunctionDataParameters,
   type Hex,
+  type HttpTransport,
   type PublicClient,
   toHex,
   zeroAddress,
@@ -258,14 +259,53 @@ function rootCause(error: Error): string | undefined {
   return reason;
 }
 
+function describe(error: Error): string {
+  const reason = rootCause(error);
+  if (!(error instanceof BaseError)) return reason ? `${error.message}: ${reason}` : error.message;
+  const detail = reason ?? error.details;
+  return detail ? `${error.shortMessage} (${detail})` : error.shortMessage;
+}
+
 export function errorMessage(error: unknown): string {
   if (!(error instanceof Error)) return clean(String(error));
-  const reason = rootCause(error);
-  if (error instanceof BaseError) {
-    const detail = reason ?? error.details;
-    return clean(detail ? `${error.shortMessage} (${detail})` : error.shortMessage);
+  const rpc = rpcOf(error);
+  return clean(rpc ? `${rpc}: ${describe(error)}` : describe(error));
+}
+
+// Which RPC an error came from, so a failure on --rpc reads apart from one on --registry-rpc.
+const rpcNames = new WeakMap<object, string>();
+
+// Only the origin: providers put API keys in the path.
+const rpcLabel = (name: string, url: string): string => (URL.canParse(url) ? `${name} RPC ${new URL(url).origin}` : `${name} RPC`);
+
+function fromRpc<T>(error: T, rpc: string): T {
+  if (error instanceof Error) rpcNames.set(error, rpc);
+  return error;
+}
+
+function rpcOf(error: Error): string | undefined {
+  for (let next: unknown = error; next instanceof Error; next = next.cause) {
+    const rpc = rpcNames.get(next);
+    if (rpc) return rpc;
   }
-  return clean(reason ? `${error.message}: ${reason}` : error.message);
+  return undefined;
+}
+
+// viem's own default, four tries of 10 seconds, held the tool 40 seconds on an RPC that never answers.
+const RPC_TIMEOUT_MS = 8_000;
+
+/** An http transport for one RPC, with two tries of 8 seconds, whose errors say which RPC failed: `name` is its chain, as in "BrainChain RPC <origin>". */
+export function rpcTransport(name: string, url: string): HttpTransport {
+  const transport = http(url, { timeout: RPC_TIMEOUT_MS, retryCount: 1 });
+  const rpc = rpcLabel(name, url);
+  return (config) => {
+    const built = transport(config);
+    const request = ((args, options) =>
+      built.request(args, options).catch((error: unknown) => {
+        throw fromRpc(error, rpc);
+      })) as typeof built.request;
+    return { ...built, request };
+  };
 }
 
 function parseJson(text: string): unknown {
@@ -1715,6 +1755,14 @@ async function readDesk({ client, network, set }: Context, origin: string): Prom
 }
 
 const ROBINHOOD_RPC = "https://rpc.mainnet.chain.robinhood.com";
+const CHAINS: Record<string, string> = {
+  "eip155:8453": "Base",
+  "eip155:84532": "Base Sepolia",
+  "eip155:4663": "Robinhood Chain",
+  "eip155:46630": "Robinhood Chain testnet",
+  "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": "Solana",
+  "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1": "Solana devnet",
+};
 // Public RPCs for the networks the desk takes payment on.
 const PAYMENT_RPCS: Record<string, string> = {
   "eip155:8453": "https://mainnet.base.org",
@@ -1733,10 +1781,11 @@ export function balancesFrom(rpcs: Readonly<Record<string, string>>): Balances {
   return async (network, transaction, asset) => {
     const rpc = Object.hasOwn(rpcs, network) ? rpcs[network] : undefined;
     if (!rpc) throw new Refused(`the tool has no RPC for ${clean(network)}`);
-    if (network.startsWith("solana:")) return solanaBalances(rpc, transaction, asset);
+    const name = Object.hasOwn(CHAINS, network) ? CHAINS[network]! : clean(network);
+    if (network.startsWith("solana:")) return solanaBalances(name, rpc, transaction, asset);
     if (!BYTES32.test(transaction)) return undefined;
     let client = clients.get(network);
-    if (!client) clients.set(network, (client = createPublicClient({ transport: http(rpc) }) as PublicClient));
+    if (!client) clients.set(network, (client = createPublicClient({ transport: rpcTransport(name, rpc) }) as PublicClient));
     const receipt = await client.getTransactionReceipt({ hash: transaction as Hex }).catch((error: unknown) => {
       throw error instanceof TransactionReceiptNotFoundError ? new Error(UNSEEN) : error;
     });
@@ -1761,17 +1810,24 @@ interface TokenBalance {
 }
 
 /** A Solana transaction's change to each owner's balance of the mint, from its token balances before and after. */
-async function solanaBalances(rpc: string, signature: string, mint: string): Promise<Map<string, bigint> | undefined> {
-  const response = await fetch(rpc, {
+async function solanaBalances(name: string, rpc: string, signature: string, mint: string): Promise<Map<string, bigint> | undefined> {
+  type Meta = { err?: unknown; preTokenBalances?: TokenBalance[]; postTokenBalances?: TokenBalance[] };
+  type Reply = { result?: { meta?: Meta } | null; error?: { message?: unknown } };
+  const label = rpcLabel(name, rpc);
+  const { result, error } = await fetch(rpc, {
     method: "POST",
     headers: { "content-type": "application/json", "user-agent": "brainchain-verify" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getTransaction", params: [signature, { encoding: "jsonParsed", commitment: "finalized", maxSupportedTransactionVersion: 0 }] }),
-    signal: AbortSignal.timeout(FETCH_MS),
-  });
-  if (!response.ok) throw new Error(`${rpc} answered with status ${response.status}`);
-  type Meta = { err?: unknown; preTokenBalances?: TokenBalance[]; postTokenBalances?: TokenBalance[] };
-  const { result, error } = (await response.json()) as { result?: { meta?: Meta } | null; error?: { message?: unknown } };
-  if (error) throw new Error(`${rpc} answered: ${clean(String(error.message))}`);
+    signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
+  })
+    .then(async (response) => {
+      if (!response.ok) throw new Error(`answered with status ${response.status}`);
+      return (await response.json()) as Reply;
+    })
+    .catch((reason: unknown) => {
+      throw fromRpc(reason, label);
+    });
+  if (error) throw fromRpc(new Error(clean(String(error.message))), label);
   const meta = result?.meta;
   if (!meta) throw new Error(UNSEEN);
   if (meta.err !== null) return undefined;
