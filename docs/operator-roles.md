@@ -4,7 +4,7 @@ BrainChain's operator key, `0x70C665780E43BA1496a4E691e408F24844dB58eC`, runs ro
 
 ## Desk top-ups
 
-[`CappedTransferModule`](../src/safe/CappedTransferModule.sol) is a Safe module. One copy serves each Safe that funds the desk: the treasury Safe on Robinhood Chain and the admin Safe on BrainChain. Each copy's address is added to `deployments/mainnet.json` when it is deployed.
+[`CappedTransferModule`](../src/safe/CappedTransferModule.sol) is a Safe module. Each copy pays one recipient from one Safe, so a Safe can hold several copies. The desk's copies, one on the treasury Safe on Robinhood Chain and one on the admin Safe on BrainChain, are not deployed yet. One copy is live: it pays the wallet behind BrainChain's reviews of its own pull requests, from the treasury Safe on Robinhood Chain, at most 3 USDG per UTC day. Each copy's address is added to `deployments/mainnet.json` when it is deployed.
 
 The operator can call `send(amount)`, which moves USDG from the Safe to the module's recipient, the desk. All sends in one UTC day together stay within the cap. Days are calendar days, so across midnight the operator can send up to twice the cap within seconds: the full cap at 23:59:59 and again at 00:00:00.
 
