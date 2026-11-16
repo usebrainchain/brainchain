@@ -1508,6 +1508,9 @@ export async function readReceipt(client: PublicClient, source: string): Promise
   return { from: clean(source), value: typeof carried === "object" && carried !== null ? carried : value };
 }
 
+/** Whether a value is a receipt as BrainChain or the x402 extension signs one. */
+export const isReceipt = (value: unknown): boolean => parseReceipt(value) !== undefined;
+
 /** The decision and log a BrainChain receipt names. The x402 extension's receipt names neither. */
 export function receiptDecision(value: unknown): { decision: string; decisionLog: Address } | undefined {
   const receipt = parseReceipt(value);

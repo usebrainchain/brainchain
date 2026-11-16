@@ -1604,6 +1604,14 @@ describe("the command line", () => {
     assert.equal(missing.status, 1);
     assert.match(onlyError(missing.stdout), /no such file/);
 
+    // A reply kept before the receipt was in it is unreadable as a receipt, with an id or without.
+    await writeFile(join(dir, "reply.json"), JSON.stringify({ order: "o-1", state: "running" }));
+    for (const args of [["mainnet"], ["mainnet", "5"]]) {
+      const unread = run(...args, "--receipt", join(dir, "reply.json"), "--json");
+      assert.equal(unread.status, 1, args.join(" "));
+      assert.match(onlyError(unread.stdout), /reply\.json is not a receipt as BrainChain or the x402 extension signs one$/);
+    }
+
     const payload = { version: 1, network: "eip155:8453", resourceUrl: "https://brain.usebrainchain.com/x402/grades", payer: STRANGER, issuedAt: 1763164800, transaction: `0x${"ab".repeat(32)}` };
     await writeFile(join(dir, "x402.json"), JSON.stringify({ format: "eip712", payload, signature: "0x00" }));
     const unnamed = run("mainnet", "--receipt", join(dir, "x402.json"));

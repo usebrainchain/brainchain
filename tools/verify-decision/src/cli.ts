@@ -13,6 +13,7 @@ import {
   entryOutcome,
   entrySummary,
   errorMessage,
+  isReceipt,
   outcomeOf,
   readReceipt,
   receiptDecision,
@@ -137,6 +138,7 @@ const ENTRY_TAGS: Record<EntryOutcome, string> = { match: "match", "no-receipt":
 if (reputation) await checkEntries();
 
 const receipt = receiptArg === undefined ? undefined : await readReceipt(client, receiptArg).catch((error: unknown) => fail(errorMessage(error)));
+if (receipt && !isReceipt(receipt.value)) fail(`${receipt.from} is not a receipt as BrainChain or the x402 extension signs one`);
 const named = receipt && receiptDecision(receipt.value);
 const target = given ?? named?.decision;
 if (target === undefined || !/^[1-9]\d*$/.test(target)) usage("The receipt names no decision; give the decision's id");
