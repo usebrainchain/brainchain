@@ -169,7 +169,7 @@ function verdict(reports: DecisionReport[]): string {
     case "mismatch":
       return `Verdict: MISMATCH. ${failed} check${failed === 1 ? "" : "s"} failed; see the FAIL lines.`;
     case "unverified":
-      return "Verdict: UNVERIFIED. A record could not be fetched, so its checks did not run; see the ERROR lines.";
+      return "Verdict: UNVERIFIED. Some checks could not run; the ERROR lines say what could not be read.";
     case "withheld":
       return `Verdict: withheld, not a full match${many ? ` (decision${reports.filter((r) => r.withheld).length === 1 ? "" : "s"} ${reports.filter((r) => r.withheld).map((r) => r.id).join(", ")})` : ""}. ${withheldNotChecked(reports)}`;
     case "match":
@@ -244,7 +244,7 @@ function entryVerdict(r: EntryReport): string {
     case "mismatch":
       return `Verdict: MISMATCH. ${failed} check${failed === 1 ? "" : "s"} failed; see the FAIL lines.`;
     case "unverified":
-      return "Verdict: UNVERIFIED. The receipt or the record behind it could not be fetched, so the checks that need it did not run; see the ERROR lines.";
+      return "Verdict: UNVERIFIED. Some checks could not run; the ERROR lines say what could not be read.";
     case "withheld":
       return `Verdict: withheld, not a full match. ${withheldNotChecked([r.decision!])}`;
     case "no-receipt":

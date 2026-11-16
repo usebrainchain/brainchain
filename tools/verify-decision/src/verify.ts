@@ -459,8 +459,14 @@ interface Wanted {
 /** A location the tool will not read. Trying again would not help. */
 class Refused extends Error {}
 
+/** More than the thing fetched may be. Not tried again either, but unlike a refused location, a check that could not run. */
+class TooLarge extends Refused {}
+
 /** A host that answered 404, which for a receipt means it has not been signed yet. */
 class NotFound extends Error {}
+
+/** Not there to check: a host's 404, or a location the tool will not read. A host that fails to answer, or sends too much, is a check that could not run. */
+const absent = (error: unknown): boolean => error instanceof NotFound || (error instanceof Refused && !(error instanceof TooLarge));
 
 const PRIVATE = new BlockList();
 for (const [net, bits] of [["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.168.0.0", 16], ["224.0.0.0", 4], ["240.0.0.0", 4]] as const) {
@@ -525,7 +531,7 @@ function readOnce(uri: string, url: URL, wanted: Wanted, signal: AbortSignal): P
       let size = 0;
       response.on("data", (chunk: Buffer) => {
         size += chunk.length;
-        if (size > wanted.limit) request.destroy(new Refused(`${display(uri)} is larger than the ${Math.round(wanted.limit / 1024)} KB a ${wanted.what} may be, so it was not read`));
+        if (size > wanted.limit) request.destroy(new TooLarge(`${display(uri)} is larger than the ${Math.round(wanted.limit / 1024)} KB a ${wanted.what} may be, so it was not read`));
         else chunks.push(chunk);
       });
       response.on("end", () =>
@@ -570,9 +576,9 @@ async function readBytes(uri: string, url: URL, wanted: Wanted, deadline: AbortS
 async function fetchBytes(uri: string, wanted: Wanted): Promise<Fetched> {
   if (uri.startsWith("data:")) {
     const comma = uri.indexOf(",");
-    if (comma < 0 || !uri.slice(0, comma).endsWith(";base64")) throw new Error("only base64 data URIs are supported");
+    if (comma < 0 || !uri.slice(0, comma).endsWith(";base64")) throw new Refused("only base64 data URIs are supported");
     const bytes = Uint8Array.from(Buffer.from(uri.slice(comma + 1), "base64"));
-    if (bytes.length > wanted.limit) throw new Refused(`the ${wanted.what} is larger than the ${Math.round(wanted.limit / 1024)} KB it may be, so it was not read`);
+    if (bytes.length > wanted.limit) throw new TooLarge(`the ${wanted.what} is larger than the ${Math.round(wanted.limit / 1024)} KB it may be, so it was not read`);
     return { bytes, withheld: false };
   }
   if (!URL.canParse(uri)) throw new Refused(`${display(uri)} is not a URL`);
@@ -900,9 +906,15 @@ async function checkBrief(ctx: Context, c: Checks, task: bigint, decision: Decis
   try {
     brief = await pending;
   } catch (error) {
-    c.add("brief", error instanceof BriefMismatch ? "fail" : "skip", `brief: ${errorMessage(error)}`);
+    c.add("brief", error instanceof BriefMismatch ? "fail" : absent(error) ? "skip" : "error", `brief: ${errorMessage(error)}`);
     checkRun(c, decision, record, state);
-    if (decision.kind === Kind.Grade) c.add("confidence-recomputed", "skip", "grade confidence: needs the brief's pass level");
+    if (decision.kind !== Kind.Grade) return;
+    if (predatesPaidLevels(record)) return c.add("confidence-recomputed", "skip", PREDATES_PAID_LEVELS);
+    // Without the brief, the record's own pass level still ties the answer to the probabilities.
+    const own = ownPassLevel(c, record);
+    if (!own) return;
+    c.add("levels", "skip", `levels: the brief could not be read, so the confidence is recomputed from the record's own ${own.levels} levels, paid from level ${own.passFrom}`);
+    checkGradeConfidence(c, record, own.paidKeys);
     return;
   }
 
@@ -934,14 +946,7 @@ async function checkBrief(ctx: Context, c: Checks, task: bigint, decision: Decis
     "the levels Jev scored against are the brief's, lowest first",
     "the levels in the question are not the brief's",
   );
-  if (record.scoreConfidence === undefined && record.panel === undefined) {
-    c.add(
-      "confidence-recomputed",
-      "skip",
-      "grade confidence: this grade predates the rule that gates on the paid levels, so its confidence is Jev's score confidence, which the probabilities alone do not give",
-    );
-    return;
-  }
+  if (predatesPaidLevels(record)) return c.add("confidence-recomputed", "skip", PREDATES_PAID_LEVELS);
   checkGradeConfidence(c, record, ascending.map((_, i) => String(i)).slice(ascending.length - 1 - brief.passIndex));
 }
 
@@ -995,22 +1000,33 @@ function checkRun(c: Checks, decision: Decision, record: Published, state: State
   );
 }
 
-// No brief on chain to compare with. payloadHash commits a whole record's levels and pass level, and nothing commits a withheld record's.
-function checkOutsideGrade(c: Checks, record: Published, withheld: boolean): void {
+const predatesPaidLevels = (record: Published): boolean => record.scoreConfidence === undefined && record.panel === undefined;
+const PREDATES_PAID_LEVELS =
+  "grade confidence: this grade predates the rule that gates on the paid levels, so its confidence is Jev's score confidence, which the probabilities alone do not give";
+
+/** The question's levels and the record's own pass level, where no brief says them. Undefined once a line says why there are none to use. */
+function ownPassLevel(c: Checks, record: Published): { levels: number; passFrom: number; paidKeys: string[] } | undefined {
   const levels = record.request.questions.decision.criteria;
   const { passFrom } = record;
   if (!Array.isArray(levels) || passFrom === undefined) {
     c.add("confidence-recomputed", "skip", "grade confidence: the record does not name its pass level");
-    return;
+    return undefined;
   }
   // The lowest level never passes, or every result would.
   if (typeof passFrom !== "number" || !Number.isInteger(passFrom) || passFrom < 1 || passFrom >= levels.length) {
     c.add("levels", "fail", `levels: the record's pass level ${JSON.stringify(passFrom)} is not one of levels 1 to ${levels.length - 1} of the ${levels.length} the question lists`);
     c.add("confidence-recomputed", "skip", "grade confidence: needs a valid pass level");
-    return;
+    return undefined;
   }
-  c.add("levels", "skip", `levels: the record's own ${levels.length} levels, paid from level ${passFrom}. No brief on chain says what they should be${withheld ? ", and no hash commits them on this copy" : ""}`);
-  checkGradeConfidence(c, record, levels.map((_, i) => String(i)).slice(passFrom));
+  return { levels: levels.length, passFrom, paidKeys: levels.map((_, i) => String(i)).slice(passFrom) };
+}
+
+// No brief on chain to compare with. payloadHash commits a whole record's levels and pass level, and nothing commits a withheld record's.
+function checkOutsideGrade(c: Checks, record: Published, withheld: boolean): void {
+  const own = ownPassLevel(c, record);
+  if (!own) return;
+  c.add("levels", "skip", `levels: the record's own ${own.levels} levels, paid from level ${own.passFrom}. No brief on chain says what they should be${withheld ? ", and no hash commits them on this copy" : ""}`);
+  checkGradeConfidence(c, record, own.paidKeys);
 }
 
 function checkGradeConfidence(c: Checks, record: Published, paidKeys: string[]): void {
@@ -1478,7 +1494,7 @@ export async function readReceipt(client: PublicClient, source: string): Promise
   const bytes = /^https?:\/\//i.test(source)
     ? (await fetchBytes(source, { what: "receipt", limit: MAX_RECEIPT_BYTES, allowPrivate: await allowsPrivate(client) })).bytes
     : await readFile(source);
-  if (bytes.length > MAX_RECEIPT_BYTES) throw new Refused(`${display(source)} is larger than the ${MAX_RECEIPT_BYTES / 1024} KB a receipt may be, so it was not read`);
+  if (bytes.length > MAX_RECEIPT_BYTES) throw new TooLarge(`${display(source)} is larger than the ${MAX_RECEIPT_BYTES / 1024} KB a receipt may be, so it was not read`);
   const text = decodeText(bytes);
   const value = text === undefined ? undefined : parseJson(text);
   if (value === undefined) throw new Error(`${display(source)} is not JSON`);

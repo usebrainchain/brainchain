@@ -68,7 +68,7 @@ Verdict: match. The published record is exactly what the chain recorded, and the
 Not checked: that Jev produced the answer. See https://docs.usebrainchain.com/trust-model
 ```
 
-Each line is one check. `ok` passed and `FAIL` means the record and the chain disagree. `skip` is a check that could not run, with the reason on the line. `ERROR` means the record could not be fetched, so the checks that need it did not run: the host did not answer in up to three tries and 30 seconds in all, it no longer has the record, or the tool refused to read it (see `fetch`).
+Each line is one check. `ok` passed and `FAIL` means the record and the chain disagree. `skip` is a check with nothing to run on, such as a brief the host no longer has, with the reason on the line. `ERROR` is a check that could not run because something it reads could not be read: the host did not answer in up to three tries and 30 seconds in all, answered with an error, or sent more than the tool reads. A record the host no longer has, or one the tool refuses to read (see `fetch`), is an `ERROR` too, since no other check can run without it.
 
 The verdict is `match`, `withheld`, `UNVERIFIED` or `MISMATCH`. `withheld` means a record served without the work passed the checks that could run, and says what they leave out.
 
@@ -91,7 +91,7 @@ The verdict is `match`, `withheld`, `UNVERIFIED` or `MISMATCH`. `withheld` means
 | `second-grader` | On a decision graded twice: the second grader's probability of paying recomputes from its probabilities, and the receipt id it carries is shown. |
 | `judge` | On a decision by a panel, one line for each judge after the second grader: its probability of paying recomputes from its probabilities, which cover the question's options, and the receipt id it carries is shown. |
 | `panel` | On a decision by a panel: the candidate rules recompute from the judges' probabilities of paying, the record's rule is one of them, and a panel short of a member says which and pays only from 90%. |
-| `brief` | The question quotes the task's brief, fetched from its `Posted` event and checked against `briefHash`. Bytes that miss the hash are a `FAIL`; a host that cannot be read is a `skip`. |
+| `brief` | The question quotes the task's brief, fetched from its `Posted` event and checked against `briefHash`. Bytes that miss the hash are a `FAIL`. A host that answers 404, or a location the tool refuses, is a `skip`. A host that does not answer, answers with an error or sends more than 256 KB is an `ERROR`. Either way, a grade's confidence is still recomputed, from the record's own pass level. |
 | `checks` | A brief can carry checks: a fenced block marked `python checks` or `javascript checks`. The record of a grade or ruling on that brief holds BrainChain's run of them after the delivered code, and the line names the run's language and outcome. A run that failed, timed out, found no code in that language or was too long to run makes the answer reject, or refund on a ruling, at 10,000 bps. A run that passed is in the question the graders read, in BrainChain's own wording. A task record with checks in its brief and no run is a `FAIL`. |
 | `levels` | A grade or ruling used the brief's own quality levels and pass level. On a grade of outside work, the pass level is a whole number naming one of the question's levels above the lowest. |
 | `threshold` | The task's threshold, applied as `TaskBoard.hire`, `grade`, `rule` and `ruleAppeal` do, gives the outcome the board emitted. A poster can raise the grade and ruling thresholds while the task is open, so they can be higher than when it was posted; they cannot change after the hire. A ruling on appeal (set 3.5.0 and later) is checked against the board's `AppealRuled` event. A change is queued only on a yes. |
@@ -106,6 +106,7 @@ The verdict is `match`, `withheld`, `UNVERIFIED` or `MISMATCH`. `withheld` means
 Some checks skip by design:
 
 - A decision the board never applied, because a later decision or a closed window settled the task, skips `threshold`.
+- A brief the host no longer has, or one at a location the tool refuses, skips `brief`. A grade's confidence is then recomputed from the record's own pass level, and `levels` skips.
 - A grade recorded before the chain gated on the paid levels skips `confidence-recomputed`: its confidence is Jev's score confidence, which the probabilities alone do not give.
 - A grade or ruling recorded before BrainChain ran a brief's checks skips `checks` when its brief carries some. Such a record has no `jevPaid`, which every later grade and ruling states unless its panel decided without Jev.
 - A grade of outside work skips `checks` when its brief ends in a checks block and its record holds no run. The section on grades of outside work says why.
@@ -245,7 +246,7 @@ That Jev produced the answer. BrainChain records Jev's answers, and the contract
 | Code | Meaning |
 | --- | --- |
 | 0 | Every check that could run passed. Skips do not fail a decision. A `withheld` verdict also exits 0, so read the verdict if you need to tell it from a full match. |
-| 1 | A check failed, a record or receipt could not be fetched, or the decision or entry could not be read: an unknown id, a task with no decisions, an entry the registry does not hold, an RPC error, a `--receipt` that cannot be read. |
+| 1 | A check failed, a check could not run (an `ERROR` line, such as a record, brief or receipt the host did not serve), or the decision or entry could not be read: an unknown id, a task with no decisions, an entry the registry does not hold, an RPC error, a `--receipt` that cannot be read. |
 | 2 | Bad arguments, or an RPC that serves another chain. |
 
 ## JSON

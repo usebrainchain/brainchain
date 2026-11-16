@@ -103,7 +103,7 @@ before(async () => {
       pump();
       return;
     }
-    response.writeHead(200, page.headers ?? {}).end(page.body);
+    response.writeHead(page.status ?? 200, page.headers ?? {}).end(page.body);
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${server.address().port}`;
@@ -1290,11 +1290,31 @@ describe("briefs", () => {
     assert.equal(outcomeOf([report]), "mismatch");
   });
 
-  it("skip when the host cannot be read, and say brief", async () => {
+  it("skip when the host no longer has one, and recompute a grade's confidence from the record's own pass level", async () => {
     const report = await verify({ briefURI: `${base}/no-such-brief` });
     assert.equal(status(report, "brief"), "skip");
     assert.match(check(report, "brief").message, /no longer has this brief/);
+    assert.equal(check(report, "levels").message, "levels: the brief could not be read, so the confidence is recomputed from the record's own 3 levels, paid from level 1");
+    assert.equal(status(report, "confidence-recomputed"), "ok");
     assert.equal(outcomeOf([report]), "match");
+  });
+
+  it("are an error when the host fails to answer, and the grade's answer is still held to its probabilities", async () => {
+    pages.set("/brief-down", { status: 503, body: "restarting" });
+    // One context, so the brief is fetched once and its three tries are not repeated for each record.
+    const briefs = new Map();
+    const on = (publish, bps = 9000) => verifyDecision({ ...onChain({ briefURI: `${base}/brief-down`, publish, bps }), briefs }, 1n);
+    const report = await on(grade());
+    assert.equal(status(report, "brief"), "error");
+    assert.match(check(report, "brief").message, /answered with status 503/);
+    assert.equal(status(report, "confidence-recomputed"), "ok");
+    assert.equal(outcomeOf([report]), "unverified");
+
+    const forged = await on(grade({ confidence: 0.95 }), 9500);
+    assert.deepEqual(failed(forged), ["confidence-recomputed"]);
+    assert.equal(outcomeOf([forged]), "mismatch");
+    assert.equal(status(await on(grade({ extra: { passFrom: 3 } })), "levels"), "fail");
+    assert.match(check(await on(grade({ extra: { scoreConfidence: undefined } })), "confidence-recomputed").message, /predates the rule that gates on the paid levels/);
   });
 
   it("are read from a private address only when the RPC is on one too", async () => {
@@ -1335,14 +1355,15 @@ describe("briefs", () => {
     assert.match(check(await verifyDecision({ ...ctx, briefs: new Map() }, 1n), "brief").message, /file: URIs are not supported/);
   });
 
-  it("stop being read at the size cap", async () => {
+  it("stop being read at the size cap, which is an error", async () => {
     pages.set("/huge", { stream: 1500 });
     const started = process.memoryUsage().rss;
     const report = await verify({ briefURI: `${base}/huge` });
-    assert.equal(status(report, "brief"), "skip");
+    assert.equal(status(report, "brief"), "error");
     assert.match(check(report, "brief").message, /larger than the 256 KB a brief may be/);
+    assert.equal(outcomeOf([report]), "unverified");
     assert.ok(process.memoryUsage().rss - started < 300 * 1024 * 1024);
-    assert.equal(status(await verify({ briefURI: dataUri(Buffer.alloc(300 * 1024, 97)) }), "brief"), "skip");
+    assert.equal(status(await verify({ briefURI: dataUri(Buffer.alloc(300 * 1024, 97)) }), "brief"), "error");
   });
 
   it("carry no terminal codes into the output", async () => {
