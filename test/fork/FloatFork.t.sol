@@ -4,7 +4,13 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {Float, IMorpho, IUniswapV3PoolLike} from "../../src/float/Float.sol";
+
+interface IPoolPrice {
+    function token0() external view returns (address);
+    function slot0() external view returns (uint160 sqrtPriceX96, int24, uint16, uint16, uint16, uint8, bool);
+}
 
 // Lends the float on the real Morpho market and the real WETH/USDG pool on a fork of Robinhood Chain.
 // Skipped without a fork:
@@ -45,6 +51,15 @@ contract FloatForkTest is Test {
     modifier onFork() {
         if (block.chainid != 4663) return;
         _;
+    }
+
+    /// What `amountIn` of `tokenIn` is worth at the pool's current price, before the fee and price impact.
+    function _atPoolPrice(address pool, address tokenIn, uint256 amountIn) internal view returns (uint256) {
+        (uint160 sqrtPriceX96,,,,,,) = IPoolPrice(pool).slot0();
+        uint256 priceX96 = Math.mulDiv(sqrtPriceX96, sqrtPriceX96, 1 << 96);
+        return IPoolPrice(pool).token0() == tokenIn
+            ? Math.mulDiv(amountIn, priceX96, 1 << 96)
+            : Math.mulDiv(amountIn, 1 << 96, priceX96);
     }
 
     function test_lendsUnderTheCapAndComesBack() public onFork {
@@ -106,12 +121,17 @@ contract FloatForkTest is Test {
     }
 
     function test_fundWithEthSwapsOnThePool() public onFork {
+        // The floor comes from the pool's own price, so the test holds at any ETH price.
+        uint256 fair = _atPoolPrice(WETH_USDG_POOL, WETH, 0.05 ether);
+        uint256 floor = fair * 98 / 100;
         vm.deal(owner, 1 ether);
         vm.prank(owner);
-        float.fundWithEth{value: 0.05 ether}(100e6);
-        assertGt(float.idle(), 1_300e6, "0.05 ETH is more than 100 USDG");
+        float.fundWithEth{value: 0.05 ether}(floor);
+        uint256 got = float.idle() - 1_200e6;
+        assertGe(got, floor, "within 2% of the pool price");
+        assertLe(got, fair, "no better than the pool price");
         vm.prank(owner);
-        vm.expectRevert();
-        float.fundWithEth{value: 0.05 ether}(1e30);
+        vm.expectPartialRevert(Float.OffPrice.selector);
+        float.fundWithEth{value: 0.05 ether}(fair + 1);
     }
 }

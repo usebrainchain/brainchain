@@ -3,7 +3,13 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {DeskMandate, IUniswapV3PoolLike, IAggregatorV3} from "../../src/desks/DeskMandate.sol";
+
+interface IPoolPrice {
+    function token0() external view returns (address);
+    function slot0() external view returns (uint160 sqrtPriceX96, int24, uint16, uint16, uint16, uint8, bool);
+}
 
 // DeskMandate against the real USDG, WETH, Robinhood stock tokens, Uniswap v3 pools and Chainlink
 // feeds on a fork of Robinhood Chain (chain 4663). Skipped without a fork:
@@ -34,7 +40,7 @@ contract DeskMandateForkTest is Test {
         mandate.setVenue(NVDA, IUniswapV3PoolLike(NVDA_POOL), IAggregatorV3(NVDA_FEED), true);
         mandate.setVenue(SPY, IUniswapV3PoolLike(SPY_POOL), IAggregatorV3(SPY_FEED), true);
         vm.stopPrank();
-        vm.deal(owner, 1 ether);
+        vm.deal(owner, 100 ether);
     }
 
     modifier onFork() {
@@ -42,9 +48,21 @@ contract DeskMandateForkTest is Test {
         _;
     }
 
+    /// What `amountIn` of `tokenIn` is worth at the pool's current price, before the fee and price impact.
+    function _atPoolPrice(address pool, address tokenIn, uint256 amountIn) internal view returns (uint256) {
+        (uint160 sqrtPriceX96,,,,,,) = IPoolPrice(pool).slot0();
+        uint256 priceX96 = Math.mulDiv(sqrtPriceX96, sqrtPriceX96, 1 << 96);
+        return IPoolPrice(pool).token0() == tokenIn
+            ? Math.mulDiv(amountIn, priceX96, 1 << 96)
+            : Math.mulDiv(amountIn, 1 << 96, priceX96);
+    }
+
+    /// Funds the desks with ETH worth 450 USDG at the pool's price, whatever ETH trades at.
     function _fund() internal {
+        uint256 ethIn = 450e6 * 1 ether / _atPoolPrice(WETH_USDG_POOL, WETH, 1 ether);
+        uint256 fair = _atPoolPrice(WETH_USDG_POOL, WETH, ethIn);
         vm.prank(owner);
-        mandate.fundWithEth{value: 0.23 ether}(400e6);
+        mandate.fundWithEth{value: ethIn}(fair * 98 / 100);
     }
 
     function test_ethFundsFiveDesksEqually() public onFork {
@@ -52,7 +70,7 @@ contract DeskMandateForkTest is Test {
         uint256 total;
         for (uint8 i = 0; i < 5; i++) {
             (, uint256 usdg,,) = mandate.desks(i);
-            assertGt(usdg, 80e6, "each desk holds about a hundred dollars");
+            assertGt(usdg, 85e6, "each desk holds about 90 USDG");
             total += usdg;
         }
         assertEq(IERC20(USDG).balanceOf(address(mandate)), total, "the ledger matches the balance");
