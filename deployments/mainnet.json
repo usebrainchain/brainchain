@@ -21,7 +21,6 @@
     "Inscriptions": "0x770D6756CA8a1627FFf01B846383b13d6fa0c514",
     "PayoutPreferences": "0x2b0d01f5D25F5894590b3281705a48db8740946F"
   },
-
   "robinhoodChain": {
     "FeeSplitter": "0x15Cf18dBA874EA0c77ED8Cecf38aDa64697102fb",
     "RewardDistributor": "0x686633c82F81b99B1Ae9bAAE458Aa8280F158367",
@@ -34,14 +33,19 @@
     "ProofIndex": "0x0fb02559e704549794EdF3FBBBe91DB88bB849ee",
     "DeskMandate": "0xA76916D1b75a82776779fb9d7EB156A4E4a55099",
     "PayoutSwap": "0x64616b20297797e14479C9186b31f7b540329144",
-    "Float": "0xefA99FA95e8107cc3F4E99Fb7154DE3D7C5f03C3"
+    "Float": "0xefA99FA95e8107cc3F4E99Fb7154DE3D7C5f03C3",
+    "ReviewTopUpModule": "0xBA0bA04a99Ad2e0e938d611B0F2bAE64780f3c5c"
   },
   "release": "3.5.0",
-  "aliases": ["v5"],
+  "aliases": [
+    "v5"
+  ],
   "retired": [
     {
       "release": "3.4.0",
-      "aliases": ["v4"],
+      "aliases": [
+        "v4"
+      ],
       "fromBlock": 839,
       "contracts": {
         "TaskBoard": "0x8385bb4b8990411CcdD8e851B2676da1A4C1f3C4",

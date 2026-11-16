@@ -40,8 +40,9 @@ These contracts are merged and not deployed yet:
 
 - [`JudgedCapture`](src/escrow/JudgedCapture.sol), an escrow operator for x402 payments on Base ([docs/escrow.md](docs/escrow.md));
 - [`Erc8183Evaluator`](src/evaluators/Erc8183Evaluator.sol) and [`Erc8183AppealHook`](src/evaluators/Erc8183AppealHook.sol), which let an ERC-8183 job name BrainChain as its evaluator ([docs/erc8183-evaluator.md](docs/erc8183-evaluator.md));
-- [`CappedTransferModule`](src/safe/CappedTransferModule.sol), a Safe module for capped desk top-ups ([docs/operator-roles.md](docs/operator-roles.md));
 - the `TaskBoard` payout change (`setPayouts`), which the next set carries.
+
+[`CappedTransferModule`](src/safe/CappedTransferModule.sol), a Safe module for capped top-ups ([docs/operator-roles.md](docs/operator-roles.md)), has one copy live: it tops up the wallet that pays for BrainChain's reviews of its own pull requests, from the treasury Safe on Robinhood Chain, at most 3 USDG a day. The desk's copies are not deployed yet.
 
 The contracts have not had an external audit.
 
