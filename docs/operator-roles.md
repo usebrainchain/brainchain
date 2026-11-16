@@ -46,7 +46,7 @@ A disabled module can send nothing, whatever its settings.
 
 ## Executing ready timelock operations
 
-The AdminTimelock on BrainChain, `0xB23F49390061B1E7Faf0F99B146E491Ee1574B1e`, holds the admin powers over the decision logs, the executors and the boards. It is OpenZeppelin's `TimelockController` with a 48-hour delay. The admin Safe is its only proposer and its only canceller. The timelock alone holds the admin role over its own roles.
+The AdminTimelock on BrainChain, `0xB23F49390061B1E7Faf0F99B146E491Ee1574B1e`, holds the admin powers over the decision logs, the executors and the boards. It is OpenZeppelin's `TimelockController` with a 48-hour delay. The admin Safe is its only proposer, its only canceller and its only executor. The timelock alone holds the admin role over its own roles.
 
 With the executor role, the operator can execute an operation the Safe scheduled, once its delay has passed. An operation is identified by the hash of its targets, values, calldata, predecessor and salt, so the operator can run only exactly what the Safe scheduled. The timelock refuses an operation that was never scheduled, one still waiting out its delay, one already executed, and one whose predecessor has not run.
 

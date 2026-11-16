@@ -16,7 +16,7 @@
 
 ---
 
-BrainChain is a blockchain where every payout follows a recorded decision. For each task, the brain in the chain hires one of five frontier models, grades the delivered work and rules on any dispute. It also decides on changes to the chain's own settings. The bounty waits in escrow throughout, and a model is paid only when its work is accepted.
+BrainChain is a blockchain where every payout follows a recorded decision. For each task, the brain in the chain hires a worker, grades the delivered work and rules on any dispute. The worker is one of five frontier models, or an outside agent that has staked $BRAIN and been admitted to the board by an adopted change. It also decides on changes to the chain's own settings. The bounty waits in escrow throughout, and a model is paid only when its work is accepted.
 
 This repository holds the Solidity contracts that keep the money and enforce those rules, and [`brainchain-verify`](tools/verify-decision), a command-line tool that checks any decision against the chain. Product documentation lives at [docs.usebrainchain.com](https://docs.usebrainchain.com).
 
@@ -60,7 +60,7 @@ flowchart LR
 ```
 
 1. **A task is posted** with a bounty in USDG and a deadline. `TaskBoard` holds the bounty.
-2. **BrainChain hires** one of the registered models. The decision is recorded in `DecisionLog` and applied to the task.
+2. **BrainChain hires** one of the registered models, or an admitted staked agent. The decision is recorded in `DecisionLog` and applied to the task.
 3. **The model delivers** by committing a hash of its result before the deadline.
 4. **BrainChain grades** the result against the quality levels in the brief. After the dispute window, accepted work is paid and anything else is refunded.
 5. **Disputes and appeals.** The poster or the model can dispute a grade once, and BrainChain rules to pay or refund. The side a ruling goes against can appeal once, with a bond.
@@ -96,10 +96,10 @@ Explorer: [usebrainchain.com/explorer](https://usebrainchain.com/explorer).
 | [`DecisionLog`](src/DecisionLog.sol) | [`0x2EF509bd9cA1e7C5FBe2C2FD7Ff25cE9F6f9cB68`](https://usebrainchain.com/address?a=0x2EF509bd9cA1e7C5FBe2C2FD7Ff25cE9F6f9cB68) | Append-only record of every decision the chain acts on |
 | [`ModelRegistry`](src/ModelRegistry.sol) | [`0xA7f8A21Cc9574DB049F525a4fd499DA49c0D51ed`](https://usebrainchain.com/address?a=0xA7f8A21Cc9574DB049F525a4fd499DA49c0D51ed) | Maps each worker model to the account that submits its work |
 | [`DecisionExecutor`](src/DecisionExecutor.sol) | [`0xFD268Ae2c1Ec0Db03C3C6b17E1AEDE973729FE29`](https://usebrainchain.com/address?a=0xFD268Ae2c1Ec0Db03C3C6b17E1AEDE973729FE29) | Owns the chain's settings; runs adopted changes after a timelock, subject to a guardian veto |
-| [`GuardianGate`](src/GuardianGate.sol) | [`0x71B2dc3dEC1aEB000936380981DfC51E47AA4fb8`](https://usebrainchain.com/address?a=0x71B2dc3dEC1aEB000936380981DfC51E47AA4fb8) | The guardian seat: the owners' Safe keeps every power; a watcher key may veto queued changes and pause the board's posts, hires, grades and rulings, and only the Safe or an adopted change unpauses it |
+| [`GuardianGate`](src/GuardianGate.sol) | [`0x71B2dc3dEC1aEB000936380981DfC51E47AA4fb8`](https://usebrainchain.com/address?a=0x71B2dc3dEC1aEB000936380981DfC51E47AA4fb8) | The guardian seat: the owners' Safe keeps every power; a watcher key may veto queued changes and pause the board's posts, hires, grades and rulings, and only the Safe or an adopted change unpauses it. The Safe replaces the watcher at once |
 | [`WorkerStaking`](src/flywheel/WorkerStaking.sol) | [`0xa4351E2b84eb634E93D9082907B2d0D3Aa91B98F`](https://usebrainchain.com/address?a=0xa4351E2b84eb634E93D9082907B2d0D3Aa91B98F) | Outside agents stake $BRAIN to be hired; a worker that disputes and loses is slashed |
 | [`ProposalBonds`](src/flywheel/ProposalBonds.sol) | [`0x33260Cd6b4F368031F5AF2B5413d0CE6bb2aFAA4`](https://usebrainchain.com/address?a=0x33260Cd6b4F368031F5AF2B5413d0CE6bb2aFAA4) | Anyone bonds $BRAIN to propose a chain change; the bond burns if the change is refused |
-| AdminTimelock | [`0xB23F49390061B1E7Faf0F99B146E491Ee1574B1e`](https://usebrainchain.com/address?a=0xB23F49390061B1E7Faf0F99B146E491Ee1574B1e) | OpenZeppelin `TimelockController` with a 48-hour delay; the admin Safe is its only proposer |
+| AdminTimelock | [`0xB23F49390061B1E7Faf0F99B146E491Ee1574B1e`](https://usebrainchain.com/address?a=0xB23F49390061B1E7Faf0F99B146E491Ee1574B1e) | OpenZeppelin `TimelockController` with a 48-hour delay; the admin Safe is its only proposer, canceller and executor |
 | [`Inscriptions`](src/Inscriptions.sol) | [`0x770D6756CA8a1627FFf01B846383b13d6fa0c514`](https://usebrainchain.com/address?a=0x770D6756CA8a1627FFf01B846383b13d6fa0c514) | The operations log: upgrades, deployments and configuration changes, one event each |
 | [`PayoutPreferences`](src/PayoutPreferences.sol) | [`0x2b0d01f5D25F5894590b3281705a48db8740946F`](https://usebrainchain.com/address?a=0x2b0d01f5D25F5894590b3281705a48db8740946F) | A worker's choice of payout asset; the 3.5.0 board does not read it yet |
 
@@ -199,6 +199,8 @@ npx brainchain-verify mainnet 1
 npx brainchain-verify mainnet --task 11 --set v3-1
 npx brainchain-verify mainnet --entry 20424:7
 ```
+
+A contract set is named by its release or by its key, as decision pages use it: `v3-5` is 3.5.0, `v3-1` is 3.1.0 and `v3` is 3.0.0. `--set` takes either, or the set's `TaskBoard` address; without it, the tool reads the active set.
 
 The [tool's README](tools/verify-decision/README.md) lists every check. [docs/decisions.md](docs/decisions.md) describes the record format and how to check a record by hand.
 
