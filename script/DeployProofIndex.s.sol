@@ -8,13 +8,14 @@ import {ProofIndex} from "../src/ProofIndex.sol";
 
 /// @notice Deploys the ProofIndex on Robinhood Chain (chain 4663), next to the
 /// BrainChain Proofs collection: the record Shipped's StaticCallCheck reads to
-/// settle a delivery bond on a BrainChain task. The operator is the brain
-/// service's key, which writes a task's Proof token id when it reveals the
-/// Proof; the owner rotates that key. Record the deployed address under
-/// `robinhoodChain.ProofIndex` in `deployments/mainnet.json` and inscribe the
-/// deployment.
+/// settle a delivery bond on a BrainChain task. The operator writes a task's
+/// Proof token id when the Proof is revealed, and the owner rotates it. It is
+/// a Robinhood Chain key of its own, not the brain key that records decisions
+/// on BrainChain. Record the deployed address under `robinhoodChain.ProofIndex`
+/// in `deployments/mainnet.json` and inscribe the deployment.
 ///
-/// Env: OWNER (the owners' Safe), OPERATOR (the brain service's key).
+/// Env: OWNER (the owners' Safe, which must have code), OPERATOR (the key that
+/// writes Proof ids).
 contract DeployProofIndex is Script {
     address constant PROOFS = 0xE6E6B7DBF1a66dFB25c6F6A87a916B3186113169;
     uint256 constant BOARD_CHAIN_ID = 274663;
@@ -25,7 +26,7 @@ contract DeployProofIndex is Script {
         );
         address owner = vm.envAddress("OWNER");
         address operator = vm.envAddress("OPERATOR");
-        require(owner != address(0), "OWNER is zero");
+        require(owner.code.length > 0, "OWNER has no code: it should be the owners' Safe");
         require(operator != address(0), "OPERATOR is zero");
         require(PROOFS.code.length > 0, "the Proofs collection has no code");
         require(ERC165Checker.supportsInterface(PROOFS, 0x80ac58cd), "the Proofs collection is not an ERC-721");
