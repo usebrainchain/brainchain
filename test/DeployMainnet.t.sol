@@ -44,6 +44,17 @@ contract DeployMainnetTest is Test {
         script.deploy();
 
         vm.setEnv("BRAIN_TOKEN", vm.toString(address(brainToken)));
+        vm.setEnv("WATCHER", vm.toString(address(0)));
+        vm.expectRevert(bytes("WATCHER is unset"));
+        script.deploy();
+        vm.setEnv("WATCHER", vm.toString(address(script)));
+        vm.expectRevert(bytes("WATCHER is the deploying key"));
+        script.deploy();
+        vm.setEnv("WATCHER", vm.toString(makeAddr("brain")));
+        vm.expectRevert(bytes("WATCHER is the brain"));
+        script.deploy();
+
+        vm.setEnv("WATCHER", vm.toString(makeAddr("watcher")));
         DeployMainnet.Deployment memory d = script.deploy();
 
         assertEq(address(d.board.staking()), address(d.staking));
@@ -63,6 +74,12 @@ contract DeployMainnetTest is Test {
         (uint64 appealWindow, uint16 appealBondBps) = d.board.appealConfig();
         assertEq(appealWindow, 24 hours);
         assertEq(appealBondBps, 2_500);
+        assertEq(d.executor.changeThresholdBps(), 6_000);
+        assertEq(d.executor.timelock(), 48 hours);
+        (uint16 hireBps, uint16 gradeBps, uint16 ruleBps,,,,,,) = d.board.config();
+        assertEq(hireBps, 1_500);
+        assertEq(gradeBps, 8_000);
+        assertEq(ruleBps, 8_000);
 
         address worker = makeAddr("worker");
         brainToken.transfer(worker, 1_000_000e18);
