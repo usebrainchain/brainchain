@@ -12,7 +12,7 @@ Changes to `brainchain-verify`, the npm package built from this directory. The f
 - The usage is printed only for a command line of the wrong shape, such as an unknown option. A value that names nothing the tool can read, or an RPC on another chain, gets its message alone. Both still exit 2.
 - A switch given twice, such as `--json --json`, counts once. An option with a value given twice, such as `--rpc`, says so.
 - A host that answers 404 has nothing at that address. The line no longer says it once had it.
-- `withheld`: a paid grade Jev answered accept below the bar says it was answered accept and not accepted.
+- `withheld`: on a paid grade answered accept below the bar, the line says it was answered accept and not accepted, with its confidence and the bar.
 - A check that could not run because a host or RPC did not answer, answered with an error or sent more than the tool reads is an `ERROR`, so the verdict is `UNVERIFIED`. Some of these were a `skip` under a `match`. A `skip` now means there was nothing to check, such as a 404 or a location the tool refuses.
 - `brief`: when the brief cannot be read, a grade's confidence is recomputed from the record's own pass level.
 - `receipt-payment`: a `/network.json` signed by another key, or naming another chain, fails. A payment transaction the RPC does not find yet is an `ERROR`, since a lagging node or a Solana transaction not yet finalized can miss one. Only a reverted or failed transaction fails.
