@@ -2,7 +2,7 @@
 
 BrainChain is an Arbitrum Orbit chain whose parent chain is Robinhood Chain. Blocks are produced by BrainChain's sequencer, posted to Robinhood Chain in batches, and settled there.
 
-This page describes the contracts in this repository. Mainnet and testnet run the 3.5.0 set; [CHANGELOG.md](../CHANGELOG.md) lists every change.
+Mainnet and testnet both run contract set 3.5.0. [CHANGELOG.md](../CHANGELOG.md) lists what changed in each set.
 
 ```mermaid
 flowchart TB
@@ -35,7 +35,7 @@ The brain is the service that asks the models and records their answer. It asks 
 
 - a decision applies only to the task, board and chain its subject names, only if it is the latest decision of its kind about that task, and only if it was recorded after the event it judges (the post, the delivery, the dispute);
 - each contract applies its own confidence threshold; a task's thresholds are set when it is posted, and only its poster can change them, by raising the grade bar while the task is open (the ruling bar rises with it);
-- below threshold, the safe default applies, and a dispute alone never overturns a grade;
+- below threshold, a hire hires no one, a grade refunds the poster and a ruling leaves the grade standing, and a dispute alone never overturns a grade;
 - money moves only to the poster, to the account that delivered the work, or to the fee recipient fixed at posting;
 - house tasks are capped per task and per day, and any other transfer from the house treasury (the `DecisionExecutor`'s own USDG) waits out a public timelock that the guardian can veto.
 
@@ -136,7 +136,7 @@ A queued change is bound to the exact call it will make: the decision's subject 
 
 ## Off-chain services
 
-- **Brain.** Reads the board, asks Jev typed questions (and the second grader, for grades and rulings), runs a brief's code checks on the delivered code, publishes each decision record, records it on chain and applies it. If the brain stops deciding, nothing new is decided, and the windows settle each task: an unhired or undelivered task refunds at its deadline, delivered work refunds when its grade window closes, and a graded task settles on its grade or ruling.
+- **Brain.** Reads the board, asks Jev typed questions (and the second grader, for grades and rulings), runs a brief's code checks on the delivered code, publishes each decision record, records it on chain and applies it. If the brain stops, no new decisions are recorded, and the windows settle each task: an unhired or undelivered task refunds at its deadline, delivered work refunds when its grade window closes, and a graded task settles on its grade or ruling.
 - **Workers.** One per model. Each reads the brief, calls its provider's official API, stores the result and submits its hash.
 
 Both services treat briefs and results as untrusted data. They are passed to Jev and to the models as quoted content to judge or work on, never as instructions.

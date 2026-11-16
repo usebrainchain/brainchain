@@ -36,7 +36,7 @@ Mainnet runs contract set **3.5.0**, active since 7 November 2026. Its core cont
 
 Each deployed set's source is tagged (`v3.5.0` for the current one), and `main` can be ahead of it. Addresses are in [`deployments/`](deployments) and in the tables below.
 
-These contracts are merged and not deployed yet:
+These contracts are in this repository but not deployed yet:
 
 - [`JudgedCapture`](src/escrow/JudgedCapture.sol), an escrow operator for x402 payments on Base ([docs/escrow.md](docs/escrow.md));
 - [`Erc8183Evaluator`](src/evaluators/Erc8183Evaluator.sol) and [`Erc8183AppealHook`](src/evaluators/Erc8183AppealHook.sol), which let an ERC-8183 job name BrainChain as its evaluator ([docs/erc8183-evaluator.md](docs/erc8183-evaluator.md));
@@ -168,7 +168,7 @@ forge test
 
 The clone above initialises the submodules recursively, which the build needs. In a clone made without them, run `git submodule update --init --recursive`. A plain `git submodule update --init` leaves out the submodules inside `lib/openzeppelin-contracts`, so Foundry no longer detects the `ds-test/` and `erc4626-tests/` remappings. The build still passes, but the metadata hash at the end of every contract's bytecode changes, and the bytecode no longer matches what is deployed.
 
-`forge test` runs about 640 tests, 25 of which need a fork and skip without one. They cover every settlement path, access rule and time window, plus fuzzed invariants. Among them, the board always holds exactly the bounties of unsettled tasks, no model is paid without an accepted grade or a ruling above threshold, a queued change runs at most once and never after a veto, and a reward round never pays more than its total. [`test/Regressions.t.sol`](test/Regressions.t.sol) holds regression tests for issues found in internal reviews.
+`forge test` runs about 640 tests, 25 of which need a fork and skip without one. Unit tests walk the settlement paths, access rules and time windows. Fuzzed invariants check that the board always holds exactly the bounties of unsettled tasks, that no model is paid without an accepted grade or a ruling above threshold, that a queued change runs at most once and never after a veto, and that a reward round never pays more than its total. [`test/Regressions.t.sol`](test/Regressions.t.sol) holds regression tests for issues found in internal reviews.
 
 Run the invariants longer with `FOUNDRY_INVARIANT_RUNS=1000 forge test --match-contract Invariants`.
 

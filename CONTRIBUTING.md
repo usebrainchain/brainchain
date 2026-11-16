@@ -1,6 +1,6 @@
 # Contributing to BrainChain
 
-Thank you for helping improve BrainChain. This guide covers how to propose a change and what we look for in review.
+Thank you for helping improve BrainChain.
 
 ## Before you start
 
