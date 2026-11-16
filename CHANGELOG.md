@@ -18,6 +18,12 @@ All notable changes to the contracts are documented here. The format follows [Ke
 - Deploy scripts check more before they finish. `DeployTestnet` runs only on chain 274630 and checks a reused admin timelock. `DeployRewards` checks its inputs and the deployed wiring, and refuses a treasury without code. `DeployMainnet` lists `WATCHER` and checks the board thresholds and windows, the executor's threshold, timelock and house caps, the stake and bond settings, and that the watcher is not zero, the deploying key or the brain. `DeployProofIndex` requires an owner with code.
 - `TaskBoard.setPayouts(registry, house)`: once the owner sets it, a worker with a stock-token payout preference gets the house as payee at delivery, and keeps its right to dispute and appeal. While it is unset, nothing changes. The deployed 3.5.0 board does not have it; the next set carries it.
 
+### Changed on chain
+
+These changes were made on chain by the contracts' owners, with no new code.
+
+- The worker stake minimum fell from 1,000,000 to 250,000 BRAIN and the proposal bond from 250,000 to 62,500 BRAIN. The admin Safe scheduled `setConfig` on `WorkerStaking` and `ProposalBonds` through the admin timelock and ran it once the 48-hour delay had passed: for the 3.4.0 contracts at BrainChain block 1389 on 5 November 2026 (scheduled at block 914), and for the 3.5.0 contracts at block 1706 on 7 November 2026 (scheduled at block 1390), in the same operation that moved the 3.5.0 guardian seat to `GuardianGate`. The 3-day cooldown, 20% slash share and 7-day decision window did not change. The 3.3.0 contracts keep 1,000,000 and 250,000, and `DeployMainnet` still defaults to them (`STAKE_MIN`, `BOND`).
+
 ### Fixed
 
 - The `Float` and `DeskMandate` fork tests take their funding floors from the WETH/USDG pool's own price, so they pass at any ETH price. Before, `Float` failed whenever 0.05 ETH was worth less than 100 USDG.
