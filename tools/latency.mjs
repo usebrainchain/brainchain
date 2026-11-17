@@ -13,31 +13,18 @@
 // No dependencies: plain fetch and JSON-RPC, one request at a time, with retries
 // and paged log queries.
 
-const NETWORKS = {
-  mainnet: {
-    name: "BrainChain mainnet",
-    rpc: "https://rpc.usebrainchain.com",
-    chainId: 274663,
-    // Every set's board, oldest first, as in the site's addresses.json.
-    boards: [
-      ["2", "0x83b31D99Fa31a9e5257955A737eF34c40f1c57bf", 1],
-      ["3.0.0", "0x33825Bc40E43cC7f8A301D6b7aC79eDCDb92ACa7", 101],
-      ["3.1.0", "0x6fBF25F036F18C7AE3b1B7343ED8d16Dc695f6e0", 282],
-      ["3.3.0", "0x72C890AA996bF7efcA88e3F5063B626560215160", 425],
-    ],
-  },
-  testnet: {
-    name: "BrainChain testnet",
-    rpc: "https://rpc.testnet.usebrainchain.com",
-    chainId: 274630,
-    boards: [
-      ["first", "0x66d0a539115fbEa6A90A3BF964b306e5a25f584F", 0],
-      ["2", "0x686633c82F81b99B1Ae9bAAE458Aa8280F158367", 0],
-      ["3.0.0 at a 70% hire bar", "0x4E5E2eee7c1CBe1484f3E8218151a567f9144f4F", 0],
-      ["3.0.0", "0x53b4eB2de26E4f3d4172c4F963Bb00D0b8035eeA", 352],
-      ["3.1.0", "0xC74564F100e70F95346A6e399ebf1Ce14309C8B6", 898],
-    ],
-  },
+import { readFile } from "node:fs/promises";
+
+// The boards deployments/*.json does not list, oldest first: every one before
+// 3.0.0, and testnet's two 3.0.0 boards. The file gives the rest.
+const EARLIER = {
+  mainnet: [["2", "0x83b31D99Fa31a9e5257955A737eF34c40f1c57bf", 1]],
+  testnet: [
+    ["first", "0x66d0a539115fbEa6A90A3BF964b306e5a25f584F", 0],
+    ["2", "0x686633c82F81b99B1Ae9bAAE458Aa8280F158367", 0],
+    ["3.0.0 at a 70% hire bar", "0x4E5E2eee7c1CBe1484f3E8218151a567f9144f4F", 0],
+    ["3.0.0", "0x53b4eB2de26E4f3d4172c4F963Bb00D0b8035eeA", 352],
+  ],
 };
 
 // Version 2 boards paid and refunded with shorter events; both forms are read.
@@ -61,16 +48,22 @@ const STEPS = [
 ];
 
 const LOG_PAGE = 10_000;
-const UA =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36";
 
 const flag = process.argv.indexOf("--network");
 const networkName = flag === -1 ? "mainnet" : process.argv[flag + 1];
-const network = NETWORKS[networkName];
-if (!network) {
+if (!Object.hasOwn(EARLIER, networkName)) {
   console.error(`Unknown network ${networkName ?? "(none)"}: use mainnet or testnet.`);
   process.exit(1);
 }
+// The active set and every retired one, as tools/verify-decision/scripts/deployments.mjs reads them.
+const deployment = JSON.parse(await readFile(new URL(`../deployments/${networkName}.json`, import.meta.url), "utf8"));
+const sets = [deployment, ...(deployment.retired ?? [])].map((set) => [set.release, set.contracts.TaskBoard, set.fromBlock]);
+const network = {
+  name: deployment.network,
+  rpc: deployment.rpc,
+  chainId: deployment.chainId,
+  boards: [...EARLIER[networkName], ...sets.sort((a, b) => a[2] - b[2])],
+};
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -84,7 +77,7 @@ async function rpc(method, params = [], { retries = 4 } = {}) {
     try {
       const response = await fetch(network.rpc, {
         method: "POST",
-        headers: { "content-type": "application/json", "user-agent": UA },
+        headers: { "content-type": "application/json", "user-agent": "brainchain-latency" },
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
         signal: AbortSignal.timeout(20_000),
       });

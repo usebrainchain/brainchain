@@ -17,26 +17,39 @@
     "BRAIN": "0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37",
     "AdminSafe": "0xdFeFbdBF680568e8DC44abbbd657c0701964cC8c",
     "GuardianGate": "0x71B2dc3dEC1aEB000936380981DfC51E47AA4fb8",
-    "DcapAttestation": "0x94552cb7C8806fAD00c4EB59182E98C5Ba4bBfcb"
+    "DcapAttestation": "0x94552cb7C8806fAD00c4EB59182E98C5Ba4bBfcb",
+    "DecisionLogAttestation": "0xdb2a8FA9018946438772DCB0756e39b17F81E416",
+    "Inscriptions": "0x770D6756CA8a1627FFf01B846383b13d6fa0c514",
+    "PayoutPreferences": "0x2b0d01f5D25F5894590b3281705a48db8740946F",
+    "UpgradeExecutor": "0xf5B096ddE063311CaEC2F9665ef3E94eAb1280bA"
   },
-
   "robinhoodChain": {
     "FeeSplitter": "0x15Cf18dBA874EA0c77ED8Cecf38aDa64697102fb",
     "RewardDistributor": "0x686633c82F81b99B1Ae9bAAE458Aa8280F158367",
     "RollupAdminTimelock": "0xDA308F4CE7c80e52665f6D74590A2c0d61C437c3",
+    "RollupUpgradeExecutor": "0x12c59492BB508EFDb6c5D43F2aA907d8B55524D6",
     "USDG": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
     "ProofsIncome": "0xeb1b4168D4b87D3d9F0D64E13B7071251BBB63b7",
     "BrainChainProofs": "0xE6E6B7DBF1a66dFB25c6F6A87a916B3186113169",
-    "BRAIN": "0xC80333bf7f4078e14Ce5b6e223aF607aDcA44418",
+    "BRAIN": "0x42b96dbc55e79E930d866c1eE486A342366546BC",
     "BrainLaunchTreasury": "0x396003b5Ffb940466325622D05f1b59acCF894A2",
-    "ProofIndex": "0x0fb02559e704549794EdF3FBBBe91DB88bB849ee"
+    "ProofIndex": "0x0fb02559e704549794EdF3FBBBe91DB88bB849ee",
+    "DeskMandate": "0xA76916D1b75a82776779fb9d7EB156A4E4a55099",
+    "PayoutSwap": "0x64616b20297797e14479C9186b31f7b540329144",
+    "Float": "0xefA99FA95e8107cc3F4E99Fb7154DE3D7C5f03C3",
+    "ReviewTopUpModule": "0xBA0bA04a99Ad2e0e938d611B0F2bAE64780f3c5c",
+    "TreasurySafe": "0x9a4B2A33644D3a65059cAA8E0A46b988bcC1D52d"
   },
   "release": "3.5.0",
-  "aliases": ["v5"],
+  "aliases": [
+    "v5"
+  ],
   "retired": [
     {
       "release": "3.4.0",
-      "aliases": ["v4"],
+      "aliases": [
+        "v4"
+      ],
       "fromBlock": 839,
       "contracts": {
         "TaskBoard": "0x8385bb4b8990411CcdD8e851B2676da1A4C1f3C4",

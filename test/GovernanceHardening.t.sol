@@ -8,6 +8,7 @@ import {DecisionExecutor} from "../src/DecisionExecutor.sol";
 import {DecisionLog} from "../src/DecisionLog.sol";
 import {ModelRegistry} from "../src/ModelRegistry.sol";
 import {TaskBoard} from "../src/TaskBoard.sol";
+import {GuardianGate, IGuardedBoard, IGuardedExecutor} from "../src/GuardianGate.sol";
 import {IDecisionExecutor, ProposalBonds} from "../src/flywheel/ProposalBonds.sol";
 import {WorkerStaking} from "../src/flywheel/WorkerStaking.sol";
 import {TestBRAIN} from "../src/testnet/TestBRAIN.sol";
@@ -92,11 +93,6 @@ contract GovernanceHardeningTest is Test {
         vm.stopPrank();
     }
 
-    // ---- A. a veto does not block the same call with non-canonical calldata
-
-    /// The veto keys on exact calldata. Solidity's dispatcher ignores trailing
-    /// bytes, so the brain re-queues the vetoed call with 32 junk bytes appended:
-    /// new subject, new veto key, identical effect.
     /// A veto is keyed on the function, not the exact bytes: the dispatcher
     /// ignores trailing calldata, so the exact bytes alone would not shut it.
     function test_A_aVetoShutsTheFunctionWhateverTheCalldataUntilTheAdminClearsIt() public {
@@ -130,7 +126,7 @@ contract GovernanceHardeningTest is Test {
         assertEq(executor.changeThresholdBps(), 5_000);
     }
 
-    /// Same bypass against the treasury: a vetoed transfer runs when re-encoded.
+    /// A vetoed treasury transfer stays vetoed with a byte of padding appended.
     function test_A_aVetoedTreasuryTransferCannotBeReEncoded() public {
         bytes memory data = abi.encodeCall(DecisionExecutor.transfer, (attacker, 1_000e6));
         uint256 changeA = _queue(address(executor), data);
@@ -162,8 +158,6 @@ contract GovernanceHardeningTest is Test {
         assertTrue(board.paused());
     }
 
-    // ---- B. settle accepts a decision recorded after the proposal's deadline
-
     /// A decision recorded after a proposal's window cannot settle it, and the
     /// same call cannot be proposed again while it is open.
     function test_B_aDecisionAfterTheWindowCannotBurnAnUndecidedBond() public {
@@ -188,9 +182,7 @@ contract GovernanceHardeningTest is Test {
         assertEq(bonds.openProposal(subject), 0);
     }
 
-    // ---- C. an in-window keep is dodged once a later decision lands after the deadline
-
-    /// Jev says keep inside Alice's window and nobody settles. The call cannot
+    /// The brain decides keep inside Alice's window and nobody settles. The call cannot
     /// be proposed again while hers is open, so the keep stays the latest
     /// decision and settles her bond; expiring is refused.
     function test_C_anInWindowKeepCannotBeDodgedThroughASecondProposal() public {
@@ -216,8 +208,6 @@ contract GovernanceHardeningTest is Test {
         uint256 p2 = _propose(bob, data);
         assertEq(bonds.openProposal(subject), p2, "once settled, the call can be proposed again");
     }
-
-    // ---- disproofs: paths that hold
 
     function test_D_executorCannotExecuteOrQueueThroughItself() public {
         uint256 inner = _queue(address(executor), abi.encodeCall(DecisionExecutor.transfer, (attacker, 1e6)));
@@ -271,5 +261,65 @@ contract GovernanceHardeningTest is Test {
         vm.expectRevert();
         executor.execute(c);
         assertEq(usdg.balanceOf(address(board)), 0);
+    }
+
+    function _gateWithWatcher(address watcher) internal returns (GuardianGate gate) {
+        gate = new GuardianGate(
+            makeAddr("safe"), IGuardedExecutor(address(executor)), IGuardedBoard(address(board)), watcher
+        );
+        vm.prank(address(executor));
+        board.setGuardian(address(gate));
+    }
+
+    /// Known behaviour: a pause stops the brain's grade but not `finalize`, so a delivered task whose
+    /// grade window closes while the board is paused refunds the poster, and the worker is not paid.
+    function test_known_aWatcherPauseOutlastingTheGradeWindowRefundsDeliveredWork() public {
+        address watcher = makeAddr("watcher");
+        GuardianGate gate = _gateWithWatcher(watcher);
+        vm.prank(poster);
+        uint256 id = board.post(10e6, uint64(block.timestamp + 1 days), 0, "");
+        bytes32 subject = board.subjectOf(id);
+        vm.prank(brain);
+        uint256 h = decisionLog.record(DecisionLog.Kind.Hire, subject, 0, CLAUDE, 9_000, 0, "");
+        vm.prank(brain);
+        board.hire(id, h);
+        vm.prank(claude);
+        board.submit(id, keccak256("result"), "");
+
+        vm.prank(watcher);
+        gate.setPaused(true, "grades look wrong");
+        vm.prank(brain);
+        uint256 g = decisionLog.record(DecisionLog.Kind.Grade, subject, 0, YES, 9_900, 0, "");
+        vm.prank(brain);
+        vm.expectRevert(TaskBoard.IsPaused.selector);
+        board.grade(id, g);
+
+        vm.warp(block.timestamp + 6 hours + 1);
+        vm.expectEmit(true, true, false, true, address(board));
+        emit TaskBoard.BountyRefunded(id, poster, 10e6, TaskBoard.RefundReason.NotGraded);
+        board.finalize(id);
+        assertEq(usdg.balanceOf(poster), 1_000e6);
+        assertEq(usdg.balanceOf(claude), 0);
+    }
+
+    /// The watcher cannot unpause and neither can the brain directly, but the board's owner, the
+    /// executor, can: an adopted change calling `setPaused(false)` lifts the pause once its timelock
+    /// passes, unless the guardian vetoes it first.
+    function test_known_anAdoptedChangeLiftsAWatcherPause() public {
+        address watcher = makeAddr("watcher");
+        GuardianGate gate = _gateWithWatcher(watcher);
+        vm.startPrank(watcher);
+        gate.setPaused(true, "");
+        vm.expectRevert(GuardianGate.NotAllowed.selector);
+        gate.setPaused(false, "");
+        vm.stopPrank();
+        vm.prank(brain);
+        vm.expectRevert(TaskBoard.NotGuardian.selector);
+        board.setPaused(false);
+
+        uint256 c = _queue(address(board), abi.encodeCall(TaskBoard.setPaused, (false)));
+        vm.warp(block.timestamp + 2 hours);
+        executor.execute(c);
+        assertFalse(board.paused());
     }
 }

@@ -1,6 +1,8 @@
 # brainchain-verify
 
-Check any BrainChain decision against the chain. The tool reads the decision from the `DecisionLog`, fetches the record Jev's answer was published in, recomputes its hashes and confidence, and applies the task's thresholds the way the contracts do. It needs a public RPC and nothing else: no keys, no account.
+Check any BrainChain decision against the chain. The tool reads the decision from the `DecisionLog`, fetches its published record, recomputes its hashes and confidence, and applies the task's thresholds the way the contracts do. It needs a public RPC and nothing else: no keys, no account.
+
+Each record holds the question BrainChain asked Jev, a decision model served by TypeSafe, and Jev's answer with its probabilities.
 
 It also checks the reputation BrainChain writes for its workers. Each entry in the ERC-8004 registry on Robinhood Chain is followed through its signed receipt to the decision, the payment and the task on the board.
 
@@ -32,7 +34,7 @@ brainchain-verify mainnet --agent <agentId> [--rpc <url>] [--registry-rpc <url>]
 | `--task <id>` | Check every decision about one task, oldest first. |
 | `--set <TaskBoard>` | A retired contract set from 3.0.0 on, by its TaskBoard address, by the key a decision page uses (`?set=v3-1`, or an older one the site still opens, such as `v4` for `v3-4`) or by release (`3.1.0`). Without it, the active set. Each set numbers its tasks and decisions from 1. The `v2` set is not supported: its board named tasks by id alone, which the subject check does not read. |
 | `--rpc <url>` | Another RPC for the same chain. Records and briefs on private addresses are read only when this RPC is on one too. |
-| `--receipt <file\|url>` | Check the receipt for a paid job, from a JSON file or an http(s) URL. Without a decision id, the tool checks the decision the receipt names, in the contract set its DecisionLog belongs to. See [receipts](#receipts). |
+| `--receipt <file\|url>` | Check the receipt for a paid job, from a JSON file or an http(s) URL, of at most 64 KB. Without a decision id, the tool checks the decision the receipt names, in the contract set its DecisionLog belongs to. See [receipts](#receipts). |
 | `--entry <agentId>:[<writer>:]<index>` | Check one reputation entry BrainChain wrote. See [reputation entries](#reputation-entries). |
 | `--agent <agentId>` | Check every reputation entry BrainChain wrote for one agent, oldest first. |
 | `--registry-rpc <url>` | Another RPC for Robinhood Chain, where the ERC-8004 registries are. |
@@ -40,13 +42,14 @@ brainchain-verify mainnet --agent <agentId> [--rpc <url>] [--registry-rpc <url>]
 | `--json` | One JSON object on stdout. |
 | `--version` | Print the version. |
 
-The package carries the active and retired contract sets from [`deployments/`](../../deployments) as they stood when it was built. An unknown `--set` lists them.
+The package carries the active and retired contract sets from [`deployments/`](https://github.com/usebrainchain/brainchain/tree/main/deployments) as they stood when it was built. An unknown `--set` lists them.
 
 ## Output
 
 ```text
 $ npx brainchain-verify mainnet 22 --set v3-1
 Decision 22 on BrainChain mainnet, contract set v3-1 (DecisionLog 0xbe8E68EbDEaf2C65bc13D8AD070d17098Be6d335)
+Task 11: Compare the rule of 72 with the exact doubling time
 
   ok    read from DecisionLog 0xbe8E…d335: grade, recorded 2026-11-01 00:40:23 UTC in block 419, confidence 8000 bps
   ok    fetched the record from https://brain.usebrainchain.com/records/0xc6570be10e86227b06d9ce78b739c83dac8d62e9f9cf33b67f25b7d148e8182a.json
@@ -66,7 +69,9 @@ Verdict: match. The published record is exactly what the chain recorded, and the
 Not checked: that Jev produced the answer. See https://docs.usebrainchain.com/trust-model
 ```
 
-Each line is one check. `ok` passed and `FAIL` means the record and the chain disagree. `skip` is a check that could not run, with the reason on the line. `ERROR` means the record could not be fetched, so the checks that need it did not run: the host did not answer in up to three tries and 30 seconds in all, it no longer has the record, or the tool refused to read it (see `fetch`).
+Under the header, a decision about a task names the task by its brief's title, or the brief's first line, cut to 100 characters, once the brief committed on chain has been read. With `--task` that line reads `Brief:`. If the title is not the task you meant, check `--set`: each set numbers its own tasks and decisions.
+
+Each line is one check. `ok` passed and `FAIL` means the record and the chain disagree. `skip` is a check with nothing to run on, such as a brief the host does not have, with the reason on the line. `ERROR` is a check that could not run because something it reads could not be read: the host did not answer in up to three tries and 30 seconds in all, answered with an error, or sent more than the tool reads. A record the host does not have, or one the tool refuses to read (see `fetch`), is an `ERROR` too, since no other check can run without it. With `--task` or `--agent`, a decision or entry the RPC cannot read gets one `ERROR` line, named `rpc`, and the others are still checked. Each RPC call gets two tries of 8 seconds, and an RPC error names the RPC by chain and origin, such as `BrainChain RPC https://rpc.usebrainchain.com` or `Robinhood Chain RPC https://rpc.mainnet.chain.robinhood.com`.
 
 The verdict is `match`, `withheld`, `UNVERIFIED` or `MISMATCH`. `withheld` means a record served without the work passed the checks that could run, and says what they leave out.
 
@@ -75,12 +80,12 @@ The verdict is `match`, `withheld`, `UNVERIFIED` or `MISMATCH`. `withheld` means
 | Check | What passes |
 | --- | --- |
 | `read` | `DecisionLog.get(id)` and the decision's `Recorded` event agree. |
-| `fetch` | The record at the event's `payloadURI` (https, http or a base64 `data:` URI, with redirects refused) is a decision record of at most 4 MB. Briefs are read the same way, up to 256 KB. Anything on a private or loopback address is refused, however its name resolves, unless `--rpc` is on one too. |
+| `fetch` | The record at the event's `payloadURI` (https, http or a base64 `data:` URI, with redirects refused) is a decision record of at most 4 MB. A body that is not JSON, such as a proxy's error page, is an `ERROR`; JSON that is not a decision record is a `FAIL`. Briefs are read the same way, up to 256 KB. Anything on a private or loopback address is refused, however its name resolves, unless `--rpc` is on one too. |
 | `withheld` | On a record served without the work: the kind is a grade or ruling, the request carries the service's marker where the work was, and the chain shows the work is not public. If any of these fails, the record is held to its hashes like any other. |
 | `record-hash` | `keccak256` of the fetched bytes equals `payloadHash`. |
 | `input-hash` | `keccak256` of the record's `request`, serialized canonically (keys sorted, no whitespace), equals `inputHash`. |
 | `kind` | The record's kind is the one on chain. |
-| `subject` | A task decision names `TaskBoard.subjectOf(task)` for this chain and board. A change names its exact call. A grade of outside work is matched by the rules below. |
+| `subject` | A task decision names `TaskBoard.subjectOf(task)` for this chain and board. A change's subject is the one on chain; it is tied to the call Jev was shown only once the change is queued, by `change-subject` and `change-call`. A grade of outside work is matched by the rules below. |
 | `options` | The probabilities cover exactly the options in the question. A panel that decided without Jev records none of Jev's, and `panel` checks that it names Jev as missing. |
 | `answer` | The record's answer encodes to the one on chain: the hired model's id or worker address, or 1 for accept, pay, adopt and allow and 0 for their opposites. |
 | `confidence` | The record's confidence times 10,000, rounded, equals `confidenceBps`. |
@@ -89,7 +94,7 @@ The verdict is `match`, `withheld`, `UNVERIFIED` or `MISMATCH`. `withheld` means
 | `second-grader` | On a decision graded twice: the second grader's probability of paying recomputes from its probabilities, and the receipt id it carries is shown. |
 | `judge` | On a decision by a panel, one line for each judge after the second grader: its probability of paying recomputes from its probabilities, which cover the question's options, and the receipt id it carries is shown. |
 | `panel` | On a decision by a panel: the candidate rules recompute from the judges' probabilities of paying, the record's rule is one of them, and a panel short of a member says which and pays only from 90%. |
-| `brief` | The question quotes the task's brief, fetched from its `Posted` event and checked against `briefHash`. Bytes that miss the hash are a `FAIL`; a host that cannot be read is a `skip`. |
+| `brief` | The question quotes the task's brief, fetched from its `Posted` event and checked against `briefHash`. Bytes that miss the hash are a `FAIL`. A host that answers 404, or a location the tool refuses, is a `skip`. A host that does not answer, answers with an error or sends more than 256 KB is an `ERROR`. Either way, a grade's confidence is still recomputed, from the record's own pass level. |
 | `checks` | A brief can carry checks: a fenced block marked `python checks` or `javascript checks`. The record of a grade or ruling on that brief holds BrainChain's run of them after the delivered code, and the line names the run's language and outcome. A run that failed, timed out, found no code in that language or was too long to run makes the answer reject, or refund on a ruling, at 10,000 bps. A run that passed is in the question the graders read, in BrainChain's own wording. A task record with checks in its brief and no run is a `FAIL`. |
 | `levels` | A grade or ruling used the brief's own quality levels and pass level. On a grade of outside work, the pass level is a whole number naming one of the question's levels above the lowest. |
 | `threshold` | The task's threshold, applied as `TaskBoard.hire`, `grade`, `rule` and `ruleAppeal` do, gives the outcome the board emitted. A poster can raise the grade and ruling thresholds while the task is open, so they can be higher than when it was posted; they cannot change after the hire. A ruling on appeal (set 3.5.0 and later) is checked against the board's `AppealRuled` event. A change is queued only on a yes. |
@@ -104,6 +109,7 @@ The verdict is `match`, `withheld`, `UNVERIFIED` or `MISMATCH`. `withheld` means
 Some checks skip by design:
 
 - A decision the board never applied, because a later decision or a closed window settled the task, skips `threshold`.
+- A brief the host does not have, or one at a location the tool refuses, skips `brief`. A grade's confidence is then recomputed from the record's own pass level, and `levels` skips.
 - A grade recorded before the chain gated on the paid levels skips `confidence-recomputed`: its confidence is Jev's score confidence, which the probabilities alone do not give.
 - A grade or ruling recorded before BrainChain ran a brief's checks skips `checks` when its brief carries some. Such a record has no `jevPaid`, which every later grade and ruling states unless its panel decided without Jev.
 - A grade of outside work skips `checks` when its brief ends in a checks block and its record holds no run. The section on grades of outside work says why.
@@ -134,9 +140,9 @@ The chain holds the hash too. A decision's `payloadURI` in its `Recorded` event 
 
 ### Receipts
 
-Every job an agent pays BrainChain for gets a receipt, signed by the key that records decisions. A paid grade gets one once Jev decides it. A paid task gets one once the board pays or refunds it, for the grade or ruling it settled on. The receipt is EIP-712 under the domain `BrainChain receipt`, version 1, on the DecisionLog, in the envelope of the x402 offer-and-receipt extension (version 0.6): `{ format, payload, signature }`.
+Every job an agent pays BrainChain for gets a receipt, signed by the key that records decisions. A paid grade gets one once BrainChain decides it. A paid task gets one once the board pays or refunds it, for the grade or ruling it settled on. Receipts come with a brain release that is not yet live on mainnet, so no record there carries one yet, and records from before that release never will. The receipt is EIP-712 under the domain `BrainChain receipt`, version 1, on the DecisionLog, in the envelope of the x402 offer-and-receipt extension (version 0.6): `{ format, payload, signature }`.
 
-For each paid grade or ruling, the tool asks the host that serves the record for its receipt at `/receipts/<DecisionLog in lowercase>/<decision id>.json`. A host that has none yet is a `skip`. `--offline` turns this off, and `--receipt` checks a receipt you kept instead.
+For a grade or ruling whose record has a `payments` field, the tool asks the host that serves the record for its receipt at `/receipts/<DecisionLog in lowercase>/<decision id>.json`. A record without one, as every record from before receipts is, gets no receipt line. A host that has none yet is a `skip`. A host that does not answer, or answers with an error, is an `ERROR`. `--offline` turns this off, and `--receipt` checks a receipt you kept instead.
 
 On a receipt, the tool checks that:
 
@@ -145,7 +151,7 @@ On a receipt, the tool checks that:
 - for a task, the board paid it for `accepted` and refunded it for `rejected`, and the last grade or ruling it applied is this decision. For a paid grade, `accepted` means accept at or above the board's grade bar when the decision was recorded.
 - `network`, `asset`, `amount`, `payer` and `transaction` are those of a payment in the record, and on that network the transaction moved `amount` of `asset` from `payer` to the desk. The desk is the `payTo` for that network in the brain host's `/network.json`, which the tool believes only when `brain()` on the active DecisionLog signed it. A desk's former addresses count on EVM networks.
 
-The tool reads payments on Base, Robinhood Chain and Solana, and on their testnets, from their public RPCs. When `/network.json` or the payment's network cannot be read, `receipt-payment` skips and says why.
+The tool reads payments on Base, Robinhood Chain and Solana, and on their testnets, from their public RPCs. A `/network.json` signed by another key, or naming another chain, fails `receipt-payment`. A host with no `/network.json`, or a payment on a network the tool has no RPC for, skips it. A host or RPC that does not answer is an `ERROR`, and so is a payment transaction the RPC does not find yet, since a node that lags or a Solana transaction not yet finalized can miss one. Only a transaction that reverted, or failed on Solana, fails.
 
 ### Keeping a receipt
 
@@ -219,7 +225,7 @@ Not checked: that Jev produced the answer. See https://docs.usebrainchain.com/tr
 
 An entry's verdict is `match`, `no receipt`, `withheld`, `MISMATCH` or `UNVERIFIED`. `no receipt` means the hash is zero and every check that could run passed. `withheld` is a decision record served without the work, as for any decision.
 
-`--agent` gives one line per entry: its verdict, its name and what it is about. Below an entry go the lines of any check that failed or could not run. The last line counts the entries, those with a receipt, those whose receipt and decision checked out, and those that failed. `--entry` with a name from the list shows every check.
+`--agent` gives one line per entry: its verdict, its name and what it is about. Below an entry go the lines of any check that failed or could not run. The last line counts the entries, those with a receipt, those whose receipt and decision fully matched, those withheld, and those that failed. A withheld entry is never counted as verified. `--entry` with a name from the list shows every check.
 
 ```text
 $ npx brainchain-verify mainnet --agent 20425
@@ -243,12 +249,12 @@ That Jev produced the answer. BrainChain records Jev's answers, and the contract
 | Code | Meaning |
 | --- | --- |
 | 0 | Every check that could run passed. Skips do not fail a decision. A `withheld` verdict also exits 0, so read the verdict if you need to tell it from a full match. |
-| 1 | A check failed, a record or receipt could not be fetched, or the decision or entry could not be read: an unknown id, a task with no decisions, an entry the registry does not hold, an RPC error, a `--receipt` that cannot be read. |
+| 1 | A check failed, a check could not run (an `ERROR` line, such as a record, brief or receipt the host did not serve), or the decision or entry could not be read: an unknown id, a task with no decisions, an entry the registry does not hold, an RPC error, a `--receipt` that cannot be read or is not a receipt. |
 | 2 | Bad arguments, or an RPC that serves another chain. |
 
 ## JSON
 
-`--json` prints one object. `decisions` holds one entry, or one per decision with `--task`. `verdict` is `match`, `withheld`, `mismatch` or `unverified` (a record could not be fetched). With `withheld`, `withheldNotChecked` says what was left out, and the decision carries `withheld: true`. A grade of outside work carries `outside: true`. A grade or ruling that holds a run of its brief's checks carries `run`, with the run's `language` and `outcome`. A grade or ruling decided by a panel carries `panel`: its `rule`, `judges` with each judge that answered by `model` and `paid`, Jev first, and `degraded`. A degraded panel also carries `missing` and `bar`. These are the record's own values, and the `judge` and `panel` checks say whether they recompute. A decision whose record matched the evidence hash on chain carries it as `evidence`. A decision whose receipt was checked carries `receipt`: where it was read as `from`, and the `job` and `outcome` it states. Each check keeps its `name` across releases, and its `status` is `ok`, `fail`, `skip` or `error`. When the tool cannot run, it prints `{ "error": "..." }` and exits 1, or 2 for bad arguments or an RPC that serves another chain. Trimmed to one check:
+`--json` prints one object. `decisions` holds one entry, or one per decision with `--task`. `verdict` is `match`, `withheld`, `mismatch` or `unverified` (a check could not run). With `withheld`, `withheldNotChecked` says what was left out, and the decision carries `withheld: true`. A decision about a task whose brief was read carries `title`, as the header shows it. A grade of outside work carries `outside: true`. A grade or ruling that holds a run of its brief's checks carries `run`, with the run's `language` and `outcome`. A grade or ruling decided by a panel carries `panel`: its `rule`, `judges` with each judge that answered by `model` and `paid`, Jev first, and `degraded`. A degraded panel also carries `missing` and `bar`. These are the record's own values, and the `judge` and `panel` checks say whether they recompute. A decision whose record matched the evidence hash on chain carries it as `evidence`. A decision whose receipt was checked carries `receipt`: where it was read as `from`, and the `job` and `outcome` it states. Each check keeps its `name` across releases, and its `status` is `ok`, `fail`, `skip` or `error`. When the tool cannot run, it prints `{ "error": "..." }` and exits 1, or 2 for bad arguments or an RPC that serves another chain. Trimmed to one check:
 
 ```json
 {
@@ -271,6 +277,7 @@ That Jev produced the answer. BrainChain records Jev's answers, and the contract
       "id": 22,
       "kind": "grade",
       "task": 11,
+      "title": "Compare the rule of 72 with the exact doubling time",
       "block": 419,
       "recordedAt": "2026-11-01 00:40:23 UTC",
       "confidenceBps": 8000,
@@ -286,7 +293,7 @@ That Jev produced the answer. BrainChain records Jev's answers, and the contract
 }
 ```
 
-With `--entry` or `--agent`, the object holds `registry`, `verdict`, `summary` and `entries` instead of `set` and `decisions`, and `agentId` with `--agent`. `verdict` is `match`, `no-receipt`, `withheld`, `mismatch` or `unverified`. It is `no-receipt` only when every check passed and no entry had a receipt. `summary` counts `entries`, `withReceipt`, `verified`, `failed` and `unverified`. Each entry carries its name as `entry`, the fields of its `NewFeedback` event, the `task`, `board` and `set` its endpoint names, the `decision` its receipt names with its `id`, `set` and `kind`, its own `verdict` and its `checks`.
+With `--entry` or `--agent`, the object holds `registry`, `verdict`, `summary` and `entries` instead of `set` and `decisions`, and `agentId` with `--agent`. `verdict` is `match`, `no-receipt`, `withheld`, `mismatch` or `unverified`. It is `no-receipt` only when every check passed and no entry had a receipt. `summary` counts `entries`, `withReceipt`, `verified`, `withheld`, `failed` and `unverified`. `verified` counts only entries whose verdict is `match`. Each entry carries its name as `entry`, the fields of its `NewFeedback` event, the `task`, `board` and `set` its endpoint names, the `decision` its receipt names with its `id`, `set` and `kind`, its own `verdict` and its `checks`.
 
 ## Building
 

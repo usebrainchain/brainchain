@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
 
-import { createPublicClient, http, isAddress } from "viem";
+import { createPublicClient, isAddress } from "viem";
 
 import { decisionLogAbi, taskBoardAbi } from "./abi.js";
 import { NETWORKS } from "./deployments.js";
@@ -11,11 +11,15 @@ import {
   entriesOf,
   entryName,
   entryOutcome,
+  entryReport,
+  entrySummary,
   errorMessage,
+  isReceipt,
   outcomeOf,
   readReceipt,
   receiptDecision,
   REPUTATION,
+  rpcTransport,
   verifyDecision,
   verifyEntry,
   withheldNotChecked,
@@ -66,6 +70,7 @@ const NOT_CHECKED = "That Jev produced the answer. BrainChain records Jev's answ
 // Sets before 3.0.0 named tasks by id alone, which the subject check does not model, so the package carries none.
 const BEFORE_3 = /^(v2(-|$)|2\.|0x83b31d99fa31a9e5257955a737ef34c40f1c57bf$)/i;
 
+// Only a command line of the wrong shape gets the usage. A value that names nothing the tool can read gets a message that says what would.
 function usage(message: string): never {
   if (json) fail(message, 2);
   console.error(`${message}\n\n${USAGE}`);
@@ -87,12 +92,14 @@ const flag = (name: string): string | undefined => {
   const value = args[at + 1];
   if (value === undefined || value.startsWith("--")) usage(`${name} needs a value`);
   args.splice(at, 2);
+  if (args.includes(name)) usage(`${name} given twice`);
   return value;
 };
+// A switch given twice means the same as once.
 const toggle = (name: string): boolean => {
-  const at = args.indexOf(name);
-  if (at >= 0) args.splice(at, 1);
-  return at >= 0;
+  const given = args.length;
+  for (let at = args.indexOf(name); at >= 0; at = args.indexOf(name)) args.splice(at, 1);
+  return args.length < given;
 };
 const json = toggle("--json");
 const offline = toggle("--offline");
@@ -107,8 +114,8 @@ const registryRpcArg = flag("--registry-rpc");
 const unknown = args.find((arg) => arg.startsWith("-") && !/^-\d/.test(arg));
 if (unknown) usage(`Unknown option ${unknown}`);
 const web = (url: string): boolean => URL.canParse(url) && ["http:", "https:"].includes(new URL(url).protocol);
-if (rpcArg !== undefined && !web(rpcArg)) usage("--rpc needs an http or https URL");
-if (registryRpcArg !== undefined && !web(registryRpcArg)) usage("--registry-rpc needs an http or https URL");
+if (rpcArg !== undefined && !web(rpcArg)) fail("--rpc needs an http or https URL", 2);
+if (registryRpcArg !== undefined && !web(registryRpcArg)) fail("--registry-rpc needs an http or https URL", 2);
 
 const [networkArg, idArg, ...extra] = args;
 if (networkArg === undefined) usage("Name a network: mainnet, testnet or a chain id");
@@ -122,23 +129,26 @@ if (!reputation && registryRpcArg !== undefined) usage("--registry-rpc is for --
 if (entryArg !== undefined && agentArg !== undefined) usage("Name one entry with --entry, or an agent with --agent");
 if (!reputation && taskArg === undefined && idArg === undefined && receiptArg === undefined) usage("Name a decision id, a task with --task, or an entry with --entry");
 const given = taskArg ?? idArg;
-if (given !== undefined && !/^[1-9]\d*$/.test(given)) usage(`${taskArg === undefined ? "A decision" : "A task"} id is a whole number from 1`);
+if (given !== undefined && !/^[1-9]\d*$/.test(given)) fail(`${taskArg === undefined ? "A decision" : "A task"} id is a whole number from 1`, 2);
 
 const foundNetwork = Object.hasOwn(NETWORKS, networkArg)
   ? NETWORKS[networkArg as keyof typeof NETWORKS]
   : Object.values(NETWORKS).find((n) => String(n.chainId) === networkArg);
-if (!foundNetwork) usage(`Unknown network "${networkArg}": use mainnet, testnet, 274663 or 274630`);
+if (!foundNetwork) fail(`Unknown network "${networkArg}": use mainnet, testnet, 274663 or 274630`, 2);
 const network = foundNetwork;
-const client = createPublicClient({ transport: http(rpcArg ?? network.rpc) });
+const client = createPublicClient({ transport: rpcTransport("BrainChain", rpcArg ?? network.rpc) });
 const TAGS = { ok: "ok", fail: "FAIL", skip: "skip", error: "ERROR" } as const;
 const tally = (checks: Check[], status: Status): number => checks.filter((c) => c.status === status).length;
+// With --task or --agent, one decision or entry the RPC cannot read is an error line of its own, and the rest still run.
+const unread = (what: string, error: unknown): Check => ({ name: "rpc", status: "error", message: `could not check ${what}: ${errorMessage(error)}` });
 const ENTRY_TAGS: Record<EntryOutcome, string> = { match: "match", "no-receipt": "no receipt", withheld: "withheld", mismatch: "MISMATCH", unverified: "UNVERIFIED" };
 if (reputation) await checkEntries();
 
 const receipt = receiptArg === undefined ? undefined : await readReceipt(client, receiptArg).catch((error: unknown) => fail(errorMessage(error)));
+if (receipt && !isReceipt(receipt.value)) fail(`${receipt.from} is not a receipt as BrainChain or the x402 extension signs one`);
 const named = receipt && receiptDecision(receipt.value);
 const target = given ?? named?.decision;
-if (target === undefined || !/^[1-9]\d*$/.test(target)) usage("The receipt names no decision; give the decision's id");
+if (target === undefined || !/^[1-9]\d*$/.test(target)) fail("The receipt names no decision; give the decision's id", 2);
 // A receipt names its log, so it opens a retired set on its own.
 const receiptSet = named && network.sets.find((s) => s.log.toLowerCase() === named.decisionLog.toLowerCase());
 
@@ -147,9 +157,9 @@ const foundSet =
     ? (receiptSet ?? network.sets[0])
     : network.sets.find((s) => (isAddress(setArg) ? s.board.toLowerCase() === setArg.toLowerCase() : s.key === setArg || s.release === setArg || s.aliases?.includes(setArg)));
 if (!foundSet) {
-  if (setArg !== undefined && BEFORE_3.test(setArg)) usage(`Contract set ${setArg} predates release 3.0.0, which this tool does not read: those boards named tasks by id alone.`);
+  if (setArg !== undefined && BEFORE_3.test(setArg)) fail(`Contract set ${setArg} predates release 3.0.0, which this tool does not read: those boards named tasks by id alone.`, 2);
   const sets = network.sets.map((s, i) => `${s.key} (TaskBoard ${s.board}${i === 0 ? ", active" : ""})`);
-  usage(`No contract set ${setArg} on ${network.name}. Sets: ${sets.join(", ")}`);
+  fail(`No contract set ${setArg} on ${network.name}. Sets: ${sets.join(", ")}`, 2);
 }
 const set = foundSet;
 
@@ -169,7 +179,7 @@ function verdict(reports: DecisionReport[]): string {
     case "mismatch":
       return `Verdict: MISMATCH. ${failed} check${failed === 1 ? "" : "s"} failed; see the FAIL lines.`;
     case "unverified":
-      return "Verdict: UNVERIFIED. A record could not be fetched, so its checks did not run; see the ERROR lines.";
+      return "Verdict: UNVERIFIED. Some checks could not run; the ERROR lines say what could not be read.";
     case "withheld":
       return `Verdict: withheld, not a full match${many ? ` (decision${reports.filter((r) => r.withheld).length === 1 ? "" : "s"} ${reports.filter((r) => r.withheld).map((r) => r.id).join(", ")})` : ""}. ${withheldNotChecked(reports)}`;
     case "match":
@@ -191,6 +201,7 @@ function report(reports: DecisionReport[], header: string, task?: number): never
       id: r.id,
       kind: r.kind,
       task: r.task,
+      ...(r.title ? { title: r.title } : {}),
       ...(r.outside ? { outside: true } : {}),
       ...(r.withheld ? { withheld: true } : {}),
       ...(r.run ? { run: r.run } : {}),
@@ -233,9 +244,9 @@ function report(reports: DecisionReport[], header: string, task?: number): never
 
 async function sameChain(registry?: Registry): Promise<void> {
   const chainId = await client.getChainId();
-  if (chainId !== network.chainId) usage(`The RPC serves chain ${chainId}, not ${network.name} (${network.chainId})`);
+  if (chainId !== network.chainId) fail(`The RPC serves chain ${chainId}, not ${network.name} (${network.chainId})`, 2);
   const registryChain = await registry?.client.getChainId();
-  if (registry && registryChain !== registry.chainId) usage(`The registry RPC serves chain ${registryChain}, not Robinhood Chain (${registry.chainId})`);
+  if (registry && registryChain !== registry.chainId) fail(`The registry RPC serves chain ${registryChain}, not Robinhood Chain (${registry.chainId})`, 2);
 }
 
 function entryVerdict(r: EntryReport): string {
@@ -244,7 +255,7 @@ function entryVerdict(r: EntryReport): string {
     case "mismatch":
       return `Verdict: MISMATCH. ${failed} check${failed === 1 ? "" : "s"} failed; see the FAIL lines.`;
     case "unverified":
-      return "Verdict: UNVERIFIED. The receipt or the record behind it could not be fetched, so the checks that need it did not run; see the ERROR lines.";
+      return "Verdict: UNVERIFIED. Some checks could not run; the ERROR lines say what could not be read.";
     case "withheld":
       return `Verdict: withheld, not a full match. ${withheldNotChecked([r.decision!])}`;
     case "no-receipt":
@@ -263,14 +274,7 @@ function about(r: EntryReport): string {
 
 function reportEntries(reports: EntryReport[], header: string, agentId?: string): never {
   const outcomes = reports.map((r) => entryOutcome([r]));
-  const receipted = reports.filter((r) => BigInt(r.feedbackHash) !== 0n);
-  const summary = {
-    entries: reports.length,
-    withReceipt: receipted.length,
-    verified: receipted.filter((r) => ["match", "withheld"].includes(entryOutcome([r]))).length,
-    failed: outcomes.filter((o) => o === "mismatch").length,
-    unverified: outcomes.filter((o) => o === "unverified").length,
-  };
+  const summary = entrySummary(reports);
   const all = reports.flatMap((r) => r.checks);
   const status = tally(all, "fail") + tally(all, "error") > 0 ? 1 : 0;
   if (json) {
@@ -304,8 +308,8 @@ function reportEntries(reports: EntryReport[], header: string, agentId?: string)
       console.log(`  ${ENTRY_TAGS[outcomes[i]!].padEnd(10)} ${r.entry}  ${about(r)}`);
       for (const c of r.checks) if (c.status === "fail" || c.status === "error") console.log(`             ${TAGS[c.status].padEnd(5)} ${c.message}`);
     }
-    const { entries, withReceipt, verified, failed, unverified } = summary;
-    console.log(`\n${entries} entr${entries === 1 ? "y" : "ies"}, ${withReceipt} with a receipt, ${verified} verified, ${failed} failed${unverified > 0 ? `, ${unverified} could not be checked` : ""}.`);
+    const { entries, withReceipt, verified, withheld, failed, unverified } = summary;
+    console.log(`\n${entries} entr${entries === 1 ? "y" : "ies"}, ${withReceipt} with a receipt, ${verified} verified${withheld > 0 ? `, ${withheld} withheld` : ""}, ${failed} failed${unverified > 0 ? `, ${unverified} could not be checked` : ""}.`);
   }
   console.log(`Not checked: that Jev produced the answer. See ${TRUST_MODEL}`);
   process.exit(status);
@@ -313,17 +317,17 @@ function reportEntries(reports: EntryReport[], header: string, agentId?: string)
 
 /** --entry and --agent: BrainChain's entries in the ERC-8004 reputation registry, each checked through its receipt to the chain. */
 async function checkEntries(): Promise<never> {
-  if (network.chainId !== REPUTATION.network) usage("BrainChain writes reputation entries for mainnet tasks only, so --entry and --agent read mainnet");
-  const registry: Registry = { ...REPUTATION, client: createPublicClient({ transport: http(registryRpcArg ?? REPUTATION.rpc) }) };
+  if (network.chainId !== REPUTATION.network) fail("BrainChain writes reputation entries for mainnet tasks only, so --entry and --agent read mainnet", 2);
+  const registry: Registry = { ...REPUTATION, client: createPublicClient({ transport: rpcTransport("Robinhood Chain", registryRpcArg ?? REPUTATION.rpc) }) };
   const [current, ...earlier] = registry.writers;
   const where = `in the ERC-8004 reputation registry on Robinhood Chain (${registry.address})`;
   const ctx: Context = { client, network, set: network.sets[0]!, briefs: new Map() };
   if (entryArg !== undefined) {
     const parts = /^(0|[1-9]\d{0,77}):(?:(0x[0-9a-fA-F]{40}):)?([1-9]\d{0,19})$/.exec(entryArg);
-    if (!parts) usage("An entry is <agentId>:<feedbackIndex>, or <agentId>:<writer>:<feedbackIndex> for one BrainChain wrote from an earlier address");
+    if (!parts) fail("An entry is <agentId>:<feedbackIndex>, or <agentId>:<writer>:<feedbackIndex> for one BrainChain wrote from an earlier address", 2);
     const named = parts[2];
     const writer = named === undefined ? current : registry.writers.find((w) => w.toLowerCase() === named.toLowerCase());
-    if (!writer) usage(`BrainChain writes its entries from ${registry.writers.join(" and ")}, not ${named}`);
+    if (!writer) fail(`BrainChain writes its entries from ${registry.writers.join(" and ")}, not ${named}`, 2);
     const agentId = BigInt(parts[1]!);
     const index = BigInt(parts[3]!);
     try {
@@ -340,18 +344,30 @@ async function checkEntries(): Promise<never> {
       fail(errorMessage(error));
     }
   }
-  if (!/^(0|[1-9]\d{0,77})$/.test(agentArg!)) usage("An agent id is a whole number");
+  if (!/^(0|[1-9]\d{0,77})$/.test(agentArg!)) fail("An agent id is a whole number", 2);
   const agentId = BigInt(agentArg!);
   try {
     await sameChain(registry);
     const found = await entriesOf(registry, agentId);
     if (found.length === 0) fail(`BrainChain has written no entry for agent ${agentId} ${where}`);
     const reports: EntryReport[] = [];
-    for (const f of found) reports.push(await verifyEntry(ctx, registry, f));
+    for (const f of found) reports.push(await verifyEntry(ctx, registry, f).catch((error: unknown) => entryReport(registry, f, [unread(`entry ${entryName(registry, f)}`, error)])));
     reportEntries(reports, `Agent ${agentId} ${where}: ${found.length} entr${found.length === 1 ? "y" : "ies"} BrainChain wrote`, agentId.toString());
   } catch (error) {
     fail(errorMessage(error));
   }
+}
+
+/** The other sets whose boards hold a task with this id, for a task this set's board does not hold or decided nothing on. */
+async function otherBoards(task: bigint): Promise<string> {
+  const others = network.sets.filter((s) => s !== set);
+  // Only a hint, so a board the RPC cannot read is left out of it.
+  const counts = await Promise.allSettled(others.map((s) => client.readContract({ address: s.board, abi: taskBoardAbi, functionName: "count" })));
+  const holding = others.filter((_, i) => {
+    const count = counts[i]!;
+    return count.status === "fulfilled" && count.value >= task;
+  });
+  return holding.length > 0 ? ` Each set numbers its own tasks; try --set ${holding.map((s) => s.key).join(" or ")}.` : "";
 }
 
 try {
@@ -361,12 +377,13 @@ try {
   if (taskArg !== undefined) {
     const task = BigInt(taskArg);
     const tasks = await ctx.client.readContract({ address: set.board, abi: taskBoardAbi, functionName: "count" });
-    if (task > tasks) fail(`TaskBoard ${set.board} (set ${set.key}) holds tasks 1 to ${tasks}`);
+    if (task > tasks) fail(`TaskBoard ${set.board} (set ${set.key}) holds tasks 1 to ${tasks}.${await otherBoards(task)}`);
     const ids = await decisionsOf(ctx, task);
-    if (ids.length === 0) fail(`Task ${task} has no decisions ${where}`);
+    if (ids.length === 0) fail(`Task ${task} has no decisions ${where}.${await otherBoards(task)}`);
     const reports: DecisionReport[] = [];
-    for (const id of ids) reports.push(await verifyDecision(ctx, id));
-    report(reports, `Task ${task} ${where} (TaskBoard ${set.board}): decision${ids.length === 1 ? "" : "s"} ${ids.join(", ")}`, Number(task));
+    for (const id of ids) reports.push(await verifyDecision(ctx, id).catch((error: unknown) => ({ id: Number(id), checks: [unread(`decision ${id}`, error)] })));
+    const title = reports.find((r) => r.title)?.title;
+    report(reports, `Task ${task} ${where} (TaskBoard ${set.board}): decision${ids.length === 1 ? "" : "s"} ${ids.join(", ")}${title ? `\nBrief: ${title}` : ""}`, Number(task));
   }
 
   const id = BigInt(target);
@@ -376,7 +393,9 @@ try {
     const hint = others.length > 0 ? ` Each set numbers its own decisions; try --set ${others.join(" or ")}.` : "";
     fail(`DecisionLog ${set.log} (set ${set.key}) holds decisions 1 to ${decisions}.${hint}`);
   }
-  report([await verifyDecision(ctx, id, receipt)], `Decision ${id} ${where} (DecisionLog ${set.log})`);
+  const checked = await verifyDecision(ctx, id, receipt);
+  // What the task is about, so a decision read from the wrong set does not pass for the one meant.
+  report([checked], `Decision ${id} ${where} (DecisionLog ${set.log})${checked.title ? `\nTask ${checked.task}: ${checked.title}` : ""}`);
 } catch (error) {
   fail(errorMessage(error));
 }

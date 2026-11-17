@@ -25,12 +25,14 @@ Out of scope:
 
 - contracts and code that are not deployed on mainnet, and retired contract sets;
 - contracts whose source is not in this repository;
-- issues that need a key BrainChain holds, such as the admin, the guardian or a deployer key, or a compromised brain key (the key that records Jev's decisions) beyond what the contracts bound;
+- issues that need a key BrainChain holds, such as the admin, the guardian or a deployer key, or a compromised brain key (the key that records BrainChain's decisions) beyond what the contracts bound;
 - issues where the only funds at risk are the caller's own;
 - scanner findings without a demonstrated impact;
 - third-party services.
 
 ## Bounty
+
+The bounty closes at 23:59 UTC on 22 November 2026. Reports received by then are assessed and paid on the terms below. Reports sent after that are still welcome at the same addresses and earn credit in the advisory, with no payment.
 
 What a report earns depends on what its proof shows.
 
@@ -40,11 +42,11 @@ What a report earns depends on what its proof shows.
 | A confirmed vulnerability in scope, with no working exploit | Up to $250 |
 | Hardening: a missing check or an edge case with no path to funds | Credit in the advisory, no payment |
 
-Funds include anything a BrainChain tool sends, signs or approves without its user asking, and a key it exposes. Bugs in the tools, docs and site that cannot take or lock funds go through the [bug hunt](https://docs.usebrainchain.com/bug-hunt).
+Funds include anything a BrainChain tool sends, signs or approves without its user asking, and a key it exposes. Bugs in the tools, docs and site that cannot take or lock funds belong to the [bug hunt](https://docs.usebrainchain.com/bug-hunt), which has no open round; until one opens, report them in an issue on the affected repository.
 
 We pay at most $1,500 in awards in a calendar month. Awards confirmed beyond that are paid in the following months, in the order we confirmed them.
 
-The first private report of each root cause earns the award. A vulnerability we already know about, or one already made public, does not earn one. We decide whether a report qualifies and what it pays. These terms apply to reports received after 6 November 2026.
+The first private report of each root cause earns the award. A vulnerability we already know about, or one already made public, does not earn one. We decide whether a report qualifies and what it pays. These terms apply to reports received from 7 November to 22 November 2026.
 
 We pay in USDC on Base or USDG on Robinhood Chain, to a wallet you name, once the fix is live or 90 days after we confirm the report, whichever comes first. The [bug hunt's rules](https://docs.usebrainchain.com/bug-hunt#rules) on eligibility, sanctions, tax, use of reports and good-faith testing apply here too.
 

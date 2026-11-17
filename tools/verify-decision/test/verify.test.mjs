@@ -25,9 +25,10 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
-import { taskBoardAbi } from "../dist/abi.js";
+import { decisionLogAbi, taskBoardAbi } from "../dist/abi.js";
 import { canonicalStringify } from "../dist/canonical.js";
-import { clean, entriesOf, entryName, entryOutcome, outcomeOf, readReceipt, receiptDecision, REPUTATION, verifyDecision, verifyEntry, withheldNotChecked } from "../dist/verify.js";
+import { NETWORKS } from "../dist/deployments.js";
+import { balancesFrom, clean, entriesOf, entryName, entryOutcome, entrySummary, errorMessage, outcomeOf, readReceipt, receiptDecision, REPUTATION, rpcTransport, verifyDecision, verifyEntry, withheldNotChecked } from "../dist/verify.js";
 
 const YES = `0x${"0".repeat(63)}1`;
 const NO = `0x${"0".repeat(64)}`;
@@ -103,12 +104,21 @@ before(async () => {
       pump();
       return;
     }
-    response.writeHead(200, page.headers ?? {}).end(page.body);
+    response.writeHead(page.status ?? 200, page.headers ?? {}).end(page.body);
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${server.address().port}`;
 });
 after(() => server.close());
+
+/** A local port nothing listens on, so a connection to it is refused. */
+async function closedPort() {
+  const probe = createServer();
+  await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
+  const { port } = probe.address();
+  await new Promise((resolve) => probe.close(resolve));
+  return port;
+}
 
 /**
  * A stub chain holding one decision, served by the local host. `publish` is the
@@ -282,7 +292,7 @@ describe("the withheld header", () => {
     accepted.jevPaid = 0.64;
     const low = await verify({ subject, bps: 6400, publish: accepted, serve: redacted(accepted), withheld: true });
     assert.equal(low.withheld, true);
-    assert.match(check(low, "withheld").message, /64% is below the 70% bar/);
+    assert.equal(check(low, "withheld").message, "withheld: a paid grade is published only once accepted, and this one was not: Jev answered accept, but at 64% confidence, below the 70% bar");
     assert.deepEqual(failed(low), []);
 
     const cleared = await verify({ subject, bps: 6400, bar: 6000, publish: accepted, serve: redacted(accepted), withheld: true });
@@ -309,7 +319,7 @@ describe("a queued change", () => {
   const exact = encodeFunctionData({ abi: taskBoardAbi, functionName: "setWorkerAllowed", args: [STRANGER, true] });
   const decoded = { target: set.board, function: "setWorkerAllowed", args: [STRANGER, true] };
   const unknown = (data) => ({ target: set.board, function: "unknown", selector: data.slice(0, 10), data });
-  const shown = (data, call) => {
+  const shown = (data, call, queue = true) => {
     const subject = keccak256(encodeAbiParameters([{ type: "uint256" }, { type: "address" }, { type: "address" }, { type: "bytes" }], [BigInt(network.chainId), set.executor, set.board, data]));
     const publish = {
       answer: "adopt",
@@ -321,7 +331,7 @@ describe("a queued change", () => {
       request: { state: JSON.stringify({ call }), questions: { decision: { type: "choice", criteria: { adopt: "a", keep: "k" }, instructions: "i" } } },
       subject,
     };
-    return verify({ kind: 4, subject, queued: data, publish });
+    return verify({ kind: 4, subject, queued: queue ? data : undefined, publish });
   };
 
   it("compares an exact call by what it decodes to", async () => {
@@ -329,6 +339,16 @@ describe("a queued change", () => {
     assert.deepEqual(failed(report), []);
     assert.equal(status(report, "change-call"), "ok");
     assert.equal(status(await shown(exact, unknown(exact)), "change-call"), "fail");
+  });
+
+  it("does not claim the subject of a change never queued is the call Jev was shown", async () => {
+    const queued = await shown(exact, decoded);
+    assert.match(check(queued, "subject").message, /^subject: 0x\w{4}…\w{4}, as recorded on chain\. It is tied to the call Jev was shown only once the change is queued$/);
+    const pending = await shown(exact, decoded, false);
+    assert.deepEqual(failed(pending), []);
+    assert.equal(check(pending, "subject").message, check(queued, "subject").message);
+    assert.equal(check(pending, "change-call"), undefined);
+    assert.equal(status(pending, "threshold"), "skip");
   });
 
   it("compares a call that is not the exact encoding as unknown, as the brain showed Jev", async () => {
@@ -789,8 +809,8 @@ describe("evidence and receipts", () => {
     return { format: "eip712", payload, signature };
   }
   /** GET /network.json: the manifest, the exact text signed, and its personal_sign signature. */
-  async function manifest(key = BRAIN, payees = [{ network: PAYMENT.network, asset: USDC, payTo: DESK }]) {
-    const document = { issuedAt: "2026-11-15T00:00:00.000Z", chainId: network.chainId, paymentChainId: 4663, brain: key.address, desk: DESK, formerDesks: [], payees, minClients: {} };
+  async function manifest(key = BRAIN, payees = [{ network: PAYMENT.network, asset: USDC, payTo: DESK }], fields = {}) {
+    const document = { issuedAt: "2026-11-15T00:00:00.000Z", chainId: network.chainId, paymentChainId: 4663, brain: key.address, desk: DESK, formerDesks: [], payees, minClients: {}, ...fields };
     const signed = `BrainChain network manifest\n${canonicalStringify(document)}`;
     pages.set("/network.json", { body: JSON.stringify({ manifest: document, signed, signature: await key.signMessage({ message: signed }) }) });
   }
@@ -955,7 +975,7 @@ describe("evidence and receipts", () => {
       assert.deepEqual(failed(offline), []);
       assert.equal(offline.receipt.from, kept.from);
     }
-    await assert.rejects(readReceipt(local, `${base}/no-such-receipt`), /answered with status 404/);
+    await assert.rejects(readReceipt(local, `${base}/no-such-receipt`), /answered with status 404: the host has no receipt at this address$/);
   });
 
   it("fails an amount the record and the chain do not show, signed so or changed after", async () => {
@@ -1041,7 +1061,7 @@ describe("evidence and receipts", () => {
     assert.deepEqual(failed(await paid(record, { receipt: given(await extension({ payer: STRANGER })) })), ["receipt-payment"]);
   });
 
-  it("skips what it cannot read: no receipt yet, offline, or a network.json the brain did not sign", async () => {
+  it("skips what is not there to read: no receipt yet, or none fetched offline", async () => {
     const record = sealed(accepted());
     const none = await paid(record);
     assert.equal(status(none, "receipt"), "skip");
@@ -1054,17 +1074,87 @@ describe("evidence and receipts", () => {
     const offline = await paid(record, { offline: true });
     assert.equal(check(offline, "receipt").message, "receipt: none was given, and none is fetched offline");
     assert.ok(!hits.some((hit) => hit.startsWith("/receipts/")));
+    assert.equal(status(await paid(record, { receipt: given({ format: "eip712", payload: {}, signature: "0x" }) }), "receipt"), "fail");
+  });
 
-    await manifest(OTHER);
+  it("fails a network.json the brain did not sign or that names another chain, and skips one the host does not have", async () => {
+    const record = sealed(accepted());
+    const receipt = given(await issued(record));
     try {
-      const unsigned = await paid(record);
-      assert.deepEqual(failed(unsigned), []);
-      assert.equal(status(unsigned, "receipt-payment"), "skip");
-      assert.match(check(unsigned, "receipt-payment").message, /^payment: the receipt's payment is the record's, and transaction 0xabab…abab on eip155:8453 was not checked: \S+\/network\.json is signed by \S+, not by \S+, the brain on DecisionLog 0x2222…2222$/);
+      await manifest(OTHER);
+      const unsigned = await paid(record, { receipt });
+      assert.deepEqual(failed(unsigned), ["receipt-payment"]);
+      assert.match(check(unsigned, "receipt-payment").message, /^payment: the receipt's payment is the record's, but \S+\/network\.json is signed by \S+, not by \S+, the brain on DecisionLog 0x2222…2222$/);
+      assert.equal(outcomeOf([unsigned]), "mismatch");
+
+      await manifest(BRAIN, undefined, { chainId: 274630 });
+      const elsewhere = await paid(record, { receipt });
+      assert.deepEqual(failed(elsewhere), ["receipt-payment"]);
+      assert.match(check(elsewhere, "receipt-payment").message, /network\.json does not list the payees of chain 274663$/);
+
+      pages.delete("/network.json");
+      const none = await paid(record, { receipt });
+      assert.equal(status(none, "receipt-payment"), "skip");
+      assert.match(check(none, "receipt-payment").message, /^payment: the receipt's payment is the record's, and transaction 0xabab…abab on eip155:8453 was not checked: \S+\/network\.json answered with status 404: the host has none$/);
+      assert.equal(outcomeOf([none]), "match");
     } finally {
       await manifest();
     }
-    assert.equal(status(await paid(record, { receipt: given({ format: "eip712", payload: {}, signature: "0x" }) }), "receipt"), "fail");
+  });
+
+  it("is an error when the payment's RPC does not find the transaction, and a failure only once it reverted or failed", async () => {
+    const record = sealed(accepted());
+    const receipt = given(await issued(record));
+    // A node for Base and Solana that holds `transactions` by hash or signature, and answers null for any other.
+    const transactions = {};
+    const node = createServer((request, response) => {
+      let body = "";
+      request.on("data", (chunk) => (body += chunk));
+      request.on("end", () => {
+        const { id, params } = JSON.parse(body);
+        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id, result: transactions[params[0]] ?? null }));
+      });
+    });
+    await new Promise((resolve) => node.listen(0, "127.0.0.1", resolve));
+    const SOLANA = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
+    const url = `http://127.0.0.1:${node.address().port}`;
+    const balances = balancesFrom({ [PAYMENT.network]: url, [SOLANA]: url });
+    try {
+      const unseen = await paid(record, { receipt, balances });
+      assert.equal(status(unseen, "receipt-payment"), "error");
+      assert.match(check(unseen, "receipt-payment").message, /was not checked: the RPC does not find it yet/);
+      assert.equal(outcomeOf([unseen]), "unverified");
+
+      transactions[PAYMENT.transaction] = { status: "0x0", logs: [] };
+      const reverted = await paid(record, { receipt, balances });
+      assert.deepEqual(failed(reverted), ["receipt-payment"]);
+      assert.match(check(reverted, "receipt-payment").message, /did not succeed, or is not on that network$/);
+
+      const topics = encodeEventTopics({ abi: parseAbi(["event Transfer(address indexed from, address indexed to, uint256 value)"]), eventName: "Transfer", args: { from: PAYER, to: DESK } });
+      const transfer = { address: USDC, topics, data: encodeAbiParameters([{ type: "uint256" }], [1_000_000n]), blockNumber: "0x1", logIndex: "0x0", transactionIndex: "0x0", transactionHash: PAYMENT.transaction, blockHash: `0x${"cd".repeat(32)}`, removed: false };
+      transactions[PAYMENT.transaction] = { status: "0x1", logs: [transfer] };
+      assert.deepEqual(failed(await paid(record, { receipt, balances })), []);
+
+      // Solana answers null for a transaction it has not finalized, and a meta.err for one that failed.
+      const MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+      await assert.rejects(balances(SOLANA, "pending", MINT), /does not find it yet/);
+      transactions.failed = { meta: { err: { InstructionError: [0, "Custom"] }, preTokenBalances: [], postTokenBalances: [] } };
+      assert.equal(await balances(SOLANA, "failed", MINT), undefined);
+      const held = (owner, amount) => ({ mint: MINT, owner, uiTokenAmount: { amount } });
+      transactions.paid = { meta: { err: null, preTokenBalances: [held("payer", "5")], postTokenBalances: [held("desk", "5"), held("payer", "0")] } };
+      assert.deepEqual(await balances(SOLANA, "paid", MINT), new Map([["payer", -5n], ["desk", 5n]]));
+      await assert.rejects(balances("eip155:1", PAYMENT.transaction, USDC), /has no RPC for eip155:1/);
+    } finally {
+      node.close();
+    }
+  });
+
+  it("is an error where the receipt host fails to answer, never a match", async () => {
+    pages.set(new URL(RECEIPT_URL()).pathname, { status: 500, body: "down" });
+    const report = await paid(sealed(accepted()));
+    assert.equal(status(report, "receipt"), "error");
+    assert.match(check(report, "receipt").message, /^receipt: could not fetch one: \S+\/1\.json answered with status 500$/);
+    assert.equal(outcomeOf([report]), "unverified");
   });
 
   it("leaves a record from before evidence was kept exactly as it was", async () => {
@@ -1262,6 +1352,21 @@ describe("evidence and receipts", () => {
       assert.match(check(elsewhere, "entry-receipt").message, /^receipt: names decision 2, and DecisionLog 0x2222…2222 holds decisions 1 to 1 and decision 2 on DecisionLog 0x2222…2222, whose receipt the brain serves at \/receipts\/0x2222222222222222222222222222222222222222\/2\.json, not at /);
     });
 
+    it("counts an entry whose record is served without the work as withheld, never as verified", async () => {
+      const kept = sealed(rejected());
+      const refunded = await issued(kept, { outcome: "rejected" });
+      serve(refunded);
+      const onKept = onChain({ ...recorded(kept), serve: redacted(kept), withheld: true, task: { status: Status.Refunded, accepted: false }, balances: moved(), hired: CLAUDE, sets: [set] });
+      const withheld = await checked(onKept, entry({ receipt: refunded, value: 0n }));
+      assert.deepEqual(failed(withheld), []);
+      assert.equal(entryOutcome([withheld]), "withheld");
+
+      const { receipt, ctx } = await paidTask();
+      const verified = await checked(ctx, entry({ receipt }));
+      const plain = await checked(onChain({ task: { status: Status.Paid }, hired: CLAUDE, sets: [set] }), entry());
+      assert.deepEqual(entrySummary([verified, withheld, plain]), { entries: 3, withReceipt: 2, verified: 1, withheld: 1, failed: 0, unverified: 0 });
+    });
+
     it("lists an agent's entries from BrainChain's writers alone, oldest first, in spans the registry's RPC reads", async () => {
       const entries = [
         entry({ index: 2n, block: 24_000_000n }),
@@ -1290,11 +1395,31 @@ describe("briefs", () => {
     assert.equal(outcomeOf([report]), "mismatch");
   });
 
-  it("skip when the host cannot be read, and say brief", async () => {
+  it("skip when the host has none, and recompute a grade's confidence from the record's own pass level", async () => {
     const report = await verify({ briefURI: `${base}/no-such-brief` });
     assert.equal(status(report, "brief"), "skip");
-    assert.match(check(report, "brief").message, /no longer has this brief/);
+    assert.match(check(report, "brief").message, /answered with status 404: the host has no brief at this address$/);
+    assert.equal(check(report, "levels").message, "levels: the brief could not be read, so the confidence is recomputed from the record's own 3 levels, paid from level 1");
+    assert.equal(status(report, "confidence-recomputed"), "ok");
     assert.equal(outcomeOf([report]), "match");
+  });
+
+  it("are an error when the host fails to answer, and the grade's answer is still held to its probabilities", async () => {
+    pages.set("/brief-down", { status: 503, body: "restarting" });
+    // One context, so the brief is fetched once and its three tries are not repeated for each record.
+    const briefs = new Map();
+    const on = (publish, bps = 9000) => verifyDecision({ ...onChain({ briefURI: `${base}/brief-down`, publish, bps }), briefs }, 1n);
+    const report = await on(grade());
+    assert.equal(status(report, "brief"), "error");
+    assert.match(check(report, "brief").message, /answered with status 503/);
+    assert.equal(status(report, "confidence-recomputed"), "ok");
+    assert.equal(outcomeOf([report]), "unverified");
+
+    const forged = await on(grade({ confidence: 0.95 }), 9500);
+    assert.deepEqual(failed(forged), ["confidence-recomputed"]);
+    assert.equal(outcomeOf([forged]), "mismatch");
+    assert.equal(status(await on(grade({ extra: { passFrom: 3 } })), "levels"), "fail");
+    assert.match(check(await on(grade({ extra: { scoreConfidence: undefined } })), "confidence-recomputed").message, /predates the rule that gates on the paid levels/);
   });
 
   it("are read from a private address only when the RPC is on one too", async () => {
@@ -1335,14 +1460,15 @@ describe("briefs", () => {
     assert.match(check(await verifyDecision({ ...ctx, briefs: new Map() }, 1n), "brief").message, /file: URIs are not supported/);
   });
 
-  it("stop being read at the size cap", async () => {
+  it("stop being read at the size cap, which is an error", async () => {
     pages.set("/huge", { stream: 1500 });
     const started = process.memoryUsage().rss;
     const report = await verify({ briefURI: `${base}/huge` });
-    assert.equal(status(report, "brief"), "skip");
+    assert.equal(status(report, "brief"), "error");
     assert.match(check(report, "brief").message, /larger than the 256 KB a brief may be/);
+    assert.equal(outcomeOf([report]), "unverified");
     assert.ok(process.memoryUsage().rss - started < 300 * 1024 * 1024);
-    assert.equal(status(await verify({ briefURI: dataUri(Buffer.alloc(300 * 1024, 97)) }), "brief"), "skip");
+    assert.equal(status(await verify({ briefURI: dataUri(Buffer.alloc(300 * 1024, 97)) }), "brief"), "error");
   });
 
   it("carry no terminal codes into the output", async () => {
@@ -1350,6 +1476,19 @@ describe("briefs", () => {
     const message = check(report, "brief").message;
     assert.ok(!/[\x00-\x1f\x7f-\x9f‮]/.test(message), JSON.stringify(message));
     assert.equal(clean("a\x1b[31mb‮c d…"), "a?[31mb?c?d…");
+  });
+
+  it("name the task by its title, or its first line, cut to 100 characters and cleaned, once read", async () => {
+    assert.equal((await verify({})).title, "T");
+    const own = async (text) => {
+      const bytes = JSON.stringify(text);
+      return (await verify({ briefURI: dataUri(bytes), briefHash: keccak256(toBytes(bytes)) })).title;
+    };
+    assert.equal(await own({ ...BRIEF, title: " ", brief: `\n  ${"Word ".repeat(30)}\nmore` }), `${"Word ".repeat(20).trimEnd()}…`);
+    assert.equal(await own({ ...BRIEF, title: "Sort\x1b[2J it‮\nsecond line" }), "Sort?[2J it?");
+    assert.equal(await own({ ...BRIEF, title: "", brief: "" }), undefined);
+    assert.equal((await verify({ briefURI: dataUri(JSON.stringify({ ...BRIEF, title: "FORGED" })) })).title, undefined);
+    assert.equal((await verify({ briefURI: `${base}/no-such-brief` })).title, undefined);
   });
 });
 
@@ -1372,6 +1511,18 @@ function publicRecord(briefURI) {
 }
 
 describe("records", () => {
+  it("are an error when the host sends something other than JSON, and a mismatch when the JSON is not a record", async () => {
+    const page = await verify({ serve: "<html><body>502 Bad Gateway</body></html>" });
+    assert.equal(status(page, "fetch"), "error");
+    assert.match(check(page, "fetch").message, /^could not read the record: http:\S+ sent something other than JSON, such as an error page$/);
+    assert.equal(outcomeOf([page]), "unverified");
+
+    const other = await verify({ serve: { hello: "world" } });
+    assert.equal(status(other, "fetch"), "fail");
+    assert.match(check(other, "fetch").message, /is not a decision record$/);
+    assert.equal(outcomeOf([other]), "mismatch");
+  });
+
   it("are an error, not a mismatch, when the host is out of reach or too large", async () => {
     pages.set("/big-record", { stream: 8 });
     const decision = { kind: 2, subject: taskSubject(7n), inputHash: NO, answer: YES, confidenceBps: 9000, recordedAt: 1793000000n };
@@ -1392,6 +1543,63 @@ describe("records", () => {
   });
 });
 
+describe("rpc errors", () => {
+  it("name the RPC by its chain and origin, and leave out a key in the path or the userinfo", async () => {
+    const port = await closedPort();
+    const client = createPublicClient({ transport: rpcTransport("BrainChain", `http://user:secret@127.0.0.1:${port}/v2/key-in-path?k=key-in-query`) });
+    const message = errorMessage(await client.getChainId().catch((error) => error));
+    assert.match(message, new RegExp(`^BrainChain RPC http://127\\.0\\.0\\.1:${port}: HTTP request failed\\. \\(.*ECONNREFUSED.*\\)$`));
+    assert.doesNotMatch(message, /secret|key-in/);
+  });
+
+  it("name the RPC through a contract read, and on a JSON-RPC error", async () => {
+    const node = createServer((request, response) => {
+      let body = "";
+      request.on("data", (chunk) => (body += chunk));
+      request.on("end", () => response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: JSON.parse(body).id, error: { code: -32000, message: "header not found" } })));
+    });
+    await new Promise((resolve) => node.listen(0, "127.0.0.1", resolve));
+    try {
+      const url = `http://127.0.0.1:${node.address().port}`;
+      const client = createPublicClient({ transport: rpcTransport("Robinhood Chain", url) });
+      const error = await client.readContract({ address: set.board, abi: taskBoardAbi, functionName: "count" }).catch((e) => e);
+      assert.match(errorMessage(error), new RegExp(`^Robinhood Chain RPC ${url}: .*header not found`));
+    } finally {
+      node.close();
+    }
+  });
+
+  it("give up after two tries of 8 seconds", () => {
+    const { transport } = createPublicClient({ transport: rpcTransport("BrainChain", "http://127.0.0.1:1") });
+    assert.equal(transport.timeout, 8_000);
+    assert.equal(transport.retryCount, 1);
+  });
+
+  it("name the payment network's RPC, Solana's too", async () => {
+    const port = await closedPort();
+    const url = `http://127.0.0.1:${port}`;
+    const balances = balancesFrom({ "eip155:8453": url, "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": url, "eip155:1": url });
+    const reason = async (network, transaction) => errorMessage(await balances(network, transaction, STRANGER).catch((e) => e));
+    assert.match(await reason("eip155:8453", `0x${"ab".repeat(32)}`), new RegExp(`^Base RPC ${url}: HTTP request failed`));
+    assert.match(await reason("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp", "sig"), new RegExp(`^Solana RPC ${url}: fetch failed`));
+    assert.match(await reason("eip155:1", `0x${"ab".repeat(32)}`), new RegExp(`^eip155:1 RPC ${url}: `));
+  });
+});
+
+describe("receipt files", () => {
+  it("are read only up to the cap, only when they are regular files, and say so when there is none", { timeout: 10_000 }, async () => {
+    const local = { transport: { url: "http://127.0.0.1:1" } };
+    await assert.rejects(readReceipt(local, "/dev/zero"), /\/dev\/zero is not a regular file, so it was not read$/);
+    const dir = await mkdtemp(join(tmpdir(), "receipt-"));
+    await assert.rejects(readReceipt(local, dir), /is not a regular file/);
+    const big = join(dir, "big.json");
+    await writeFile(big, Buffer.alloc(65 * 1024, 32));
+    await assert.rejects(readReceipt(local, big), /big\.json is larger than the 64 KB a receipt may be, so it was not read$/);
+    await assert.rejects(readReceipt(local, join(dir, "none.json")), { message: `No file at ${join(dir, "none.json")}.` });
+    await assert.rejects(readReceipt(local, join(big, "inside.json")), { message: `No file at ${join(big, "inside.json")}.` });
+  });
+});
+
 describe("the command line", () => {
   const cli = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
   const run = (...args) => spawnSync(process.execPath, [cli, ...args], { encoding: "utf8" });
@@ -1400,7 +1608,7 @@ describe("the command line", () => {
   const MAINNET = 274663;
   const urlOf = (rpc) => `http://127.0.0.1:${rpc.address().port}`;
 
-  /** Answers as `chainId`, and with `answer` or an empty DecisionLog, so the CLI names the set it chose and stops. */
+  /** Answers as `chainId`, and with `answer` or an empty DecisionLog, so the CLI names the set it chose and stops. An Error from `answer` is a JSON-RPC error. */
   async function stubRpc(chainId, answer = () => `0x${"0".repeat(64)}`) {
     const rpc = createServer((request, response) => {
       let body = "";
@@ -1408,12 +1616,16 @@ describe("the command line", () => {
       request.on("end", () => {
         const { id, method, params } = JSON.parse(body);
         const result = method === "eth_chainId" ? toHex(chainId) : answer(method, params);
-        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id, result }));
+        const reply = result instanceof Error ? { error: { code: -32000, message: result.message } } : { result };
+        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id, ...reply }));
       });
     });
     await new Promise((resolve) => rpc.listen(0, "127.0.0.1", resolve));
     return rpc;
   }
+  const log = (address, topics, data, block) => ({ address, topics, data, blockNumber: toHex(block), blockHash: `0x${"ab".repeat(32)}`, transactionHash: `0x${"e1".repeat(32)}`, transactionIndex: "0x0", logIndex: "0x0", removed: false });
+  // A task the board paid, as TaskBoard.get returns it.
+  const paid = { poster: STRANGER, bounty: 1n, deadline: 0n, status: Status.Paid, accepted: true, disputed: false, disputedByModel: false, model: keccak256(toBytes("claude")), briefHash: NO, resultHash: NO, submittedAt: 0n, gradedAt: 0n, disputedAt: 0n, postedAt: 0n, payee: STRANGER, feeRecipient: STRANGER, feeBps: 0, hireThresholdBps: 0, gradeThresholdBps: 0, ruleThresholdBps: 0, gradeWindow: 0n, disputeWindow: 0n, ruleWindow: 0n };
   const onlyError = (stdout) => {
     const out = JSON.parse(stdout);
     assert.deepEqual(Object.keys(out), ["error"]);
@@ -1463,11 +1675,17 @@ describe("the command line", () => {
     }
   });
 
-  it("reports bad arguments as one JSON object with --json, and as text without it", () => {
-    for (const args of [
-      [], ["mainnet"], ["mainnet", "--task"], ["mainnet", "abc"], ["mainnet", "1", "2"], ["mainnet", "1", "--nope"], ["mainnet", "1", "--rpc", "ftp://x"], ["nowhere", "1"], ["mainnet", "1", "--set", "v2"], ["mainnet", "1", "--set", "nope"], ["mainnet", "1", "--receipt"], ["mainnet", "--task", "1", "--receipt", "r.json"],
-      ["mainnet", "--entry", "20424"], ["mainnet", "--entry", "20424:0"], ["mainnet", "--entry", `20424:${STRANGER}:1`], ["testnet", "--entry", "20424:1"], ["mainnet", "1", "--entry", "20424:1"], ["mainnet", "--entry", "20424:1", "--agent", "20424"], ["mainnet", "--agent", "x"], ["mainnet", "--agent", "1", "--set", "v4"], ["mainnet", "--agent", "1", "--offline"], ["mainnet", "--agent", "1", "--registry-rpc", "ftp://x"], ["mainnet", "1", "--registry-rpc", "https://x.invalid"],
-    ]) {
+  it("reports bad arguments as one JSON object with --json, and as text without it, with the usage only for a command line of the wrong shape", () => {
+    const shape = [
+      [], ["mainnet"], ["mainnet", "--task"], ["mainnet", "1", "2"], ["mainnet", "1", "--nope"], ["mainnet", "1", "--receipt"], ["mainnet", "--task", "1", "--receipt", "r.json"],
+      ["mainnet", "1", "--rpc", "https://a.invalid", "--rpc", "https://b.invalid"], ["mainnet", "1", "--set", "v3", "--set", "v4"],
+      ["mainnet", "1", "--entry", "20424:1"], ["mainnet", "--entry", "20424:1", "--agent", "20424"], ["mainnet", "--agent", "1", "--set", "v4"], ["mainnet", "--agent", "1", "--offline"], ["mainnet", "1", "--registry-rpc", "https://x.invalid"],
+    ];
+    const values = [
+      ["mainnet", "abc"], ["mainnet", "1", "--rpc", "ftp://x"], ["nowhere", "1"], ["mainnet", "1", "--set", "v2"], ["mainnet", "1", "--set", "nope"],
+      ["mainnet", "--entry", "20424"], ["mainnet", "--entry", "20424:0"], ["mainnet", "--entry", `20424:${STRANGER}:1`], ["testnet", "--entry", "20424:1"], ["mainnet", "--agent", "x"], ["mainnet", "--agent", "1", "--registry-rpc", "ftp://x"],
+    ];
+    for (const args of [...shape, ...values]) {
       const asJson = run(...args, "--json");
       assert.equal(asJson.status, 2, args.join(" "));
       assert.equal(asJson.stderr, "", args.join(" "));
@@ -1476,15 +1694,34 @@ describe("the command line", () => {
       const asText = run(...args);
       assert.equal(asText.status, 2, args.join(" "));
       assert.equal(asText.stdout, "", args.join(" "));
-      assert.match(asText.stderr, /\n\nUsage:\n/, args.join(" "));
+      if (shape.includes(args)) assert.match(asText.stderr, /^[^\n]+\n\nUsage:\n/, args.join(" "));
+      else assert.match(asText.stderr, /^[^\n]+\n$/, args.join(" "));
     }
+    assert.match(run("mainnet", "1", "--set", "v3", "--set", "v4").stderr, /^--set given twice\n/);
+  });
+
+  it("takes a switch given twice as given once", () => {
+    const { status, stdout } = run("mainnet", "1", "--set", "nope", "--json", "--offline", "--json", "--offline");
+    assert.equal(status, 2);
+    assert.match(onlyError(stdout), /^No contract set nope on BrainChain mainnet\. Sets: /);
   });
 
   it("reads a receipt first, and takes from it the decision and the set its log belongs to", async () => {
     const dir = await mkdtemp(join(tmpdir(), "receipt-cli-"));
     const missing = run("mainnet", "--receipt", join(dir, "none.json"), "--json");
     assert.equal(missing.status, 1);
-    assert.match(onlyError(missing.stdout), /no such file/);
+    assert.equal(onlyError(missing.stdout), `No file at ${join(dir, "none.json")}.`);
+    const asText = run("mainnet", "--receipt", "none.json");
+    assert.equal(asText.status, 1);
+    assert.equal(asText.stderr, "No file at none.json.\n");
+
+    // A reply kept before the receipt was in it is unreadable as a receipt, with an id or without.
+    await writeFile(join(dir, "reply.json"), JSON.stringify({ order: "o-1", state: "running" }));
+    for (const args of [["mainnet"], ["mainnet", "5"]]) {
+      const unread = run(...args, "--receipt", join(dir, "reply.json"), "--json");
+      assert.equal(unread.status, 1, args.join(" "));
+      assert.match(onlyError(unread.stdout), /reply\.json is not a receipt as BrainChain or the x402 extension signs one$/);
+    }
 
     const payload = { version: 1, network: "eip155:8453", resourceUrl: "https://brain.usebrainchain.com/x402/grades", payer: STRANGER, issuedAt: 1763164800, transaction: `0x${"ab".repeat(32)}` };
     await writeFile(join(dir, "x402.json"), JSON.stringify({ format: "eip712", payload, signature: "0x00" }));
@@ -1504,13 +1741,32 @@ describe("the command line", () => {
     }
   });
 
-  it("reports an RPC on another chain as one JSON object with --json", async () => {
+  it("reports an RPC on another chain without the usage, and as one JSON object with --json", async () => {
     const rpc = await stubRpc(274630);
     try {
       const { code, stdout, stderr } = await runAsync("mainnet", "1", "--rpc", urlOf(rpc), "--json");
       assert.equal(code, 2);
       assert.equal(stderr, "");
       assert.match(onlyError(stdout), /^The RPC serves chain 274630, not /);
+      // Not a usage error: the command line was right, and the RPC was not.
+      const text = await runAsync("mainnet", "1", "--rpc", urlOf(rpc));
+      assert.equal(text.code, 2);
+      assert.equal(text.stderr, "The RPC serves chain 274630, not BrainChain mainnet (274663)\n");
+    } finally {
+      rpc.close();
+    }
+  });
+
+  it("names the RPC that failed, --rpc or --registry-rpc", async () => {
+    const closed = `http://127.0.0.1:${await closedPort()}`;
+    const decision = await runAsync("mainnet", "1", "--rpc", closed);
+    assert.equal(decision.code, 1);
+    assert.match(decision.stderr, new RegExp(`^BrainChain RPC ${closed}: HTTP request failed`));
+    const rpc = await stubRpc(MAINNET);
+    try {
+      const entry = await runAsync("mainnet", "--entry", "20424:1", "--rpc", urlOf(rpc), "--registry-rpc", closed, "--json");
+      assert.equal(entry.code, 1);
+      assert.match(onlyError(entry.stdout), new RegExp(`^Robinhood Chain RPC ${closed}: HTTP request failed`));
     } finally {
       rpc.close();
     }
@@ -1528,12 +1784,11 @@ describe("the command line", () => {
       { clientAddress: FORMER, endpoint: "https://usebrainchain.com/task?id=9", block: 103_400_000n },
       { clientAddress: WRITER, endpoint: `https://usebrainchain.com/task?id=49&board=${BOARD}`, block: 114_000_000n },
     ].map((e) => ({ agentId: 20424n, feedbackIndex: 1n, value: 100n, tag1: "brainchain", tag2: "task", feedbackURI: e.endpoint, feedbackHash: NO, ...e }));
-    const log = (address, topics, data, block) => ({ address, topics, data, blockNumber: toHex(block), blockHash: `0x${"ab".repeat(32)}`, transactionHash: `0x${"e1".repeat(32)}`, transactionIndex: "0x0", logIndex: "0x0", removed: false });
     const robinhood = await stubRpc(4663, (method, [params] = []) => {
       if (method === "eth_blockNumber") return toHex(115_000_000n);
       if (method === "eth_call") {
         const { args } = decodeFunctionData({ abi: registryAbi, data: params.data });
-        const e = entries.find((x) => x.clientAddress.toLowerCase() === args[1].toLowerCase());
+        const e = entries.find((x) => x.clientAddress.toLowerCase() === args[1].toLowerCase() && x.feedbackIndex === args[2]);
         return encodeFunctionResult({ abi: registryAbi, functionName: "readFeedback", result: [e.value, 0, e.tag1, e.tag2, false] });
       }
       return entries
@@ -1547,13 +1802,12 @@ describe("the command line", () => {
           ),
         );
     });
-    const zero = `0x${"0".repeat(64)}`;
-    const paid = { poster: STRANGER, bounty: 1n, deadline: 0n, status: Status.Paid, accepted: true, disputed: false, disputedByModel: false, model: keccak256(toBytes("claude")), briefHash: zero, resultHash: zero, submittedAt: 0n, gradedAt: 0n, disputedAt: 0n, postedAt: 0n, payee: STRANGER, feeRecipient: STRANGER, feeBps: 0, hireThresholdBps: 0, gradeThresholdBps: 0, ruleThresholdBps: 0, gradeWindow: 0n, disputeWindow: 0n, ruleWindow: 0n };
-    const brainchain = await stubRpc(MAINNET, (method) =>
-      method === "eth_call"
-        ? encodeFunctionResult({ abi: taskBoardAbi, functionName: "get", result: paid })
-        : [log(BOARD, encodeEventTopics({ abi: taskBoardAbi, eventName: "WorkerHired", args: { id: 49n, model: paid.model, decisionId: 7n } }), "0x", 900n)],
-    );
+    // Task 50 is one this node cannot read, as a node that lags answers.
+    const brainchain = await stubRpc(MAINNET, (method, [params] = []) => {
+      if (method !== "eth_call") return [log(BOARD, encodeEventTopics({ abi: taskBoardAbi, eventName: "WorkerHired", args: { id: 49n, model: paid.model, decisionId: 7n } }), "0x", 900n)];
+      const { args } = decodeFunctionData({ abi: taskBoardAbi, data: params.data });
+      return args[0] === 50n ? new Error("header not found") : encodeFunctionResult({ abi: taskBoardAbi, functionName: "get", result: paid });
+    });
     const rpcs = ["--rpc", urlOf(brainchain), "--registry-rpc", urlOf(robinhood)];
     try {
       const one = await runAsync("mainnet", "--entry", "20424:1", ...rpcs);
@@ -1582,7 +1836,7 @@ describe("the command line", () => {
       const asJson = await runAsync("mainnet", "--agent", "20424", ...rpcs, "--json");
       const out = JSON.parse(asJson.stdout);
       assert.equal(out.verdict, "no-receipt");
-      assert.deepEqual(out.summary, { entries: 2, withReceipt: 0, verified: 0, failed: 0, unverified: 0 });
+      assert.deepEqual(out.summary, { entries: 2, withReceipt: 0, verified: 0, withheld: 0, failed: 0, unverified: 0 });
       assert.deepEqual(out.entries.map((e) => [e.entry, e.verdict, e.set]), [[`20424:${FORMER}:1`, "no-receipt", undefined], ["20424:1", "no-receipt", "v3-5"]]);
 
       const missing = await runAsync("mainnet", "--entry", "20424:4", ...rpcs);
@@ -1591,9 +1845,109 @@ describe("the command line", () => {
       const crossed = await runAsync("mainnet", "--entry", "20424:1", "--rpc", urlOf(brainchain), "--registry-rpc", urlOf(brainchain), "--json");
       assert.equal(crossed.code, 2);
       assert.match(onlyError(crossed.stdout), /^The registry RPC serves chain 274663, not Robinhood Chain \(4663\)$/);
+
+      // An entry the RPC cannot read is an error on its own line, and the others are still checked.
+      const unread = `https://usebrainchain.com/task?id=50&board=${BOARD}`;
+      entries.push({ ...entries[1], feedbackIndex: 2n, endpoint: unread, feedbackURI: unread, block: 114_500_000n });
+      const partial = await runAsync("mainnet", "--agent", "20424", ...rpcs);
+      assert.equal(partial.code, 1);
+      assert.match(partial.stdout, /\n {2}no receipt 20424:1 {2}value 100, task 49 in set v3-5\n {2}UNVERIFIED 20424:2 {2}value 100, endpoint https:\/\/usebrainchain\.com\/task\?id=50&board=0x\w+\n {13}ERROR could not check entry 20424:2: .*header not found.*\n\n3 entries, 0 with a receipt, 0 verified, 0 failed, 1 could not be checked\.\n/);
     } finally {
       robinhood.close();
       brainchain.close();
+    }
+  });
+
+  it("points a task this set's board does not hold, or decided nothing on, to the sets whose boards hold one", async () => {
+    const counts = new Map(NETWORKS.mainnet.sets.map((s, i) => [s.board.toLowerCase(), [40n, 5n, undefined, 20n, 11n][i]]));
+    let active = 7n;
+    const rpc = await stubRpc(MAINNET, (method, [params] = []) => {
+      if (method === "eth_getLogs") return [];
+      const board = params.to.toLowerCase();
+      const count = board === NETWORKS.mainnet.sets[0].board.toLowerCase() ? active : counts.get(board);
+      return count === undefined ? new Error("header not found") : encodeFunctionResult({ abi: taskBoardAbi, functionName: "count", result: count });
+    });
+    const [board] = NETWORKS.mainnet.sets.map((s) => s.board);
+    try {
+      const outside = await runAsync("mainnet", "--task", "11", "--rpc", urlOf(rpc));
+      assert.equal(outside.code, 1);
+      assert.equal(outside.stderr, `TaskBoard ${board} (set v3-5) holds tasks 1 to 7. Each set numbers its own tasks; try --set v3-1 or v3.\n`);
+
+      const empty = await runAsync("mainnet", "--task", "5", "--rpc", urlOf(rpc), "--json");
+      assert.equal(empty.code, 1);
+      assert.equal(onlyError(empty.stdout), "Task 5 has no decisions on BrainChain mainnet, contract set v3-5. Each set numbers its own tasks; try --set v3-4 or v3-1 or v3.");
+
+      active = 40n;
+      const alone = await runAsync("mainnet", "--task", "30", "--rpc", urlOf(rpc));
+      assert.equal(alone.stderr, "Task 30 has no decisions on BrainChain mainnet, contract set v3-5.\n");
+    } finally {
+      rpc.close();
+    }
+  });
+
+  it("names the task by its brief under the header, so a decision read from the wrong set shows what it is about", async () => {
+    const [active] = NETWORKS.mainnet.sets;
+    const subject = keccak256(encodeAbiParameters([{ type: "uint256" }, { type: "address" }, { type: "uint256" }], [BigInt(MAINNET), active.board, 7n]));
+    const record = grade();
+    const body = JSON.stringify(record);
+    pages.set("/cli-record.json", { body });
+    const decision = { kind: 2, subject, inputHash: keccak256(toBytes(canonicalStringify(record.request))), answer: YES, confidenceBps: 9000, recordedAt: 1793000000n };
+    const brief = JSON.stringify({ ...BRIEF, title: "Port the CSV parser to streaming" });
+    const logs = [
+      log(active.log, encodeEventTopics({ abi: decisionLogAbi, eventName: "Recorded", args: { id: 1n, kind: 2, subject } }), encodeAbiParameters(parseAbiParameters("bytes32, bytes32, uint16, bytes32, string"), [decision.inputHash, YES, 9000, keccak256(toBytes(body)), `${base}/cli-record.json`]), 900n),
+      log(active.board, encodeEventTopics({ abi: taskBoardAbi, eventName: "Posted", args: { id: 7n, poster: STRANGER } }), encodeAbiParameters(parseAbiParameters("uint128, uint64, bytes32, string"), [1n, 0n, keccak256(toBytes(brief)), dataUri(brief)]), 800n),
+    ];
+    const rpc = await stubRpc(MAINNET, (method, [params] = []) => {
+      if (method === "eth_getLogs") return logs.filter((l) => l.topics[0] === params.topics[0]);
+      const abi = params.to.toLowerCase() === active.board.toLowerCase() ? taskBoardAbi : decisionLogAbi;
+      const { functionName } = decodeFunctionData({ abi, data: params.data });
+      const result = { count: abi === taskBoardAbi ? 7n : 1n, get: abi === taskBoardAbi ? paid : decision }[functionName];
+      return encodeFunctionResult({ abi, functionName, result });
+    });
+    try {
+      const one = await runAsync("mainnet", "1", "--rpc", urlOf(rpc));
+      assert.match(one.stdout, new RegExp(`^Decision 1 on BrainChain mainnet, contract set v3-5 \\(DecisionLog ${active.log}\\)\nTask 7: Port the CSV parser to streaming\n\n {2}ok {4}read `));
+      const task = await runAsync("mainnet", "--task", "7", "--rpc", urlOf(rpc));
+      assert.match(task.stdout, /^Task 7 on BrainChain mainnet, contract set v3-5 \(TaskBoard 0x\w+\): decision 1\nBrief: Port the CSV parser to streaming\n\nDecision 1\n/);
+      const { decisions } = JSON.parse((await runAsync("mainnet", "1", "--rpc", urlOf(rpc), "--json")).stdout);
+      assert.equal(decisions[0].title, "Port the CSV parser to streaming");
+    } finally {
+      rpc.close();
+    }
+  });
+
+  it("checks the rest of a task's decisions when the RPC cannot read one", async () => {
+    const [active] = NETWORKS.mainnet.sets;
+    const subject = keccak256(encodeAbiParameters([{ type: "uint256" }, { type: "address" }, { type: "uint256" }], [BigInt(MAINNET), active.board, 7n]));
+    const decision = { kind: 2, subject, inputHash: NO, answer: YES, confidenceBps: 9000, recordedAt: 1793000000n };
+    const recorded = (id) =>
+      log(
+        active.log,
+        encodeEventTopics({ abi: decisionLogAbi, eventName: "Recorded", args: { id, kind: 2, subject } }),
+        encodeAbiParameters(parseAbiParameters("bytes32, bytes32, uint16, bytes32, string"), [NO, YES, 9000, NO, `${base}/no-such-record`]),
+        900n,
+      );
+    // Decision 1 is one this node cannot read, as a node that lags answers.
+    const rpc = await stubRpc(MAINNET, (method, [params] = []) => {
+      if (method === "eth_getLogs") return params.topics[1] ? [recorded(BigInt(params.topics[1]))] : [recorded(1n), recorded(2n)];
+      if (params.to.toLowerCase() === active.board.toLowerCase()) return encodeFunctionResult({ abi: taskBoardAbi, functionName: "count", result: 7n });
+      const { args } = decodeFunctionData({ abi: decisionLogAbi, data: params.data });
+      return args[0] === 1n ? new Error("header not found") : encodeFunctionResult({ abi: decisionLogAbi, functionName: "get", result: decision });
+    });
+    try {
+      const text = await runAsync("mainnet", "--task", "7", "--rpc", urlOf(rpc));
+      assert.equal(text.code, 1);
+      assert.match(text.stdout, /\nDecision 1\n {2}ERROR could not check decision 1: .*header not found.*\n\nDecision 2\n {2}ok {4}read from DecisionLog .*\n {2}ERROR could not fetch the record: .*status 404.*\n\nVerdict: UNVERIFIED\. /);
+
+      const { stdout } = await runAsync("mainnet", "--task", "7", "--rpc", urlOf(rpc), "--json");
+      const out = JSON.parse(stdout);
+      assert.equal(out.verdict, "unverified");
+      assert.deepEqual(out.decisions.map((d) => [d.id, d.verdict, d.checks.map((c) => `${c.name} ${c.status}`)]), [
+        [1, "unverified", ["rpc error"]],
+        [2, "unverified", ["read ok", "fetch error"]],
+      ]);
+    } finally {
+      rpc.close();
     }
   });
 

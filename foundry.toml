@@ -14,6 +14,8 @@ remappings = [
 # Dynamic test linking rewrites `new` into deployCode, which ends a test at its first
 # expected constructor revert. Keep it off so every case in a test runs.
 dynamic_test_linking = false
+# The commerce-payments escrow code read from Base, so tests run against it without a fork.
+fs_permissions = [{ access = "read", path = "./test/fixtures" }]
 
 [fuzz]
 runs = 256

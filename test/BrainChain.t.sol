@@ -335,7 +335,7 @@ contract TaskBoardTest is BrainChainSetup {
         assertEq(usdg.balanceOf(claudeAccount), 0);
     }
 
-    /// v2 refunded here too, after the rule window, even though Jev had accepted the work.
+    /// v2 refunded here too, after the rule window, even though the brain had accepted the work.
     function test_unruledDisputeKeepsTheGradeAfterTheRuleWindow() public {
         uint256 id = postTask();
         hireClaude(id);
@@ -470,6 +470,16 @@ contract TaskBoardTest is BrainChainSetup {
     function test_onlyOwnerSetsConfig() public {
         vm.expectRevert(TaskBoard.NotOwner.selector);
         board.setConfig(defaultConfig());
+    }
+
+    function test_onlyOwnerSetsTheFee() public {
+        vm.expectRevert(TaskBoard.NotOwner.selector);
+        board.setFee(300, makeAddr("router"));
+        vm.prank(guardian);
+        vm.expectRevert(TaskBoard.NotOwner.selector);
+        board.setFee(0, address(0));
+        assertEq(board.feeBps(), 0);
+        assertEq(board.feeRouter(), address(0));
     }
 
     function test_configRejectsNonsense() public {

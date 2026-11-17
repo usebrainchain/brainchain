@@ -26,9 +26,13 @@ import {TestUSDG} from "../src/testnet/TestUSDG.sol";
 /// A later set reuses the first one's tokens, swap and admin timelock when
 /// TEST_USDG, TEST_BRAIN, TEST_SWAP and ADMIN_TIMELOCK are set, so faucets,
 /// balances and the worker CLI's token addresses stay put; its house treasury
-/// is then a day's faucet claim. The guardian seat goes to a GuardianGate whose
-/// Safe is the deployer and whose watcher is WATCHER; the admin hands it over.
+/// is then a day's faucet claim. A reused ADMIN_TIMELOCK must have the 2-hour
+/// delay, take proposals from the deployer and not from BRAIN. The guardian seat
+/// goes to a GuardianGate whose Safe is the deployer and whose watcher is
+/// WATCHER; the admin hands it over.
 contract DeployTestnet is Script {
+    uint256 constant ADMIN_DELAY = 2 hours;
+
     struct Deployed {
         TimelockController admin;
         TestUSDG usdg;
@@ -45,11 +49,15 @@ contract DeployTestnet is Script {
     }
 
     function run() external {
+        require(
+            block.chainid == 274630,
+            "not BrainChain testnet (274630): pass --rpc-url https://rpc.testnet.usebrainchain.com"
+        );
         address brainKey = vm.envAddress("BRAIN");
         vm.startBroadcast();
         address deployer = msg.sender;
         Deployed memory d;
-        d.admin = _admin(deployer);
+        d.admin = _admin(deployer, brainKey);
         d.decisionLog = new DecisionLog(address(d.admin), brainKey);
         d.registry = new ModelRegistry(deployer);
         address existingBrain = vm.envOr("TEST_BRAIN", address(0));
@@ -93,12 +101,18 @@ contract DeployTestnet is Script {
         _print(d);
     }
 
-    function _admin(address deployer) private returns (TimelockController admin) {
+    function _admin(address deployer, address brainKey) private returns (TimelockController admin) {
         address existing = vm.envOr("ADMIN_TIMELOCK", address(0));
-        if (existing != address(0)) return TimelockController(payable(existing));
-        address[] memory admins = new address[](1);
-        admins[0] = deployer;
-        admin = new TimelockController(2 hours, admins, admins, address(0));
+        if (existing == address(0)) {
+            address[] memory admins = new address[](1);
+            admins[0] = deployer;
+            return new TimelockController(ADMIN_DELAY, admins, admins, address(0));
+        }
+        require(existing.code.length > 0, "ADMIN_TIMELOCK has no code");
+        admin = TimelockController(payable(existing));
+        require(admin.getMinDelay() == ADMIN_DELAY, "ADMIN_TIMELOCK has a different delay");
+        require(admin.hasRole(admin.PROPOSER_ROLE(), deployer), "the deployer cannot propose to ADMIN_TIMELOCK");
+        require(!admin.hasRole(admin.PROPOSER_ROLE(), brainKey), "BRAIN can propose to ADMIN_TIMELOCK");
     }
 
     /// The first set mints the executor's house treasury in the token's constructor, which needs the
