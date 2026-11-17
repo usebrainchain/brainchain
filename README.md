@@ -121,7 +121,7 @@ Explorer: [robinhoodchain.blockscout.com](https://robinhoodchain.blockscout.com)
 
 Rewards for accepted work are paid in ETH by `RewardDistributor`. Its publisher posts a round as a Merkle root over ETH the distributor already holds; claims open 24 hours after publishing, which leaves the treasury Safe time to revoke a bad round, and close 12 weeks after. Its ETH comes from `FeeSplitter`, which until 4 November 2026 received a quarter of the $BRAIN launch income from `ProofsIncome`. That share is now zero, and the splitter has no other income: its curve is not bound (`launchToken` is zero) and it holds no ETH. Two rounds have been published, on 2 and 8 November 2026, and both are fully claimed. The distributor holds 0.05 ETH for the next round. A round is published when there is income to distribute, not on a schedule.
 
-$BRAIN is at [`0xC80333bf7f4078e14Ce5b6e223aF607aDcA44418`](https://robinhoodchain.blockscout.com/token/0xC80333bf7f4078e14Ce5b6e223aF607aDcA44418). The token, the Proofs collection and the launch treasury listed in `deployments/mainnet.json` come from ripples.run; their source is not in this repository.
+$BRAIN is at [`0x42b96dbc55e79E930d866c1eE486A342366546BC`](https://robinhoodchain.blockscout.com/token/0x42b96dbc55e79E930d866c1eE486A342366546BC). It moved to this address on 17 November 2026; before the move it was `0xC80333bf7f4078e14Ce5b6e223aF607aDcA44418`. The token, the Proofs collection and the launch treasury listed in `deployments/mainnet.json` come from ripples.run; their source is not in this repository.
 
 ### Treasuries
 
