@@ -2291,14 +2291,20 @@ describe("an agent's licences", () => {
     const l = { ...signedBy(key), agent, class: "code", epoch: epochOf(agent, controller, build), controller, build, sitting: SITTING, decisions: ["4", "5", "6", "7"], accepted: 4, of: 5, issuedAt: NOW - DAY, expiresAt: NOW + 59 * DAY, ...rest };
     return { licence: l, signature: await signedAs(signs, "BrainChain licence\n", l) };
   }
-  /** GET /licences/<chain>/<id> as exam-routes.ts answers it, read against a registry that gives `registry`. */
-  async function held(signed, state = "valid", { registry, identity = { client: identityChain(registry) }, chain = {}, listed = {} } = {}) {
+  /** GET /licences/<chain>/<id> as exam-routes.ts answers it, read against a registry that gives `registry`. `epoch` is the epoch the reply gives for the id, which a host from before that field leaves out. */
+  async function answered(signed, state = "valid", { registry, identity = { client: identityChain(registry) }, chain = {}, listed = {}, epoch } = {}) {
     const items = signed ? [{ class: signed.licence.class, state, licence: signed, audits: { passed: 1, failed: 0 }, ...listed }] : [];
-    pages.set("/licences/4663/501", { body: JSON.stringify({ agent: { chainId: 4663, id: "501" }, licences: items, signedAs: "personal_sign (EIP-191)" }) });
-    const report = await verifyLicences(onChain({ sets: [set], ...chain }), brainHost(identity), 501n);
+    pages.set("/licences/4663/501", { body: JSON.stringify({ agent: { chainId: 4663, id: "501" }, ...(epoch === undefined ? {} : { epoch }), licences: items, signedAs: "personal_sign (EIP-191)" }) });
+    return verifyLicences(onChain({ sets: [set], ...chain }), brainHost(identity), 501n);
+  }
+  /** The one licence of a reply without an epoch of its own. */
+  async function held(signed, state, options) {
+    const report = await answered(signed, state, options);
     assert.deepEqual(lines(report), ["licences-fetch ok"]);
     return report.licences[0];
   }
+  /** epochOf in exam.ts: the epoch the host reads for the id. */
+  const reads = (controller = HOLDER, build = "worker-1") => ({ id: epochOf(AGENT, controller, build), controller, build });
 
   beforeEach(() => unserve("/licences/"));
 
@@ -2413,6 +2419,90 @@ describe("an agent's licences", () => {
     assert.deepEqual(lines(malformed), ["licence fail"]);
     // Issued before the log named the key.
     assert.deepEqual(failed(await held(await licence({ issuedAt: 1_792_000_000 }))), ["licence-brain"]);
+  });
+
+  it("hold the epoch the host gives for the id to the registry", async () => {
+    const signed = await licence();
+    const report = await answered(signed, "valid", { epoch: reads() });
+    assert.deepEqual(lines(report), ["licences-fetch ok", "licences-epoch ok"]);
+    assert.equal(check(report, "licences-epoch").message, `epoch: the host gives controller ${brief(HOLDER)} and the build "worker-1", epoch ${brief(epochOf(AGENT, HOLDER, "worker-1"))}, as the identity registry does`);
+    assert.deepEqual(report.epoch, reads());
+    assert.deepEqual(lines(report.licences[0]), GOOD);
+
+    // The host reads another controller or build than the registry gives, or names an epoch that is not the hash of what it gives.
+    for (const [epoch, registry, message] of [
+      [reads(STRANGER), {}, `epoch: the host gives controller 0x4444…4444, and the identity registry gives ${brief(HOLDER)}`],
+      [reads(HOLDER, "worker-2"), {}, 'epoch: the host gives the build "worker-2", and the identity registry gives the build "worker-1"'],
+      [reads(), { build: "" }, 'epoch: the host gives the build "worker-1", and the identity registry gives no build'],
+      [{ ...reads(), id: `0x${"ee".repeat(32)}` }, {}, "epoch: the epoch the host names, 0xeeee…eeee, is not the hash of the controller and build it gives"],
+      [null, {}, `epoch: the host gives no epoch for the id, as it does when no single account controls it or it could not read the registry, and the identity registry gives controller ${brief(HOLDER)}`],
+      [reads(), { owner: null }, `epoch: the host gives controller ${brief(HOLDER)} for the id, and no single account controls it on the identity registry`],
+      [{ id: "0x12", controller: HOLDER }, {}, "epoch: what the host gives as the id's epoch is not an id, a controller and a build"],
+    ]) {
+      const other = await answered(signed, "valid", { epoch, registry });
+      assert.deepEqual(failed(other), ["licences-epoch"], message);
+      assert.equal(check(other, "licences-epoch").message, message);
+    }
+    // Each licence is still held to the registry's own epoch, whatever the host gives.
+    const sold = await answered(signed, "valid", { epoch: reads(), registry: { owner: STRANGER } });
+    assert.deepEqual([failed(sold), failed(sold.licences[0])], [["licences-epoch"], ["licence-state"]]);
+    const gone = await answered(signed, "lapsed", { epoch: null, registry: { owner: null } });
+    assert.deepEqual(lines(gone), ["licences-fetch ok", "licences-epoch ok"]);
+    assert.equal(check(gone, "licences-epoch").message, "epoch: the host gives no epoch for the id, and no single account controls it on the identity registry");
+    assert.equal(gone.epoch, null);
+    assert.deepEqual(failed(gone.licences[0]), []);
+
+    assert.equal(status(await answered(signed, "valid", { epoch: reads(), identity: {} }), "licences-epoch"), "skip");
+    assert.equal(status(await answered(signed, "valid", { epoch: reads(), registry: { down: true } }), "licences-epoch"), "error");
+  });
+
+  it("check a house licence's model by the epoch the host gives, once the registry bears its controller out", async () => {
+    const MODEL = "house: anthropic/claude-sonnet-5.5";
+    const signed = await licence({ build: MODEL });
+    // The host runs the agent on the licence's model still.
+    const stands = await answered(signed, "valid", { epoch: reads(HOLDER, MODEL), registry: { build: "" } });
+    assert.deepEqual(lines(stands), ["licences-fetch ok", "licences-epoch ok"]);
+    assert.equal(
+      check(stands, "licences-epoch").message,
+      `epoch: the host gives controller ${brief(HOLDER)}, as the identity registry does, and the build "${MODEL}", BrainChain's own statement of the model it runs this agent on, which the registry does not hold. The two hash to the epoch the host names, ${brief(epochOf(AGENT, HOLDER, MODEL))}`,
+    );
+    const [kept] = stands.licences;
+    assert.deepEqual(lines(kept), GOOD);
+    assert.equal(
+      check(kept, "licence-epoch").message,
+      `epoch: the identity registry gives controller ${brief(HOLDER)} now, the one the licence was earned under, and the host gives the build "${MODEL}" for the id, the licence's. That build is BrainChain's own statement of the model it runs this agent on, which the registry does not hold`,
+    );
+    assert.equal(check(kept, "licence-state").message, "state: valid, as the host says: it has not expired and the id is in the epoch it was earned in");
+    // With the epoch to go by, lapsed is no longer taken as given.
+    const [early] = (await answered(signed, "lapsed", { epoch: reads(HOLDER, MODEL), registry: { build: "" } })).licences;
+    assert.deepEqual(failed(early), ["licence-state"]);
+
+    // BrainChain has moved the agent to another model, so the licence's epoch has ended.
+    const NEXT = "house: anthropic/claude-sonnet-6";
+    const [ended] = (await answered(signed, "lapsed", { epoch: reads(HOLDER, NEXT), registry: { build: "" } })).licences;
+    assert.deepEqual(lines(ended), GOOD);
+    assert.equal(check(ended, "licence-epoch").message, `epoch: the identity registry gives controller ${brief(HOLDER)} now, the one the licence was earned under, and the host gives the build "${NEXT}" for the id. The licence was earned under the build "${MODEL}", so it has lapsed`);
+    const [trailing] = (await answered(signed, "valid", { epoch: reads(HOLDER, NEXT), registry: { build: "" } })).licences;
+    assert.equal(
+      check(trailing, "licence-state").message,
+      "state: the host says valid, and the checks give lapsed: the agent's id is in another epoch than the one it was earned in. The host reads each id's epoch every ten minutes, so its state can trail the registry by that long",
+    );
+    // BrainChain no longer runs the agent: the id's build is whatever its controller declares.
+    const [left] = (await answered(signed, "lapsed", { epoch: reads(HOLDER, ""), registry: { build: "" } })).licences;
+    assert.deepEqual(lines(left), GOOD);
+    assert.match(check(left, "licence-epoch").message, /and the host gives no build for the id\. The licence was earned under the build "house: anthropic\/claude-sonnet-5\.5", so it has lapsed$/);
+
+    // An epoch the registry does not bear out says nothing of the model: the licence is read as from a host that gives none.
+    const unheld = await answered(signed, "lapsed", { epoch: reads(STRANGER, MODEL), registry: { build: "" } });
+    assert.deepEqual(failed(unheld), ["licences-epoch"]);
+    assert.deepEqual(failed(unheld.licences[0]), []);
+    assert.match(check(unheld.licences[0], "licence-epoch").message, /so a change of model does not show here$/);
+    // The controller is the registry's to say, whatever epoch the host gives.
+    const sold = await answered(signed, "valid", { epoch: reads(STRANGER, MODEL), registry: { owner: STRANGER, build: "" } });
+    assert.deepEqual([failed(sold), failed(sold.licences[0])], [[], ["licence-state"]]);
+    // A controller cannot declare the prefix: on the registry it reads as what follows, and the licence earned under that is no house licence.
+    const posed = await answered(await licence({ build: "x" }), "valid", { epoch: reads(HOLDER, "x"), registry: { build: "House: house:  x" } });
+    assert.deepEqual([failed(posed), lines(posed.licences[0])], [[], GOOD]);
   });
 
   it("report a suspension as the host's word, and say what could not be told without the registry", async () => {
@@ -2960,10 +3050,10 @@ describe("the command line", () => {
       const l = { ...signedBy(BRAIN), decisionLog: LOG, agent: AGENT, class: "code", epoch: epochOf(AGENT, HOLDER, "worker-1"), controller: HOLDER, build: "worker-1", sitting: `0x${"5e".repeat(32)}`, decisions: ["4"], accepted: 4, of: 5, issuedAt: now - 500, expiresAt: now + 5_000_000 };
       const licences = (state) => pages.set("/licences/4663/501", { body: JSON.stringify({ agent: { chainId: 4663, id: "501" }, licences: state ? [{ class: "code", state, licence: { licence: l, signature: "0x" }, audits: { passed: 0, failed: 0 } }] : [] }) });
       const signature = await signedAs(BRAIN, "BrainChain licence\n", l);
-      pages.set("/licences/4663/501", { body: JSON.stringify({ licences: [{ class: "code", state: "valid", licence: { licence: l, signature }, audits: { passed: 0, failed: 0 } }] }) });
+      pages.set("/licences/4663/501", { body: JSON.stringify({ epoch: { id: l.epoch, controller: HOLDER, build: "worker-1" }, licences: [{ class: "code", state: "valid", licence: { licence: l, signature }, audits: { passed: 0, failed: 0 } }] }) });
       const licence = await runAsync("mainnet", "--licence", "501", ...host, ...registry);
       assert.equal(licence.code, 0, licence.stderr + licence.stdout);
-      assert.deepEqual(licence.stdout.split("\n").map((text) => text.split(":")[0]), ["Agent 501's licences on BrainChain mainnet, read from http", "", "  ok    fetched 1 licence from http", "", "  code", "  ok    licence", "  ok    signature", "  ok    brain", "  ok    expiry", "  ok    epoch", "  ok    state", "", "Verdict", "Not checked", ""]);
+      assert.deepEqual(licence.stdout.split("\n").map((text) => text.split(":")[0]), ["Agent 501's licences on BrainChain mainnet, read from http", "", "  ok    fetched 1 licence from http", "  ok    epoch", "", "  code", "  ok    licence", "  ok    signature", "  ok    brain", "  ok    expiry", "  ok    epoch", "  ok    state", "", "Verdict", "Not checked", ""]);
       assert.match(licence.stdout, /\n {2}code: valid\n/);
       assert.match(licence.stdout, /\nVerdict: match\. Each licence is signed by a key its DecisionLog named its brain, and the state the host gives is the one its expiry and the identity registry give\.\n/);
       licences("valid");

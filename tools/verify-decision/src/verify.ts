@@ -3172,40 +3172,106 @@ export interface LicenceReport {
   checks: Check[];
 }
 
+/** The epoch the brain host says an agent's id is in now, as its licences reply carries it. For an agent BrainChain runs itself the build is its `house: <model id>`. */
+export interface HostEpoch {
+  id: Hex;
+  controller: Address;
+  build: string;
+}
+
 export interface LicencesReport {
   agentId: string;
   url: string;
+  /** The epoch the host gives for the id, or null where it gives none. Absent from a host whose reply does not carry it. The `licences-epoch` check says whether the registry bears it out. */
+  epoch?: HostEpoch | null;
   licences: LicenceReport[];
-  /** The fetch. Each licence's checks are its own. */
+  /** The fetch, and the host's epoch against the registry. Each licence's checks are its own. */
   checks: Check[];
 }
+
+/** Reads the epoch an id is in from one registry, once for every licence that names it. */
+type EpochReader = (registry: Address) => Promise<CurrentEpoch | null>;
 
 /**
  * An agent's licences as the brain host lists them: each one's signature, the
  * key behind it, its expiry, the epoch the registry gives the id now against
  * the one it was earned in, and the state those give against the state the
- * service claims.
+ * host gives. The epoch the reply itself gives is held to the registry too.
  */
 export async function verifyLicences(ctx: Context, service: Service, agentId: bigint): Promise<LicencesReport> {
   const c = new Checks();
   const url = `${hostOfService(service)}/licences/${service.identity.chainId}/${agentId}`;
   const report: LicencesReport = { agentId: agentId.toString(), url, licences: [], checks: c.list };
   let listed: unknown[];
+  let given: unknown;
   try {
     const body = await fetchJson(ctx, url, "licence list", MAX_LICENCES_BYTES);
     if (!isObject(body) || !Array.isArray(body.licences)) throw new Mismatch(`${display(url)} is not a list of an agent's licences`);
     listed = body.licences;
+    given = body.epoch;
   } catch (error) {
     unread(c, "licences-fetch", "the licences", error);
     return report;
   }
   c.add("licences-fetch", "ok", `fetched ${plural(listed.length, "licence", "licences")} from ${display(url)}`);
-  const epochs = new Map<string, Promise<CurrentEpoch | null>>();
-  for (const item of listed) report.licences.push(await checkLicence(ctx, service, agentId, item, epochs));
+  const { client, chainId, adapters } = service.identity;
+  const readings = new Map<string, Promise<CurrentEpoch | null>>();
+  const read: EpochReader | undefined =
+    client &&
+    ((registry) => {
+      let reading = readings.get(registry);
+      if (!reading) readings.set(registry, (reading = currentEpoch(client, { chainId, registry, adapters }, agentId)));
+      return reading;
+    });
+  const named = listed.map((item) => (isObject(item) && isObject(item.licence) && isLicence(item.licence.licence) ? item.licence.licence.agent.registry : undefined)).find((registry) => registry !== undefined);
+  const host = await checkHostEpoch(c, report, service, agentId, given, service.identity.registry ?? named, read);
+  for (const item of listed) report.licences.push(await checkLicence(ctx, service, agentId, item, read, host));
   return report;
 }
 
-async function checkLicence(ctx: Context, service: Service, agentId: bigint, item: unknown, epochs: Map<string, Promise<CurrentEpoch | null>>): Promise<LicenceReport> {
+/**
+ * The epoch the host's reply gives for the id, held to the registry: its
+ * controller is the registry's, its id is the hash of what it gives, and its
+ * build is the registry's unless it is one BrainChain states itself. Returned
+ * once it holds, for a licence whose build only BrainChain can state. A host
+ * from before the field gives none, and nothing is added.
+ */
+async function checkHostEpoch(c: Checks, report: LicencesReport, service: Service, agentId: bigint, given: unknown, registry: Address | undefined, read: EpochReader | undefined): Promise<HostEpoch | undefined> {
+  if (given === undefined) return undefined;
+  const host: HostEpoch | null | undefined =
+    given === null ? null : isObject(given) && isHash(given.id) && isAccount(given.controller) && typeof given.build === "string" ? { id: given.id, controller: given.controller, build: given.build } : undefined;
+  if (host === undefined) return void c.add("licences-epoch", "fail", "epoch: what the host gives as the id's epoch is not an id, a controller and a build");
+  report.epoch = host && { ...host, build: clean(host.build) };
+  if (!read) return void c.add("licences-epoch", "skip", "epoch: no client for the identity registry's chain was given, so the epoch the host gives was not held to the registry");
+  if (!registry) return void c.add("licences-epoch", "skip", "epoch: this tool carries no identity registry for the chain and no licence names one, so the epoch the host gives was not held to a registry");
+  let own: CurrentEpoch | null;
+  try {
+    own = await read(registry);
+  } catch (error) {
+    return void c.add("licences-epoch", "error", `epoch: could not read the identity registry: ${errorMessage(error)}`);
+  }
+  if (!host && !own) return void c.add("licences-epoch", "ok", "epoch: the host gives no epoch for the id, and no single account controls it on the identity registry");
+  if (!own) return void c.add("licences-epoch", "fail", `epoch: the host gives controller ${short(host!.controller)} for the id, and no single account controls it on the identity registry`);
+  if (!host) {
+    return void c.add("licences-epoch", "fail", `epoch: the host gives no epoch for the id, as it does when no single account controls it or it could not read the registry, and the identity registry gives controller ${short(own.controller)}`);
+  }
+  const house = isHouseBuild(host.build);
+  const wrong: string[] = [];
+  if (!eq(host.controller, own.controller)) wrong.push(`the host gives controller ${short(host.controller)}, and the identity registry gives ${short(own.controller)}`);
+  if (!house && host.build !== own.build) wrong.push(`the host gives ${built(host.build)}, and the identity registry gives ${built(own.build)}`);
+  if (epochId({ chainId: service.identity.chainId, registry, id: agentId.toString() }, host.controller, host.build) !== host.id.toLowerCase()) wrong.push(`the epoch the host names, ${short(host.id)}, is not the hash of the controller and build it gives`);
+  c.check(
+    "licences-epoch",
+    wrong.length === 0,
+    house
+      ? `epoch: the host gives controller ${short(host.controller)}, as the identity registry does, and the build "${host.build}", BrainChain's own statement of the model it runs this agent on, which the registry does not hold. The two hash to the epoch the host names, ${short(host.id)}`
+      : `epoch: the host gives controller ${short(host.controller)} and ${built(host.build)}, epoch ${short(host.id)}, as the identity registry does`,
+    `epoch: ${wrong.join("; ")}`,
+  );
+  return wrong.length === 0 ? host : undefined;
+}
+
+async function checkLicence(ctx: Context, service: Service, agentId: bigint, item: unknown, read: EpochReader | undefined, host: HostEpoch | undefined): Promise<LicenceReport> {
   const c = new Checks();
   const listed = isObject(item) ? item : {};
   const signed = isObject(listed.licence) ? listed.licence : {};
@@ -3246,31 +3312,35 @@ async function checkLicence(ctx: Context, service: Service, agentId: bigint, ite
   const past = now >= l.expiresAt;
   c.add("licence-expiry", "ok", `expiry: ${past ? `expired ${utc(BigInt(l.expiresAt))} UTC, ${span(now - l.expiresAt)} ago` : `expires ${utc(BigInt(l.expiresAt))} UTC, in ${span(l.expiresAt - now)}`}`);
 
-  // Whether the id has left the licence's epoch. Undefined when the registry cannot say: it was not read, or the
-  // licence's build is one BrainChain states itself and the controller is unchanged, since a change of model does not show there.
+  // Whether the id has left the licence's epoch. Undefined when nothing read can say: the registry was not read, or the
+  // licence's build is one BrainChain states itself, the controller is unchanged and the host gives no epoch to tell the model by.
   let moved: boolean | undefined;
   let house = false;
-  if (!identity.client) {
+  if (!read) {
     c.add("licence-epoch", "skip", "epoch: no client for the identity registry's chain was given, so the registry was not read");
   } else {
-    const registry = identity.registry ?? l.agent.registry;
-    let reading = epochs.get(registry);
-    if (!reading) epochs.set(registry, (reading = currentEpoch(identity.client, { chainId: identity.chainId, registry, adapters: identity.adapters }, agentId)));
     try {
-      const current = await reading;
+      const current = await read(identity.registry ?? l.agent.registry);
       const earned = `controller ${short(l.controller)} and ${built(l.build)}`;
-      house = current !== null && isHouseBuild(l.build) && eq(current.controller, l.controller);
-      moved = house ? undefined : current?.id !== l.epoch.toLowerCase();
+      // A build BrainChain states itself is not on the registry, which then shows only whether the controller is still the licence's. The epoch the host gives, once it holds against the registry, says whether the model is.
+      const same = current !== null && isHouseBuild(l.build) && eq(current.controller, l.controller);
+      house = same && !host;
+      moved = house ? undefined : (same ? host!.id : current?.id)?.toLowerCase() !== l.epoch.toLowerCase();
+      const kept = current && `epoch: the identity registry gives controller ${short(current.controller)} now, the one the licence was earned under`;
       c.add(
         "licence-epoch",
         "ok",
         !current
           ? `epoch: no single account controls agent ${agentId} on the identity registry now, so the licence, earned under ${earned}, has lapsed`
           : house
-            ? `epoch: the identity registry gives controller ${short(current.controller)} now, the one the licence was earned under. Its build, "${l.build}", is BrainChain's own statement of the model it runs this agent on, which the registry does not hold, so a change of model does not show here`
-            : moved
-              ? `epoch: the identity registry gives controller ${short(current.controller)} and ${built(current.build)} now. The licence was earned under ${earned}, so it has lapsed`
-              : `epoch: the identity registry gives ${earned} now, the epoch the licence was earned in`,
+            ? `${kept}. Its build, "${l.build}", is BrainChain's own statement of the model it runs this agent on, which the registry does not hold, so a change of model does not show here`
+            : same
+              ? moved
+                ? `${kept}, and the host gives ${built(host!.build)} for the id. The licence was earned under ${built(l.build)}, so it has lapsed`
+                : `${kept}, and the host gives the build "${l.build}" for the id, the licence's. That build is BrainChain's own statement of the model it runs this agent on, which the registry does not hold`
+              : moved
+                ? `epoch: the identity registry gives controller ${short(current.controller)} and ${built(current.build)} now. The licence was earned under ${earned}, so it has lapsed`
+                : `epoch: the identity registry gives ${earned} now, the epoch the licence was earned in`,
       );
     } catch (error) {
       c.add("licence-epoch", "error", `epoch: could not read the identity registry: ${errorMessage(error)}`);
