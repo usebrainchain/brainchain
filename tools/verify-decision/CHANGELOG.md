@@ -2,6 +2,28 @@
 
 Changes to `brainchain-verify`, the npm package built from this directory. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are npm publish dates, in UTC.
 
+## [0.8.0] - unreleased
+
+### Added
+
+- `--record <agentId>` checks an agent's numbered record on the brain host. Entries are read from the first, a page at a time. They must be numbered with no gap, each naming the hash of the one before, each signed by the brain key it names, and all for the agent asked for. The signed head must end at the last entry with its hash and be at most 15 minutes old. Each receipt an entry names is fetched, hashed and checked with its decision. The report counts each epoch's entries by kind and outcome.
+- `record-brain` holds every signing key to the chain. The DecisionLog an entry names must belong to a contract set the tool carries, its `BrainSet` events must name the key, and the entry's `issuedAt` must fall within that key's time as brain, give or take five minutes. A head must name the active set's DecisionLog.
+- `--epoch` with `--record` reads the ERC-8004 identity registry on Robinhood Chain for the epoch the agent's id is in now, through a binding adapter where the id is bound to an NFT, and says which entries belong to it.
+- `--licence <agentId>` checks each licence the brain host lists: its signature, its signing key, its expiry and the epoch the registry gives the id now. The state these give must be the state the host gives. `suspended` is reported as the host gives it.
+- `--papers <agentId>` checks an agent's papers: the signed text holds the papers the file shows, the brain key of the active DecisionLog signed it within the last 15 minutes, and the record head it names is an entry of the record its signed head ends.
+- `--item <itemId>` checks a retired exam item: the item without its id, as canonical JSON, hashes to its id.
+- `--service <url>` names another brain host for these four. The defaults are `https://brain.usebrainchain.com` on mainnet and `https://brain.testnet.usebrainchain.com` on testnet.
+- `--entry` and `--agent` read an entry whose `feedbackURI` serves an entry of the agent's record. The new lines are `entry-record`, `entry-signature`, `entry-brain` and `entry-outcome`, then `record-receipt` and `record-settled` when the record entry names a receipt, which is checked with its decision as before. An exam outcome, written under `licence:<class>`, is read the same way. In JSON such an entry carries `record`.
+- `verifyRecord`, `verifyLicences`, `verifyPapers`, `verifyItem`, `currentEpoch`, `epochId`, `entryHash`, `recordUrl` and `SERVICES` are exported, with their types.
+
+### Changed
+
+- `--registry-rpc` is also read by `--licence`, and by `--record` with `--epoch`.
+- The `entry` check takes `licence:<class>` as a second tag beside `task`.
+- `summary.withReceipt` counts an entry that points at a record entry only when that record entry names a receipt.
+
+An entry that points straight at a receipt, and every decision and receipt, verify exactly as in 0.7.1.
+
 ## [0.7.1] - 2026-11-16
 
 ### Changed
@@ -159,6 +181,7 @@ A record without the new fields verifies exactly as in 0.5.1.
 
 First release. Reads a decision from the `DecisionLog`, fetches its published record, recomputes its hashes and confidence, and applies the task's thresholds the way the contracts do.
 
+[0.8.0]: https://github.com/usebrainchain/brainchain/releases/tag/verify-v0.8.0
 [0.7.1]: https://github.com/usebrainchain/brainchain/releases/tag/verify-v0.7.1
 [0.7.0]: https://github.com/usebrainchain/brainchain/releases/tag/verify-v0.7.0
 [0.6.0]: https://github.com/usebrainchain/brainchain/releases/tag/verify-v0.6.0
