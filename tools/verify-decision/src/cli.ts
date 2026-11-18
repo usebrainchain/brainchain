@@ -548,7 +548,8 @@ async function checkHosted(): Promise<never> {
     }
     const r = await verifyPapers(ctx, service, agentId);
     const lines = r.checks.map(line);
-    if (r.epoch) {
+    // What the papers say is shown only once the checks show the brain key said it.
+    if (r.epoch && r.checks.every((c) => c.status === "ok")) {
       lines.push(
         "",
         `The papers state, signed ${r.signedAt}:`,
