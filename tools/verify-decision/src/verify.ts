@@ -57,7 +57,7 @@ export interface Run {
 /** A grade or ruling decided by a panel, as its record states it. */
 export interface PanelReport {
   rule: string;
-  /** Every member that answered, Jev first, with its probability of paying. */
+  /** Every member that answered, the decision model first, with its probability of paying. */
   judges: { model: string; paid: number }[];
   degraded: boolean;
   /** When degraded: the members the panel decided without, and what it then had to put on paying to pay. */
