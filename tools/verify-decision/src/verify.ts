@@ -1372,7 +1372,8 @@ const hostOf = (uri: string): string | undefined => (/^https?:\/\//i.test(uri) &
 /**
  * The brain's evidenceHash (evidence.ts): inputHash as the chain holds it, Jev's
  * answer, each other judge's answer with the receipt its gateway signed, the
- * payments and the versions. None of it is withheld with the work.
+ * payments and the versions; since version 2 also the panel's rule, the pass
+ * level and how the brief's checks ran. None of it is withheld with the work.
  */
 function evidenceOf(record: Published, inputHash: Hex, version: 1 | 2): Hex | undefined {
   try {
@@ -1388,6 +1389,7 @@ function evidenceOf(record: Published, inputHash: Hex, version: 1 | 2): Hex | un
       versions: record.versions,
       ...(version === 2 && panel ? { panel: { rule: panel.rule, ...(panel.degraded !== undefined ? { degraded: panel.degraded } : {}) } } : {}),
       ...(version === 2 && record.passFrom !== undefined ? { passFrom: record.passFrom } : {}),
+      ...(version === 2 && record.checks !== undefined ? { checks: record.checks } : {}),
     };
     return keccak256(toBytes(canonicalStringify(evidence)));
   } catch (error) {
@@ -1399,7 +1401,7 @@ function evidenceOf(record: Published, inputHash: Hex, version: 1 | 2): Hex | un
 
 const EVIDENCE_COVERS = {
   1: "the hash over inputHash, every judge's answer and receipt, the payments and the versions",
-  2: "the hash over inputHash, every judge's answer and receipt, the payments, the versions, the panel's rule and the pass level",
+  2: "the hash over inputHash, every judge's answer and receipt, the payments, the versions, the panel's rule, the pass level and the checks",
 } as const;
 
 /** The evidence hash a Recorded event's payloadURI carries after #evidence=, written with the decision; null for any other fragment. */
@@ -1417,12 +1419,12 @@ function checkEvidence(c: Checks, record: Published, inputHash: Hex, uri: string
   if (anchor === null) return fail("the Recorded event's payloadURI ends in a fragment other than #evidence= and a hash");
   if (anchor === undefined && record.evidence === undefined) return undefined;
   const kept = typeof record.evidence === "string" ? record.evidence.toLowerCase() : undefined;
-  // Version 2 also hashes the panel's rule and the pass level. The chain's hash says which version a record was decided under: a copy cannot match the other.
+  // Version 2 also hashes the panel's rule, the pass level and the checks. The chain's hash says which version a record was decided under: a copy cannot match the other.
   const byVersion = ([2, 1] as const).map((version) => ({ version, hash: evidenceOf(record, inputHash, version) }));
   if (byVersion.some(({ hash }) => !hash)) return fail("the record's judges, payments or versions are not as the brain records them, so its evidence hash cannot be rebuilt");
   const target = anchor ?? kept;
   const { version, hash: recomputed } = byVersion.find(({ hash }) => hash === target) ?? byVersion[0]!;
-  const over = `${EVIDENCE_COVERS[version]} is ${short(recomputed!)}${version === 1 ? " (evidence version 1, from before the panel's rule and the pass level were hashed)" : ""}`;
+  const over = `${EVIDENCE_COVERS[version]} is ${short(recomputed!)}${version === 1 ? " (evidence version 1, from before the panel's rule, the pass level and the checks were hashed)" : ""}`;
   if (anchor === undefined) {
     c.check("evidence", recomputed === kept, `evidence: ${over}, as recorded`, `evidence: ${over}, not the record's ${short(String(record.evidence))}`);
     return undefined;
