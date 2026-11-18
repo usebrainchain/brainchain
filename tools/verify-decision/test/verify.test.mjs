@@ -181,6 +181,8 @@ function onChain({
   bps = 9000,
   publish = grade(),
   serve,
+  // What the host answers with, such as 403 for a record on an exam item still in use.
+  code = 200,
   withheld = false,
   task = {},
   bar = 7000,
@@ -206,7 +208,7 @@ function onChain({
   const original = JSON.stringify(publish);
   const served = serve === undefined ? original : typeof serve === "string" ? serve : JSON.stringify(serve);
   const name = `/record-${pages.size}.json`;
-  pages.set(name, { body: served, headers: withheld ? { "x-brainchain-withheld": "result" } : {} });
+  pages.set(name, { status: code, body: served, headers: withheld ? { "x-brainchain-withheld": "result" } : {} });
   const decision = { kind, subject, inputHash: keccak256(toBytes(canonicalStringify(publish.request))), answer, confidenceBps: bps, recordedAt: 1793000000n };
   const on = { poster: STRANGER, status: Status.Graded, accepted: false, hireThresholdBps: 5000, gradeThresholdBps: bar, ruleThresholdBps: 7000, ...task };
   const client = {
@@ -1920,6 +1922,27 @@ describe("records", () => {
     assert.equal(status(other, "fetch"), "fail");
     assert.match(check(other, "fetch").message, /is not a decision record$/);
     assert.equal(outcomeOf([other]), "mismatch");
+  });
+
+  it("are an error with the host's reason when it refuses one, and say when an exam decision opens", async () => {
+    // records.ts answers this for a record on an exam item still in use.
+    const SEALED = "This record is on an exam item still in use. It opens when the item retires; its hash on chain already commits to it.";
+    const sealed = await verify({ code: 403, serve: { error: SEALED } });
+    assert.deepEqual(sealed.checks.map((c) => `${c.name} ${c.status}`), ["read ok", "fetch error"]);
+    assert.match(
+      check(sealed, "fetch").message,
+      /^could not fetch the record: http:\S+ answered with status 403: This record is on an exam item still in use\. It opens when the item retires; its hash on chain already commits to it\. An exam decision becomes verifiable once its item is published$/,
+    );
+    assert.equal(outcomeOf([sealed]), "unverified");
+
+    // A refusal with no reason in it, such as a proxy's page, still says when an exam decision opens.
+    const bare = await verify({ code: 403, serve: "<html>Forbidden</html>" });
+    assert.match(check(bare, "fetch").message, /answered with status 403\. An exam decision becomes verifiable once its item is published$/);
+    // Any other error carries the host's reason, cleaned and cut short, and nothing about exams.
+    const down = await verify({ code: 400, serve: { error: `Try again shortly.\u001b[2J${"x".repeat(400)}` } });
+    assert.match(check(down, "fetch").message, /answered with status 400: Try again shortly\.\?\[2Jx+…$/);
+    assert.ok(check(down, "fetch").message.length < 500);
+    assert.doesNotMatch(check(down, "fetch").message, /exam/);
   });
 
   it("are an error, not a mismatch, when the host is out of reach or too large", async () => {

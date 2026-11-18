@@ -510,6 +510,9 @@ class TooLarge extends Refused {}
 /** A host that answered 404, which for a receipt means it has not been signed yet. */
 class NotFound extends Error {}
 
+/** A host that answered 403. The brain host refuses a record on an exam item still in use, which would give the item away. */
+class Forbidden extends Error {}
+
 /** Not there to check: a host's 404, or a location the tool will not read. A host that fails to answer, or sends too much, is a check that could not run. */
 const absent = (error: unknown): boolean => error instanceof NotFound || (error instanceof Refused && !(error instanceof TooLarge));
 
@@ -614,8 +617,23 @@ async function readBytes(uri: string, url: URL, wanted: Wanted, deadline: AbortS
     const gone = wanted.what === "network manifest" ? "the host has none" : `the host has no ${wanted.what} at this address`;
     throw new NotFound(`${display(uri)} answered with status 404: ${gone}`);
   }
-  if (response.status < 200 || response.status >= 300) throw new Error(`${display(uri)} answered with status ${response.status}`);
+  if (response.status < 200 || response.status >= 300) {
+    const said = reasonIn(response.bytes);
+    const message = `${display(uri)} answered with status ${response.status}${said ? `: ${said}` : ""}`;
+    throw response.status === 403 ? new Forbidden(message) : new Error(message);
+  }
   return { bytes: response.bytes, withheld: response.withheld };
+}
+
+const MAX_REASON = 300;
+
+/** The reason the brain host gives with an error, as `{ "error": "..." }`. Anything else, such as a proxy's page, says nothing worth printing. */
+function reasonIn(bytes: Uint8Array): string | undefined {
+  const text = decodeText(bytes);
+  const error = (text === undefined ? undefined : (parseJson(text) as { error?: unknown } | null | undefined))?.error;
+  if (typeof error !== "string") return undefined;
+  const said = clean(error).trim().replace(/\.$/, "");
+  return said === "" ? undefined : said.length > MAX_REASON ? `${said.slice(0, MAX_REASON - 1)}…` : said;
 }
 
 async function fetchBytes(uri: string, wanted: Wanted): Promise<Fetched> {
@@ -746,7 +764,8 @@ export async function verifyDecision(ctx: Context, id: bigint, receipt?: GivenRe
   try {
     fetched = await fetchBytes(location, { what: "record", limit: MAX_RECORD_BYTES, allowPrivate: await allowsPrivate(client) });
   } catch (error) {
-    c.add("fetch", "error", `could not fetch the record: ${errorMessage(error)}`);
+    const sealed = error instanceof Forbidden ? ". An exam decision becomes verifiable once its item is published" : "";
+    c.add("fetch", "error", `could not fetch the record: ${errorMessage(error)}${sealed}`);
     return report;
   }
   const text = decodeText(fetched.bytes);

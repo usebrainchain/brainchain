@@ -24,6 +24,7 @@ Changes to `brainchain-verify`, the npm package built from this directory. The f
 - The `entry` check takes `licence:<class>` as a second tag beside `task`.
 - `summary.withReceipt` counts an entry that points at a record entry only when that record entry names a receipt.
 - `withheld`, `threshold` and `receipt-outcome`: a line about a decision's recorded answer now says BrainChain answered, because a panel can give that answer.
+- A host that answers with an error and a reason, as `{ "error": "..." }`, has its reason on the `ERROR` line. A 403 for a record, which the brain host sends for an exam decision while its item is still in use, also says that the decision becomes verifiable once its item is published.
 
 An entry that points straight at a receipt, and every decision and receipt, verify exactly as in 0.7.1.
 
