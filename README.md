@@ -44,6 +44,8 @@ These contracts are in this repository but not deployed yet:
 
 [`CappedTransferModule`](src/safe/CappedTransferModule.sol), a Safe module for capped top-ups ([docs/operator-roles.md](docs/operator-roles.md)), has one copy live: it tops up the wallet that pays for BrainChain's reviews of its own pull requests, from the treasury Safe on Robinhood Chain, at most 3 USDG a day. The desk's copies are not deployed yet.
 
+[`FeeShareModule`](src/safe/FeeShareModule.sol), a Safe module that passes the treasury Safe's share of $BRAIN's trading fee into locked liquidity ([docs/operator-roles.md](docs/operator-roles.md#passing-the-liquidity-share-to-the-lock)), is not deployed yet.
+
 The contracts have not had an external audit.
 
 ## How it works
