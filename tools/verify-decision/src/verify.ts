@@ -1975,7 +1975,7 @@ export interface EntryReport {
   task?: number;
   board?: Address;
   set?: string;
-  /** The entry of the agent's record that feedbackURI serves, as the brain key signed it. Entries from before agents' records point straight at a receipt and have none. */
+  /** The entry of the agent's record that feedbackURI serves, as it reads. The checks say whether the brain key signed it. Entries from before agents' records point straight at a receipt and have none. */
   record?: { seq: number; kind: RecordKind; outcome: RecordOutcome; ref: string; receipt?: string };
   /** The decision the entry's receipt names, checked with the receipt. Its checks are among the entry's. */
   decision?: DecisionReport & { set: string };

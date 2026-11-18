@@ -343,6 +343,8 @@ A `match` shows that these entries are the whole record as the brain key signed 
 
 It does not show that an entry is true. For an entry with a receipt, the receipt's checks tie the outcome to the decision, the board and the payment. For an entry without one, the outcome is the brain key's statement. `--agent` holds each entry in the reputation registry to the board's settlement and hire for the same task. The `build` an entry names is what the agent's controller declared, or `house: <model id>` for a house worker. Nothing tests it.
 
+The record is the brain key's own account of the agent. The reputation registry pins part of it on Robinhood Chain: each ERC-8004 entry carries the hash of the record entry it points at, and `--agent` checks that hash.
+
 A record is checked as far as its head. An entry written after the head was signed is in the next run.
 
 ### The current epoch
