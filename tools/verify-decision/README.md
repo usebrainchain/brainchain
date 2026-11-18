@@ -148,7 +148,12 @@ A panel of three can decide without a member that stopped answering. `panel.degr
 
 A record made since BrainChain kept evidence has three more fields. `versions` names the version of the questions Jev was asked, the key that recorded the decision, and the enclave image and app the DecisionLog attested that key for. `payments` lists what an agent paid for the job through BrainChain. `evidence` is one hash over what the decision rests on. A record made before has none of the three and is checked as it always was.
 
-`evidence` is the `keccak256` of `{ input, judges, payments, versions }` in canonical form. `input` is the decision's `inputHash` on chain, in lowercase. `judges` is Jev's `{ model, probabilities }`, then `second` and each entry of `panel.judges` as `{ model, probabilities, requestHash, receipt }`. `payments` is the record's, or `[]`. None of these parts is withheld with the work, so the hash is rebuilt on a copy served without it too.
+`evidence` is the `keccak256` of an object in canonical form, in one of two versions:
+
+- Version 1 is `{ input, judges, payments, versions }`. `input` is the decision's `inputHash` on chain, in lowercase. `judges` is Jev's `{ model, probabilities }`, then `second` and each entry of `panel.judges` as `{ model, probabilities, requestHash, receipt }`. `payments` is the record's, or `[]`.
+- Version 2 is `{ version: 2, input, judges, payments, versions }` with the same parts, and three more where the record has them. `panel` is `{ rule }`, the record's `panel.rule`, with the record's `panel.degraded` beside it when the panel decided without a member. `passFrom` is the grade's pass level. `checks` is how the brief's checks ran, `passed` or `failed`. A copy served without the work then cannot name another rule, bar, pass level or outcome of the checks than the decision was made on.
+
+None of these parts is withheld with the work, so the hash is rebuilt on a copy served without it too. The tool rebuilds both versions and holds the record to the one the chain carries, as below, so a record made under version 2 cannot pass as version 1. The `evidence` line says when a record is version 1.
 
 The chain holds the hash too. A decision's `payloadURI` in its `Recorded` event ends in `#evidence=` and the hash, written in the same transaction as the decision. The rebuilt hash and the record's `evidence` must both equal it, and a `payloadURI` with any other fragment fails. The tool fetches the record without the fragment, as every HTTP client does, so the location names the same file. A decision recorded before the hash went on chain has no fragment, and its rebuilt hash is held to the record's own field.
 
@@ -156,14 +161,19 @@ The chain holds the hash too. A decision's `payloadURI` in its `Recorded` event 
 
 ### Receipts
 
-Every job an agent pays BrainChain for gets a receipt, signed by the key that records decisions. A paid grade gets one once BrainChain decides it. A paid task gets one once the board pays or refunds it, for the grade or ruling it settled on. Receipts come with a brain release that is not yet live on mainnet, so no record there carries one yet, and records from before that release never will. The receipt is EIP-712 under the domain `BrainChain receipt`, version 1, on the DecisionLog, in the envelope of the x402 offer-and-receipt extension (version 0.6): `{ format, payload, signature }`.
+Every job an agent pays BrainChain for gets a receipt, signed by the key that records decisions. A paid grade gets one once BrainChain decides it. A paid task gets one once the board pays or refunds it, for the grade or ruling it settled on. Records from before receipts have none. The receipt is EIP-712 under the domain `BrainChain receipt` on the DecisionLog and BrainChain's chain id, in the envelope of the x402 offer-and-receipt extension (version 0.6): `{ format, payload, signature }`. The payload's `version` is also the domain's version:
+
+- Version 1 signs `version`, `chainId`, `decisionLog`, `decision`, `brain`, `evidence`, `job`, `outcome`, `network`, `payer`, `asset`, `amount`, `transaction` and `issuedAt`, under domain version "1".
+- Version 2 also signs `subject`, the decision's subject on the log as a `bytes32`, after `decision`, under domain version "2". It names the task or the paid grade the receipt is for.
+
+A version 2 receipt without a subject, or a version 1 receipt with one, is not a receipt BrainChain signs.
 
 For a grade or ruling whose record has a `payments` field, the tool asks the host that serves the record for its receipt at `/receipts/<DecisionLog in lowercase>/<decision id>.json`. A record without one, as every record from before receipts is, gets no receipt line. A host that has none yet is a `skip`. A host that does not answer, or answers with an error, is an `ERROR`. `--offline` turns this off, and `--receipt` checks a receipt you kept instead.
 
 On a receipt, the tool checks that:
 
 - the signature recovers to the account that sent the decision's `Recorded` transaction, and `payload.brain` names it. The key comes from the transaction, so a receipt still checks after a release names a new key in `brain()`.
-- `chainId`, `decisionLog`, `decision` and `evidence` are this chain, this DecisionLog, this decision and the record's evidence hash.
+- `chainId`, `decisionLog`, `decision` and `evidence` are this chain, this DecisionLog, this decision and the record's evidence hash. On a version 2 receipt, `subject` is the decision's subject on the log.
 - for a task, the board paid it for `accepted` and refunded it for `rejected`, and the last grade or ruling it applied is this decision. For a paid grade, `accepted` means accept at or above the board's grade bar when the decision was recorded.
 - `network`, `asset`, `amount`, `payer` and `transaction` are those of a payment in the record, and on that network the transaction moved `amount` of `asset` from `payer` to the desk. The desk is the `payTo` for that network in the brain host's `/network.json`, which the tool believes only when `brain()` on the active DecisionLog signed it. A desk's former addresses count on EVM networks.
 

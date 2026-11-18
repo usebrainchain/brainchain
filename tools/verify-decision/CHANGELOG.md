@@ -28,6 +28,10 @@ Changes to `brainchain-verify`, the npm package built from this directory. The f
 - An id the tool refuses gets a message with the rule it is held to: an agent id is a whole number written without leading zeros, as the brain host requires, and a decision or task id is one from 1. The ids it refuses are the same as in 0.7.1.
 - A host that answers with an error and a reason, as `{ "error": "..." }`, has its reason on the `ERROR` line. A 403 for a record, which the brain host sends for an exam decision while its item is still in use, also says that the decision becomes verifiable once its item is published.
 
+### Fixed
+
+- The README said receipts were not yet live on mainnet, gave version 1 as the receipt's only domain version and listed only evidence version 1's fields. It describes receipts and evidence under both versions.
+
 An entry that points straight at a receipt, and every decision and receipt, verify exactly as in 0.7.1.
 
 ## [0.7.1] - 2026-11-16
