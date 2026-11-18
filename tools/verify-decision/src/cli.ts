@@ -96,6 +96,8 @@ const TRUST_MODEL = "https://docs.usebrainchain.com/trust-model";
 const NOT_CHECKED = "That Jev produced the answer. BrainChain records Jev's answers, and the contracts bound what a recorded answer can do.";
 // Sets before 3.0.0 named tasks by id alone, which the subject check does not model, so the package carries none.
 const BEFORE_3 = /^(v2(-|$)|2\.|0x83b31d99fa31a9e5257955a737ef34c40f1c57bf$)/i;
+// The brain host answers 400 for any other spelling of an id, so the tool refuses it with the same rule.
+const AGENT_ID = "An agent id is a whole number written without leading zeros";
 
 // Only a command line of the wrong shape gets the usage. A value that names nothing the tool can read gets a message that says what would.
 function usage(message: string): never {
@@ -173,7 +175,7 @@ if (registryRpcArg !== undefined && !reputation && !readsRegistry) usage(recordA
 if (entryArg !== undefined && agentArg !== undefined) usage("Name one entry with --entry, or an agent with --agent");
 if (!reputation && !hosted && taskArg === undefined && idArg === undefined && receiptArg === undefined) usage("Name a decision id, a task with --task, or an entry with --entry");
 const given = taskArg ?? idArg;
-if (given !== undefined && !/^[1-9]\d*$/.test(given)) fail(`${taskArg === undefined ? "A decision" : "A task"} id is a whole number from 1`, 2);
+if (given !== undefined && !/^[1-9]\d*$/.test(given)) fail(`${taskArg === undefined ? "A decision" : "A task"} id is a whole number from 1, written without leading zeros`, 2);
 
 const foundNetwork = Object.hasOwn(NETWORKS, networkArg)
   ? NETWORKS[networkArg as keyof typeof NETWORKS]
@@ -375,7 +377,7 @@ async function checkEntries(): Promise<never> {
   const ctx: Context = { client, network, set: network.sets[0]!, briefs: new Map() };
   if (entryArg !== undefined) {
     const parts = /^(0|[1-9]\d{0,77}):(?:(0x[0-9a-fA-F]{40}):)?([1-9]\d{0,19})$/.exec(entryArg);
-    if (!parts) fail("An entry is <agentId>:<feedbackIndex>, or <agentId>:<writer>:<feedbackIndex> for one BrainChain wrote from an earlier address", 2);
+    if (!parts) fail("An entry is <agentId>:<feedbackIndex>, or <agentId>:<writer>:<feedbackIndex> for one BrainChain wrote from an earlier address, with each number written without leading zeros", 2);
     const named = parts[2];
     const writer = named === undefined ? current : registry.writers.find((w) => w.toLowerCase() === named.toLowerCase());
     if (!writer) fail(`BrainChain writes its entries from ${registry.writers.join(" and ")}, not ${named}`, 2);
@@ -395,7 +397,7 @@ async function checkEntries(): Promise<never> {
       fail(errorMessage(error));
     }
   }
-  if (!/^(0|[1-9]\d{0,77})$/.test(agentArg!)) fail("An agent id is a whole number", 2);
+  if (!/^(0|[1-9]\d{0,77})$/.test(agentArg!)) fail(AGENT_ID, 2);
   const agentId = BigInt(agentArg!);
   try {
     await sameChain(registry);
@@ -494,7 +496,7 @@ async function checkHosted(): Promise<never> {
   }
 
   const asked = (recordArg ?? licenceArg ?? papersArg)!;
-  if (!/^(0|[1-9]\d{0,77})$/.test(asked)) fail("An agent id is a whole number", 2);
+  if (!/^(0|[1-9]\d{0,77})$/.test(asked)) fail(AGENT_ID, 2);
   const agentId = BigInt(asked);
   const { name, rpc, ...identity } = known.identity;
   const registry = readsRegistry ? { client: createPublicClient({ transport: rpcTransport(name, registryRpcArg ?? rpc) }), chainId: identity.chainId } : undefined;

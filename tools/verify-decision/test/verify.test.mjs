@@ -3115,7 +3115,10 @@ describe("the command line", () => {
       if (shape.includes(args)) assert.match(asText.stderr, /^[^\n]+\n\nUsage:\n/, args.join(" "));
       else assert.match(asText.stderr, /^[^\n]+\n$/, args.join(" "));
     }
-    assert.equal(run("mainnet", "--record", "x").stderr, "An agent id is a whole number\n");
+    for (const id of ["x", "0501", "0x1f5", "1e3"]) assert.equal(run("mainnet", "--record", id).stderr, "An agent id is a whole number written without leading zeros\n", id);
+    assert.equal(run("mainnet", "--agent", "007").stderr, "An agent id is a whole number written without leading zeros\n");
+    assert.match(run("mainnet", "--entry", "0501:1").stderr, /, with each number written without leading zeros\n$/);
+    assert.equal(run("mainnet", "01").stderr, "A decision id is a whole number from 1, written without leading zeros\n");
     assert.equal(run("mainnet", "--item", "0x12").stderr, "An item id is 0x and 64 hex digits\n");
     assert.match(run("mainnet", "--record", "1", "--registry-rpc", "https://x.invalid").stderr, /^With --record, --registry-rpc is read only with --epoch\n/);
     assert.match(run("mainnet", "--papers", "1", "--registry-rpc", "https://x.invalid").stderr, /^--registry-rpc is for --entry, --agent, --licence and --record with --epoch\n/);
