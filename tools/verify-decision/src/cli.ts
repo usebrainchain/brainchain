@@ -95,8 +95,8 @@ about an agent the same way: its record, licences and papers. Needs no keys.
   --json         one JSON object on stdout
   --version      print the version
 
-Exit status: 0 when every check that could run matches, 1 on a mismatch or when
-a decision or its record cannot be read, 2 on bad arguments.`;
+Exit status: 0 when every check that could run matches, 1 on a mismatch, on
+stale papers or when a decision or its record cannot be read, 2 on bad arguments.`;
 
 const TRUST_MODEL = "https://docs.usebrainchain.com/trust-model";
 const NOT_CHECKED = "That Jev produced the answer. BrainChain records Jev's answers, and the contracts bound what a recorded answer can do.";
