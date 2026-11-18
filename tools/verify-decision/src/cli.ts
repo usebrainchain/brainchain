@@ -511,7 +511,7 @@ async function checkHosted(): Promise<never> {
         if (wrong.length === 0) continue;
         lines.push("", `Entry ${receipt.seq}'s receipt, ${receipt.path}${receipt.decision ? `, with decision ${receipt.decision.id} in set ${receipt.decision.set}` : ""}`, ...wrong.map(line));
       }
-      if (r.epochs.length > 0) lines.push("", "Epochs in the record", ...r.epochs.map((e) => `${epochLine(e)}${r.current?.id === e.id.toLowerCase() ? ". The identity registry gives this epoch now" : ""}`));
+      if (r.epochs.length > 0) lines.push("", "Epochs in the record", ...r.epochs.map((e) => `${epochLine(e)}${r.current?.id === e.id.toLowerCase() ? ". The agent's id is in this epoch now" : ""}`));
       reportHosted({
         header: `Agent ${agentId}'s record ${on} ${r.url}`,
         checks,

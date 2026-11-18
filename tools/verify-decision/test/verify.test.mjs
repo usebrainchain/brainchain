@@ -2212,13 +2212,13 @@ describe("an agent's record", () => {
     const report = await asked({ build: " worker-2\n" });
     assert.deepEqual(lines(report), [...WHOLE, "current-epoch ok"]);
     assert.equal(check(report, "current-epoch").message, `current epoch: the identity registry gives controller ${brief(HOLDER)} and the build "worker-2", which is epoch ${brief(id)}. 2 of 3 entries belong to it: entries 2 to 3`);
-    assert.deepEqual(report.current, { id, controller: HOLDER, build: "worker-2", entries: [{ from: 2, to: 3 }] });
+    assert.deepEqual(report.current, { id, controller: HOLDER, build: "worker-2", buildFrom: "registry", entries: [{ from: 2, to: 3 }] });
 
     // An id a binding adapter owns belongs to whoever holds the NFT it is bound to.
     const TOKEN = "0x00000000000000000000000000000000000000b5";
     const bound = await asked({ owner: ADAPTER, binding: [0, TOKEN, 9n], holder: HOLDER, build: "worker-2" });
     assert.equal(check(bound, "current-epoch").message, `current epoch: the identity registry gives controller ${brief(HOLDER)}, who holds token 9 of ${brief(TOKEN)}, which the id is bound to, and the build "worker-2", which is epoch ${brief(id)}. 2 of 3 entries belong to it: entries 2 to 3`);
-    assert.deepEqual(bound.current.bound, { token: TOKEN, tokenId: "9" });
+    assert.deepEqual(bound.current, { id, controller: HOLDER, build: "worker-2", bound: { token: TOKEN, tokenId: "9" }, buildFrom: "registry", entries: [{ from: 2, to: 3 }] });
     // An adapter the tool does not list is an owner like any other.
     const unlisted = await asked({ owner: ADAPTER, build: "worker-2" }, { adapters: [] });
     assert.equal(unlisted.current.controller, getAddress(ADAPTER));
@@ -2226,6 +2226,10 @@ describe("an agent's record", () => {
 
     const moved = await asked({ owner: STRANGER, build: "" });
     assert.equal(check(moved, "current-epoch").message, `current epoch: the identity registry gives controller 0x4444…4444 and no build, which is epoch ${brief(epochOf(AGENT, STRANGER, ""))}. None of the 3 entries belongs to it`);
+    // A build the agent declared is held to the registry's metadata: with none there now, no entry is in the id's epoch.
+    const cleared = await asked({ build: "" });
+    assert.equal(check(cleared, "current-epoch").message, `current epoch: the identity registry gives controller ${brief(HOLDER)} and no build, which is epoch ${brief(epochOf(AGENT, HOLDER, ""))}. None of the 3 entries belongs to it`);
+    assert.equal(cleared.current.buildFrom, "registry");
 
     // No single account: an id that does not exist, a token nobody holds, a standard other than ERC-721.
     for (const registry of [{ owner: null }, { owner: ADAPTER, binding: [0, TOKEN, 9n] }, { owner: ADAPTER, binding: [1, TOKEN, 9n], holder: HOLDER }]) {
@@ -2240,12 +2244,30 @@ describe("an agent's record", () => {
     assert.equal(outcomeOf([down]), "unverified");
     assert.equal(status(await served(entries, head, { options: { epoch: true } }), "current-epoch"), "skip");
 
-    // A house worker's entries carry the build BrainChain runs it as, which the registry does not hold.
-    const house = await recordOf([{ build: "house: anthropic/claude" }, { build: "house: anthropic/claude", controller: STRANGER }]);
-    listRecord(house, await recordHead(house[1]));
-    const worker = await verifyRecord(onChain({ sets: [set] }), brainHost({ client: identityChain({ build: "" }), house: { 501: "claude" } }), 501n, { epoch: true });
-    assert.match(check(worker, "current-epoch").message, /None of the 2 entries belongs to it\. Agent 501 is the house worker claude: BrainChain signs a house worker's entries under the build it runs it as, which the registry does not hold, so they fall outside this epoch\. 1 names the current controller$/);
-    assert.deepEqual(worker.current.sameController, [{ from: 1, to: 1 }]);
+    // An agent BrainChain runs itself: its build is the model BrainChain says it runs it on, whatever the registry's metadata holds.
+    const MODEL = "house: anthropic/claude-sonnet-5.5";
+    const run = await recordOf([{ build: "house: anthropic/claude-sonnet-5" }, { build: MODEL }, { build: MODEL }]);
+    listRecord(run, await recordHead(run[2]));
+    const house = (registry) => verifyRecord(onChain({ sets: [set] }), brainHost({ client: identityChain(registry) }), 501n, { epoch: true });
+    const own = epochOf(AGENT, HOLDER, MODEL);
+    const worker = await house({ build: "" });
+    assert.equal(
+      check(worker, "current-epoch").message,
+      `current epoch: the identity registry gives controller ${brief(HOLDER)} and no build. The newest entry's build, "${MODEL}", is BrainChain's own statement of the model it runs this agent on, which the registry does not hold. For such a build the controller alone is compared with the registry, which gives epoch ${brief(own)}. 2 of 3 entries belong to it: entries 2 to 3`,
+    );
+    assert.deepEqual(worker.current, { id: own, controller: HOLDER, build: MODEL, buildFrom: "record", registryBuild: "", entries: [{ from: 2, to: 3 }] });
+    // What the registry's metadata holds for such an id is shown and does not count.
+    const labelled = await house({ build: "v2" });
+    assert.match(check(labelled, "current-epoch").message, /^current epoch: the identity registry gives controller 0x\w{4}…\w{4} and the build "v2"\. The newest entry's build, /);
+    assert.deepEqual([labelled.current.registryBuild, labelled.current.entries], ["v2", [{ from: 2, to: 3 }]]);
+    // The controller is still the registry's to say: under another, no entry is in the id's epoch.
+    const sold = await house({ owner: STRANGER, build: "" });
+    assert.match(check(sold, "current-epoch").message, /which gives epoch 0x\w{4}…\w{4}\. None of the 3 entries belongs to it$/);
+    assert.deepEqual(sold.current.entries, []);
+    // A registry that holds the very build is read as any other.
+    const held = await house({ build: MODEL });
+    assert.equal(check(held, "current-epoch").message, `current epoch: the identity registry gives controller ${brief(HOLDER)} and the build "${MODEL}", which is epoch ${brief(own)}. 2 of 3 entries belong to it: entries 2 to 3`);
+    assert.equal(held.current.buildFrom, "registry");
 
     assert.deepEqual(await currentEpoch(identityChain({ build: `${"b".repeat(100)}é` }), { ...AGENT, adapters: [] }, 501n), { id: epochOf(AGENT, HOLDER, "b".repeat(96)), controller: HOLDER, build: "b".repeat(96) });
   });
@@ -2296,17 +2318,21 @@ describe("an agent's licences", () => {
     const report = await held(signed, "expired");
     assert.deepEqual(lines(report), GOOD);
     assert.equal(check(report, "licence-expiry").message, `expiry: expired ${at(NOW - 3 * 3_600)}, 3 hours ago`);
-    assert.equal(check(report, "licence-state").message, "state: expired, as the host says: it is past its expiry");
+    assert.equal(check(report, "licence-state").message, "state: expired, as the host says: it is past its expiry, whatever else was true of it");
     assert.equal(report.state, "expired");
 
     const claimed = await held(signed, "valid");
     assert.deepEqual(failed(claimed), ["licence-state"]);
-    assert.equal(check(claimed, "licence-state").message, "state: the host says valid, and the checks give expired: it is past its expiry");
+    assert.equal(check(claimed, "licence-state").message, "state: the host says valid, and the checks give expired: it is past its expiry, whatever else was true of it");
     assert.equal(claimed.state, "expired");
-    // The host stops reading an expired licence's epoch, so one that lapsed first keeps that name, and one whose id moved on later is still expired.
-    assert.deepEqual(failed(await held(signed, "lapsed", { registry: { owner: STRANGER } })), []);
+    // An expiry is final: past it, a licence whose id moved on, or that was suspended, is expired and nothing else.
     assert.deepEqual(failed(await held(signed, "expired", { registry: { owner: STRANGER } })), []);
-    assert.deepEqual(failed(await held(signed, "lapsed")), ["licence-state"]);
+    for (const state of ["lapsed", "suspended"]) {
+      const named = await held(signed, state, { registry: { owner: STRANGER } });
+      assert.deepEqual(failed(named), ["licence-state"]);
+      assert.equal(check(named, "licence-state").message, `state: the host says ${state}, and the checks give expired: it is past its expiry, whatever else was true of it`);
+      assert.equal(named.state, "expired");
+    }
     // An unexpired licence the host calls expired.
     assert.deepEqual(failed(await held(await licence(), "expired")), ["licence-state"]);
   });
@@ -2322,13 +2348,45 @@ describe("an agent's licences", () => {
     assert.deepEqual(failed(rebuilt), ["licence-state"]);
     assert.equal(
       check(rebuilt, "licence-state").message,
-      "state: the host says valid, and the checks give lapsed: the agent's id is in another epoch than the one it was earned in. The host reads the registry every few minutes, so a change made since its last reading does not show there yet",
+      "state: the host says valid, and the checks give lapsed: the agent's id is in another epoch than the one it was earned in. The host reads each id's epoch every ten minutes, so its state can trail the registry by that long",
     );
     assert.equal(rebuilt.state, "lapsed");
     const gone = await held(signed, "lapsed", { registry: { owner: null } });
     assert.equal(check(gone, "licence-epoch").message, `epoch: no single account controls agent 501 on the identity registry now, so the licence, earned under controller ${brief(HOLDER)} and the build "worker-1", has lapsed`);
     // The id is back in the licence's epoch, and the host has not read it yet.
-    assert.deepEqual(failed(await held(signed, "lapsed")), ["licence-state"]);
+    const back = await held(signed, "lapsed");
+    assert.deepEqual(failed(back), ["licence-state"]);
+    assert.equal(
+      check(back, "licence-state").message,
+      "state: the host says lapsed, and the checks give valid: it has not expired and the id is in the epoch it was earned in. The host reads each id's epoch every ten minutes, so its state can trail the registry by that long",
+    );
+    // A suspension comes before a lapse, and only the host knows of one.
+    assert.deepEqual(failed(await held(signed, "suspended", { registry: { owner: STRANGER } })), []);
+  });
+
+  it("hold a licence whose build BrainChain states itself to the registry's controller alone", async () => {
+    const MODEL = "house: anthropic/claude-sonnet-5.5";
+    const signed = await licence({ build: MODEL });
+    // The registry holds no build for an agent BrainChain runs itself.
+    const report = await held(signed, "valid", { registry: { build: "" } });
+    assert.deepEqual(lines(report), GOOD);
+    assert.equal(
+      check(report, "licence-epoch").message,
+      `epoch: the identity registry gives controller ${brief(HOLDER)} now, the one the licence was earned under. Its build, "${MODEL}", is BrainChain's own statement of the model it runs this agent on, which the registry does not hold, so a change of model does not show here`,
+    );
+    assert.equal(
+      check(report, "licence-state").message,
+      "state: valid, as the host says: it has not expired and the id's controller is the one it was earned under. A change of the model BrainChain runs the agent on would end the epoch too, and the registry does not show one",
+    );
+    // BrainChain has moved the agent to another model: only the host can say so.
+    assert.deepEqual(failed(await held(signed, "lapsed", { registry: { build: "" } })), []);
+    // Another controller shows on the registry, whatever the build.
+    const sold = await held(signed, "valid", { registry: { owner: STRANGER, build: "" } });
+    assert.deepEqual(failed(sold), ["licence-state"]);
+    assert.equal(check(sold, "licence-epoch").message, `epoch: the identity registry gives controller 0x4444…4444 and no build now. The licence was earned under controller ${brief(HOLDER)} and the build "${MODEL}", so it has lapsed`);
+    assert.deepEqual(failed(await held(signed, "lapsed", { registry: { owner: STRANGER, build: "" } })), []);
+    // Any other build is held to the registry's metadata as before.
+    assert.deepEqual(failed(await held(await licence(), "valid", { registry: { build: "" } })), ["licence-state"]);
   });
 
   it("fail a signature that is not the brain's, and a licence that is not this agent's", async () => {
@@ -2863,7 +2921,7 @@ describe("the command line", () => {
         "",
       ]);
       assert.match(record.stdout, new RegExp(`\\n {2}ok {4}brain: ${brief(BRAIN.address)} was the brain of DecisionLog 0x2EF5…cB68 \\(set v3-5\\) when it signed entries 1 to 2; `));
-      assert.match(record.stdout, / UTC\): task 1 accepted, 1 rejected\. The identity registry gives this epoch now\n/);
+      assert.match(record.stdout, / UTC\): task 1 accepted, 1 rejected\. The agent's id is in this epoch now\n/);
       assert.match(record.stdout, /\nVerdict: match\. The record is whole: 2 entries, chained from the first to a head the brain key signed at \S+ \S+ UTC, each signed by a key its DecisionLog named its brain\.\nNot checked: that an entry without a receipt states what the board did, or that the agent runs the build its entries name\. See https:\/\/docs\.usebrainchain\.com\/trust-model\n$/);
 
       const asJson = JSON.parse((await runAsync("mainnet", "--record", "501", ...host, "--json")).stdout);

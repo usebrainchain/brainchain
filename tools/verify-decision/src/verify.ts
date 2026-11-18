@@ -2437,8 +2437,6 @@ export interface Identity {
   registry?: Address;
   /** Binding adapters on that chain. An id one of them owns is bound to an NFT, and whoever holds the NFT controls it. */
   adapters: readonly Address[];
-  /** House workers by agent id. BrainChain signs their entries under the build it runs them as, which the registry does not hold. */
-  house?: Readonly<Record<string, string>>;
   /** Reads that chain. Without it, nothing that needs the registry is checked. */
   client?: PublicClient;
 }
@@ -2456,7 +2454,7 @@ export interface Service {
 export const SERVICES: Readonly<Record<number, { url: string; identity: Omit<Identity, "client"> & { name: string; rpc: string } }>> = {
   274663: {
     url: "https://brain.usebrainchain.com",
-    identity: { chainId: REPUTATION.chainId, name: "Robinhood Chain", rpc: ROBINHOOD_RPC, registry: REPUTATION.identity, adapters: ["0x000000009d62675362a58911e3f32FEcf46F5E18"], house: REPUTATION.house },
+    identity: { chainId: REPUTATION.chainId, name: "Robinhood Chain", rpc: ROBINHOOD_RPC, registry: REPUTATION.identity, adapters: ["0x000000009d62675362a58911e3f32FEcf46F5E18"] },
   },
   // The tool carries no identity registry for Robinhood Chain testnet.
   274630: { url: "https://brain.testnet.usebrainchain.com", identity: { chainId: 46630, name: "Robinhood Chain testnet", rpc: "https://rpc.testnet.chain.robinhood.com", adapters: [] } },
@@ -2662,10 +2660,11 @@ interface Statement {
 
 /**
  * Why a statement's key was not the brain when it signed, or undefined when
- * the DecisionLog it names is one of the network's, named that key its brain,
- * and the statement's time falls within the key's time as brain. A statement
- * of the present, such as a head, must name the active set's log: a retired
- * log names its last brain for good, whatever became of that key.
+ * a BrainSet event on the DecisionLog it names made that key its brain and
+ * the statement's own time falls within the key's tenure. That time is the
+ * signer's own statement, so it is held to the tenure and no more. What
+ * anchors a record in the present is a head signed now by the brain of the
+ * active log, so a statement of the present must name the active set's log.
  */
 async function brainFault(ctx: Context, s: Statement, present = false): Promise<string | undefined> {
   const { network } = ctx;
@@ -2833,6 +2832,9 @@ export interface CurrentEpoch {
 
 // The adapter's code for ERC-721, the one standard whose token has a single holder.
 const ERC721 = 0;
+// The build of an agent BrainChain runs itself is `house: <model id>`, the model it runs it on, whatever the registry's
+// metadata holds (createEpochs in epoch.ts). The registry does not hold it, so only such an epoch's controller can be held to the registry.
+const isHouseBuild = (build: string): boolean => build.startsWith("house: ");
 const MAX_BUILD = 96;
 const reverted = (error: unknown): boolean => error instanceof BaseError && error.walk((e) => e instanceof ContractFunctionRevertedError) !== null;
 
@@ -2912,8 +2914,13 @@ export interface RecordReport {
   head?: { seq: number; hash: Hex; brain: Address; at: number; signedAt: string; ageSeconds: number };
   /** Each epoch in the record, in the order it first appears. */
   epochs: EpochCount[];
-  /** With `epoch`: the epoch the registry gives now and the entries that belong to it, or null when no single account controls the id. `sameController` is set for a house worker. */
-  current?: (CurrentEpoch & { entries: Span[]; sameController?: Span[] }) | null;
+  /**
+   * With `epoch`: the epoch the agent's id is in now and the entries that belong to it, or null when no single
+   * account controls the id. `buildFrom` says where its build is read: the registry's metadata, or the newest
+   * entry for an agent BrainChain runs itself, whose build the registry does not hold. `registryBuild` is then
+   * what the registry holds.
+   */
+  current?: (CurrentEpoch & { buildFrom: "registry" | "record"; registryBuild?: string; entries: Span[] }) | null;
   receipts: RecordReceipt[];
   withheld?: boolean;
   checks: Check[];
@@ -3053,32 +3060,43 @@ async function checkRecordReceipt(ctx: Context, service: Service, c: Checks, rep
 }
 
 async function checkCurrent(service: Service, c: Checks, report: RecordReport, entries: SignedEntry[]): Promise<void> {
-  const { client, adapters, house } = service.identity;
+  const { client, adapters } = service.identity;
   const { agent } = report;
   if (!agent) return c.add("current-epoch", "skip", "current epoch: the record is not the asked agent's, so the registry was not read");
   if (!client) return c.add("current-epoch", "skip", "current epoch: no client for the identity registry's chain was given, so the registry was not read");
-  let now: CurrentEpoch | null;
+  let registry: CurrentEpoch | null;
   try {
-    now = await currentEpoch(client, { ...agent, adapters }, BigInt(agent.id));
+    registry = await currentEpoch(client, { ...agent, adapters }, BigInt(agent.id));
   } catch (error) {
     return c.add("current-epoch", "error", `current epoch: could not read the identity registry: ${errorMessage(error)}`);
   }
-  if (!now) {
+  if (!registry) {
     report.current = null;
     return c.add("current-epoch", "ok", `current epoch: no single account controls agent ${agent.id} on the identity registry now, so none of its entries belongs to a current epoch`);
   }
-  const { id, controller } = now;
-  const seqs = (mine: (entry: RecordEntry) => boolean): number[] => entries.filter(({ entry }) => mine(entry)).map(({ entry }) => entry.seq);
-  const mine = seqs((entry) => eq(entry.epoch, id));
-  report.current = { ...now, build: clean(now.build), entries: spansOf(mine) };
-  const who = now.bound ? `${short(controller)}, who holds token ${now.bound.tokenId} of ${short(now.bound.token)}, which the id is bound to,` : short(controller);
-  const lead = `current epoch: the identity registry gives controller ${who} and ${now.build === "" ? "no build" : `the build "${now.build}"`}, which is epoch ${short(id)}`;
+  const { controller, bound } = registry;
+  const newest = entries.at(-1)?.entry;
+  const stated = newest && isHouseBuild(newest.build) && newest.build !== registry.build ? newest.build : undefined;
+  const id = stated === undefined ? registry.id : epochId(agent, controller, stated);
+  const mine = entries.filter(({ entry }) => eq(entry.epoch, id)).map(({ entry }) => entry.seq);
+  report.current = {
+    id,
+    controller,
+    build: clean(stated ?? registry.build),
+    ...(bound ? { bound } : {}),
+    buildFrom: stated === undefined ? "registry" : "record",
+    ...(stated === undefined ? {} : { registryBuild: clean(registry.build) }),
+    entries: spansOf(mine),
+  };
+  const who = bound ? `${short(controller)}, who holds token ${bound.tokenId} of ${short(bound.token)}, which the id is bound to,` : short(controller);
+  const gives = `current epoch: the identity registry gives controller ${who} and ${registry.build === "" ? "no build" : `the build "${registry.build}"`}`;
   const belong = mine.length === 0 ? `None of the ${plural(entries.length, "entry", "entries")} belongs to it` : `${mine.length} of ${plural(entries.length, "entry", "entries")} belong${mine.length === 1 ? "s" : ""} to it: ${entriesNamed(mine)}`;
-  const name = house?.[agent.id];
-  if (name === undefined) return c.add("current-epoch", "ok", `${lead}. ${belong}`);
-  const same = seqs((entry) => eq(entry.controller, controller));
-  report.current.sameController = spansOf(same);
-  c.add("current-epoch", "ok", `${lead}. ${belong}. Agent ${agent.id} is the house worker ${name}: BrainChain signs a house worker's entries under the build it runs it as, which the registry does not hold, so they fall outside this epoch. ${same.length === 0 ? "None names" : `${same.length} name${same.length === 1 ? "s" : ""}`} the current controller`);
+  if (stated === undefined) return c.add("current-epoch", "ok", `${gives}, which is epoch ${short(id)}. ${belong}`);
+  c.add(
+    "current-epoch",
+    "ok",
+    `${gives}. The newest entry's build, "${stated}", is BrainChain's own statement of the model it runs this agent on, which the registry does not hold. For such a build the controller alone is compared with the registry, which gives epoch ${short(id)}. ${belong}`,
+  );
 }
 
 export type LicenceState = "valid" | "expired" | "suspended" | "lapsed";
@@ -3216,8 +3234,10 @@ async function checkLicence(ctx: Context, service: Service, agentId: bigint, ite
   const past = now >= l.expiresAt;
   c.add("licence-expiry", "ok", `expiry: ${past ? `expired ${utc(BigInt(l.expiresAt))} UTC, ${span(now - l.expiresAt)} ago` : `expires ${utc(BigInt(l.expiresAt))} UTC, in ${span(l.expiresAt - now)}`}`);
 
-  // Undefined when the registry was not read, so valid and lapsed cannot be told apart.
+  // Whether the id has left the licence's epoch. Undefined when the registry cannot say: it was not read, or the
+  // licence's build is one BrainChain states itself and the controller is unchanged, since a change of model does not show there.
   let moved: boolean | undefined;
+  let house = false;
   if (!identity.client) {
     c.add("licence-epoch", "skip", "epoch: no client for the identity registry's chain was given, so the registry was not read");
   } else {
@@ -3226,16 +3246,20 @@ async function checkLicence(ctx: Context, service: Service, agentId: bigint, ite
     if (!reading) epochs.set(registry, (reading = currentEpoch(identity.client, { chainId: identity.chainId, registry, adapters: identity.adapters }, agentId)));
     try {
       const current = await reading;
-      moved = current?.id !== l.epoch.toLowerCase();
-      const earned = `controller ${short(l.controller)} and ${l.build === "" ? "no build" : `the build "${l.build}"`}`;
+      const built = (build: string): string => (build === "" ? "no build" : `the build "${build}"`);
+      const earned = `controller ${short(l.controller)} and ${built(l.build)}`;
+      house = current !== null && isHouseBuild(l.build) && current.build !== l.build && eq(current.controller, l.controller);
+      moved = house ? undefined : current?.id !== l.epoch.toLowerCase();
       c.add(
         "licence-epoch",
         "ok",
         !current
           ? `epoch: no single account controls agent ${agentId} on the identity registry now, so the licence, earned under ${earned}, has lapsed`
-          : moved
-            ? `epoch: the identity registry gives controller ${short(current.controller)} and ${current.build === "" ? "no build" : `the build "${current.build}"`} now. The licence was earned under ${earned}, so it has lapsed`
-            : `epoch: the identity registry gives ${earned} now, the epoch the licence was earned in`,
+          : house
+            ? `epoch: the identity registry gives controller ${short(current.controller)} now, the one the licence was earned under. Its build, "${l.build}", is BrainChain's own statement of the model it runs this agent on, which the registry does not hold, so a change of model does not show here`
+            : moved
+              ? `epoch: the identity registry gives controller ${short(current.controller)} and ${built(current.build)} now. The licence was earned under ${earned}, so it has lapsed`
+              : `epoch: the identity registry gives ${earned} now, the epoch the licence was earned in`,
       );
     } catch (error) {
       c.add("licence-epoch", "error", `epoch: could not read the identity registry: ${errorMessage(error)}`);
@@ -3243,23 +3267,29 @@ async function checkLicence(ctx: Context, service: Service, agentId: bigint, ite
     }
   }
 
-  // The host puts lapsed before suspended before expired, and stops reading a licence's epoch once it is suspended or expired.
-  const computed: LicenceState = moved ? "lapsed" : past ? "expired" : "valid";
-  const allowed = new Set<string>([computed]);
-  if (past && moved !== false) allowed.add("expired").add("lapsed");
-  if (!past && moved === undefined) allowed.add("lapsed");
-  const why = moved ? "the agent's id is in another epoch than the one it was earned in" : past ? "it is past its expiry" : moved === undefined ? "it has not expired" : "it has not expired and the id is in the epoch it was earned in";
-  if (claimed === "suspended") {
+  // The host's order (stateOf in exam.ts): expired once past the expiry, whatever else was true; before that suspended; before that lapsed while the id's epoch is not the licence's; otherwise valid.
+  const computed: LicenceState = past ? "expired" : moved ? "lapsed" : "valid";
+  const open = !past && moved === undefined;
+  const why = past
+    ? "it is past its expiry, whatever else was true of it"
+    : moved
+      ? "the agent's id is in another epoch than the one it was earned in"
+      : moved === false
+        ? "it has not expired and the id is in the epoch it was earned in"
+        : house
+          ? "it has not expired and the id's controller is the one it was earned under. A change of the model BrainChain runs the agent on would end the epoch too, and the registry does not show one"
+          : "it has not expired. The registry was not read, so valid and lapsed could not be told apart";
+  if (claimed === "suspended" && !past) {
     report.state = "suspended";
     c.add("licence-state", "ok", `state: suspended, as the host says. Only the host counts the audits behind a suspension. Without it the licence would be ${computed}: ${why}`);
-  } else if (allowed.has(claimed)) {
+  } else if (claimed === computed || (open && claimed === "lapsed")) {
     report.state = claimed as LicenceState;
-    c.add("licence-state", "ok", `state: ${claimed}, as the host says: ${why}${moved === undefined && !past ? ". The registry was not read, so valid and lapsed could not be told apart" : ""}`);
+    c.add("licence-state", "ok", `state: ${claimed}, as the host says: ${why}`);
   } else {
     report.state = computed;
     const known = LICENCE_STATES.includes(claimed) ? "" : ", which is not a state a licence has";
-    const lag = claimed === "valid" && computed === "lapsed" ? ". The host reads the registry every few minutes, so a change made since its last reading does not show there yet" : "";
-    c.add("licence-state", "fail", `state: the host says ${claimed}${known}, and the checks give ${computed}: ${why}${lag}`);
+    const trails = !past && (claimed === "valid" || claimed === "lapsed") ? ". The host reads each id's epoch every ten minutes, so its state can trail the registry by that long" : "";
+    c.add("licence-state", "fail", `state: the host says ${claimed}${known}, and the checks give ${computed}: ${why}${trails}`);
   }
   return report;
 }
