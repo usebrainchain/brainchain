@@ -18,6 +18,7 @@ Changes to `brainchain-verify`, the npm package built from this directory. The f
 
 ### Changed
 
+- `evidence` reads evidence version 2, which the brain writes from release 9: the hash also covers the panel's rule, a degraded panel's bar and the grade's pass level. The tool rebuilds the hash under both versions and holds the record to the one its `Recorded` event carries, so a record decided under version 2 cannot pass as version 1. A version 1 record verifies as before, and its line says so.
 - `--registry-rpc` is also read by `--licence`, and by `--record` with `--epoch`.
 - The `entry` check takes `licence:<class>` as a second tag beside `task`.
 - `summary.withReceipt` counts an entry that points at a record entry only when that record entry names a receipt.

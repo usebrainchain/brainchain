@@ -77,6 +77,8 @@ const IMAGE = `0x${"1a".repeat(32)}`;
 const APP = `0x${"2b".repeat(32)}`;
 // From the brain's evidenceHash and receipts.issue (vr-3) for the paid grade below.
 const PINNED_EVIDENCE = "0x268e177e64120e2809a06f847cd3c51a51ec648b33764646502c5ba8c5aa7a00";
+// The same grade under evidence version 2, which adds the panel's rule and the pass level (the brain's evidenceHash, r9-hardening).
+const PINNED_EVIDENCE_V2 = "0x21d62f925ee4bcf1b09e21c8a481f974e15c28e6c0669766b18a28295353fc37";
 const PINNED_SIGNATURE = "0x48656313d9ced258eed50e2e35e402d10721b3599f7350d212ca4dda5d97fdac7b87e4e9e3dc26aacee57ab9e270fad8df78f12eeb38d229a3b620cc064573991c";
 const Status = { Open: 1, Hired: 2, Delivered: 3, Graded: 4, Disputed: 5, Paid: 6, Refunded: 7, Ruled: 8, Appealed: 9 };
 
@@ -885,10 +887,19 @@ describe("evidence and receipts", () => {
       },
     });
   /** withEvidence: the versions, the payments when an agent paid, and the hash over them with inputHash and every judge's answer. */
-  function sealed(record, payments = [PAYMENT], versions = VERSIONS, input = keccak256(toBytes(canonicalStringify(record.request)))) {
+  function sealed(record, payments = [PAYMENT], versions = VERSIONS, input = keccak256(toBytes(canonicalStringify(record.request))), version = 2) {
     const payload = { ...record, versions, ...(payments.length > 0 ? { payments } : {}) };
     const judges = [payload.second, ...(payload.panel?.judges ?? [])].filter((judge) => judge !== undefined).map(({ model, probabilities, requestHash, receipt }) => ({ model, probabilities, requestHash, receipt }));
-    const evidence = { input, judges: [{ model: payload.model, probabilities: payload.probabilities }, ...judges], payments: payload.payments ?? [], versions };
+    const { panel, passFrom } = payload;
+    const evidence = {
+      ...(version === 2 ? { version } : {}),
+      input,
+      judges: [{ model: payload.model, probabilities: payload.probabilities }, ...judges],
+      payments: payload.payments ?? [],
+      versions,
+      ...(version === 2 && panel ? { panel: { rule: panel.rule, ...(panel.degraded ? { degraded: panel.degraded } : {}) } } : {}),
+      ...(version === 2 && passFrom !== undefined ? { passFrom } : {}),
+    };
     return { ...payload, evidence: keccak256(toBytes(canonicalStringify(evidence))) };
   }
   const recorded = (publish) => ({ publish, answer: publish.answer === "accept" ? YES : NO, bps: Math.round(publish.confidence * 10_000) });
@@ -926,10 +937,19 @@ describe("evidence and receipts", () => {
 
   it("rebuilds the evidence hash as the brain does, and checks it on a copy served without the work", async () => {
     const record = sealed(accepted());
-    assert.equal(record.evidence, PINNED_EVIDENCE);
+    assert.equal(record.evidence, PINNED_EVIDENCE_V2);
     const whole = await verify({ ...recorded(record), offline: true });
     assert.deepEqual(failed(whole), []);
-    assert.match(check(whole, "evidence").message, /^evidence: the hash over inputHash, every judge's answer and receipt, the payments and the versions is 0x\w{4}…\w{4}, as the record and its Recorded event's payloadURI state$/);
+    assert.match(
+      check(whole, "evidence").message,
+      /^evidence: the hash over inputHash, every judge's answer and receipt, the payments, the versions, the panel's rule and the pass level is 0x\w{4}…\w{4}, as the record and its Recorded event's payloadURI state$/,
+    );
+    // A record decided before version 2 checks under version 1, and says what that leaves out.
+    const older = sealed(accepted(), [PAYMENT], VERSIONS, undefined, 1);
+    assert.equal(older.evidence, PINNED_EVIDENCE);
+    const v1 = await verify({ ...recorded(older), offline: true });
+    assert.deepEqual(failed(v1), []);
+    assert.match(check(v1, "evidence").message, /the payments and the versions is 0x\w{4}…\w{4} \(evidence version 1, from before the panel's rule and the pass level were hashed\), as the record/);
 
     const kept = sealed(rejected());
     const copy = await verify({ ...recorded(kept), serve: redacted(kept), withheld: true, offline: true });
@@ -944,9 +964,12 @@ describe("evidence and receipts", () => {
       { ...redacted(kept), panel: { ...kept.panel, judges: [{ ...kept.panel.judges[0], requestHash: "sha256:ff" }] } },
       { ...redacted(kept), payments: [{ ...PAYMENT, amount: "1" }] },
       { ...redacted(kept), versions: { ...VERSIONS, prompt: 2 } },
+      { ...redacted(kept), panel: { ...kept.panel, rule: "median" } },
+      { ...redacted(kept), passFrom: 2 },
     ]) {
       const report = await verify({ ...recorded(kept), serve: forged, withheld: true, offline: true });
-      assert.deepEqual(failed(report), ["evidence"]);
+      // Another pass level also moves the recomputed confidence; the evidence fails whatever else does.
+      assert.ok(failed(report).includes("evidence"), JSON.stringify(failed(report)));
     }
     const unbuilt = await verify({ ...recorded(kept), serve: { ...redacted(kept), versions: undefined }, withheld: true, offline: true });
     assert.deepEqual(failed(unbuilt), ["evidence"]);
@@ -1048,7 +1071,7 @@ describe("evidence and receipts", () => {
   });
 
   it("checks a good receipt the brain host serves, and the same receipt kept from the reply", async () => {
-    const record = sealed(accepted());
+    const record = sealed(accepted(), [PAYMENT], VERSIONS, undefined, 1);
     const receipt = await issued(record);
     assert.equal(receipt.signature, PINNED_SIGNATURE);
     serveReceipt(receipt);
