@@ -3182,6 +3182,8 @@ export interface HostEpoch {
 export interface LicencesReport {
   agentId: string;
   url: string;
+  /** Whether the host read the registry for its reply, where the reply says. A host that read it holds every state it gives to `epoch`. */
+  registry?: "read" | "unreadable";
   /** The epoch the host gives for the id, or null where it gives none. Absent from a host whose reply does not carry it. The `licences-epoch` check says whether the registry bears it out. */
   epoch?: HostEpoch | null;
   licences: LicenceReport[];
@@ -3191,6 +3193,14 @@ export interface LicencesReport {
 
 /** Reads the epoch an id is in from one registry, once for every licence that names it. */
 type EpochReader = (registry: Address) => Promise<CurrentEpoch | null>;
+
+/** What a licences reply gives to judge its licences by. */
+interface HostReading {
+  /** The epoch the host gives, once the registry bears it out. */
+  host?: HostEpoch;
+  /** From a host that read the registry for its reply: the epoch every state in the reply is held to, null when it found no single controller. */
+  held?: { epoch: HostEpoch | null };
+}
 
 /**
  * An agent's licences as the brain host lists them: each one's signature, the
@@ -3204,11 +3214,13 @@ export async function verifyLicences(ctx: Context, service: Service, agentId: bi
   const report: LicencesReport = { agentId: agentId.toString(), url, licences: [], checks: c.list };
   let listed: unknown[];
   let given: unknown;
+  let reading: unknown;
   try {
     const body = await fetchJson(ctx, url, "licence list", MAX_LICENCES_BYTES);
     if (!isObject(body) || !Array.isArray(body.licences)) throw new Mismatch(`${display(url)} is not a list of an agent's licences`);
     listed = body.licences;
     given = body.epoch;
+    reading = body.registry;
   } catch (error) {
     unread(c, "licences-fetch", "the licences", error);
     return report;
@@ -3224,54 +3236,73 @@ export async function verifyLicences(ctx: Context, service: Service, agentId: bi
       return reading;
     });
   const named = listed.map((item) => (isObject(item) && isObject(item.licence) && isLicence(item.licence.licence) ? item.licence.licence.agent.registry : undefined)).find((registry) => registry !== undefined);
-  const host = await checkHostEpoch(c, report, service, agentId, given, service.identity.registry ?? named, read);
-  for (const item of listed) report.licences.push(await checkLicence(ctx, service, agentId, item, read, host));
+  const reply = await checkHostEpoch(c, report, service, agentId, { given, reading }, service.identity.registry ?? named, read);
+  for (const item of listed) report.licences.push(await checkLicence(ctx, service, agentId, item, read, reply));
   return report;
 }
 
 /**
  * The epoch the host's reply gives for the id, held to the registry: its
  * controller is the registry's, its id is the hash of what it gives, and its
- * build is the registry's unless it is one BrainChain states itself. Returned
- * once it holds, for a licence whose build only BrainChain can state. A host
- * from before the field gives none, and nothing is added.
+ * build is the registry's unless it is one BrainChain states itself. A reply
+ * that says the host read the registry holds every state in it to that epoch,
+ * by a reading up to a minute old. One that says the registry was unreadable
+ * gives none, and its states are the host's last own reading. A host from
+ * before either field gives neither, and nothing is added.
  */
-async function checkHostEpoch(c: Checks, report: LicencesReport, service: Service, agentId: bigint, given: unknown, registry: Address | undefined, read: EpochReader | undefined): Promise<HostEpoch | undefined> {
-  if (given === undefined) return undefined;
+async function checkHostEpoch(c: Checks, report: LicencesReport, service: Service, agentId: bigint, { given, reading }: { given: unknown; reading: unknown }, registry: Address | undefined, read: EpochReader | undefined): Promise<HostReading> {
+  const add = (status: Status, message: string): HostReading => {
+    c.add("licences-epoch", status, `epoch: ${message}`);
+    return {};
+  };
+  if (reading === undefined && given === undefined) return {};
+  if (reading !== undefined && reading !== "read" && reading !== "unreadable") return add("fail", `the host's reply says ${JSON.stringify(reading)} of its reading of the registry, where it says read or unreadable`);
+  if (reading !== undefined) report.registry = reading;
+  if (reading === "unreadable") {
+    if (given !== null && given !== undefined) return add("fail", "the host says it could not read the identity registry, and gives an epoch for the id all the same");
+    return add("error", "the host could not read the identity registry for its reply, so the states it gives are those of its last own reading, up to ten minutes old");
+  }
   const host: HostEpoch | null | undefined =
     given === null ? null : isObject(given) && isHash(given.id) && isAccount(given.controller) && typeof given.build === "string" ? { id: given.id, controller: given.controller, build: given.build } : undefined;
-  if (host === undefined) return void c.add("licences-epoch", "fail", "epoch: what the host gives as the id's epoch is not an id, a controller and a build");
+  if (host === undefined) return add("fail", "what the host gives as the id's epoch is not an id, a controller and a build");
   report.epoch = host && { ...host, build: clean(host.build) };
-  if (!read) return void c.add("licences-epoch", "skip", "epoch: no client for the identity registry's chain was given, so the epoch the host gives was not held to the registry");
-  if (!registry) return void c.add("licences-epoch", "skip", "epoch: this tool carries no identity registry for the chain and no licence names one, so the epoch the host gives was not held to a registry");
+  const held = reading === "read" ? { epoch: host } : undefined;
+  const reply = (status: Status, message: string, borne?: HostEpoch): HostReading => ({ ...add(status, message), ...(borne ? { host: borne } : {}), ...(held ? { held } : {}) });
+  if (!read) return reply("skip", "no client for the identity registry's chain was given, so the epoch the host gives was not held to the registry");
+  if (!registry) return reply("skip", "this tool carries no identity registry for the chain and no licence names one, so the epoch the host gives was not held to a registry");
   let own: CurrentEpoch | null;
   try {
     own = await read(registry);
   } catch (error) {
-    return void c.add("licences-epoch", "error", `epoch: could not read the identity registry: ${errorMessage(error)}`);
+    return reply("error", `could not read the identity registry: ${errorMessage(error)}`);
   }
-  if (!host && !own) return void c.add("licences-epoch", "ok", "epoch: the host gives no epoch for the id, and no single account controls it on the identity registry");
-  if (!own) return void c.add("licences-epoch", "fail", `epoch: the host gives controller ${short(host!.controller)} for the id, and no single account controls it on the identity registry`);
+  // A host that read the registry for its reply may have read it up to a minute before this tool did.
+  const minute = held ? ". The host's reading is up to a minute old, so run the command again" : "";
+  if (!host && !own) return reply("ok", "the host gives no epoch for the id, and no single account controls it on the identity registry");
+  if (!own) return reply("fail", `the host gives controller ${short(host!.controller)} for the id, and no single account controls it on the identity registry${minute}`);
   if (!host) {
-    return void c.add("licences-epoch", "fail", `epoch: the host gives no epoch for the id, as it does when no single account controls it or it could not read the registry, and the identity registry gives controller ${short(own.controller)}`);
+    const none = held ? "as it does when no single account controls it" : "as it does when no single account controls it or it could not read the registry";
+    return reply("fail", `the host gives no epoch for the id, ${none}, and the identity registry gives controller ${short(own.controller)}${minute}`);
   }
   const house = isHouseBuild(host.build);
-  const wrong: string[] = [];
-  if (!eq(host.controller, own.controller)) wrong.push(`the host gives controller ${short(host.controller)}, and the identity registry gives ${short(own.controller)}`);
-  if (!house && host.build !== own.build) wrong.push(`the host gives ${built(host.build)}, and the identity registry gives ${built(own.build)}`);
-  if (epochId({ chainId: service.identity.chainId, registry, id: agentId.toString() }, host.controller, host.build) !== host.id.toLowerCase()) wrong.push(`the epoch the host names, ${short(host.id)}, is not the hash of the controller and build it gives`);
-  c.check(
-    "licences-epoch",
-    wrong.length === 0,
+  const differs: string[] = [];
+  if (!eq(host.controller, own.controller)) differs.push(`the host gives controller ${short(host.controller)}, and the identity registry gives ${short(own.controller)}`);
+  if (!house && host.build !== own.build) differs.push(`the host gives ${built(host.build)}, and the identity registry gives ${built(own.build)}`);
+  const unhashed = epochId({ chainId: service.identity.chainId, registry, id: agentId.toString() }, host.controller, host.build) !== host.id.toLowerCase();
+  if (differs.length > 0 || unhashed) {
+    const wrong = [...differs, ...(unhashed ? [`the epoch the host names, ${short(host.id)}, is not the hash of the controller and build it gives`] : [])];
+    return reply("fail", `${wrong.join("; ")}${differs.length > 0 ? minute : ""}`);
+  }
+  return reply(
+    "ok",
     house
-      ? `epoch: the host gives controller ${short(host.controller)}, as the identity registry does, and the build "${host.build}", BrainChain's own statement of the model it runs this agent on, which the registry does not hold. The two hash to the epoch the host names, ${short(host.id)}`
-      : `epoch: the host gives controller ${short(host.controller)} and ${built(host.build)}, epoch ${short(host.id)}, as the identity registry does`,
-    `epoch: ${wrong.join("; ")}`,
+      ? `the host gives controller ${short(host.controller)}, as the identity registry does, and the build "${host.build}", BrainChain's own statement of the model it runs this agent on, which the registry does not hold. The two hash to the epoch the host names, ${short(host.id)}`
+      : `the host gives controller ${short(host.controller)} and ${built(host.build)}, epoch ${short(host.id)}, as the identity registry does`,
+    host,
   );
-  return wrong.length === 0 ? host : undefined;
 }
 
-async function checkLicence(ctx: Context, service: Service, agentId: bigint, item: unknown, read: EpochReader | undefined, host: HostEpoch | undefined): Promise<LicenceReport> {
+async function checkLicence(ctx: Context, service: Service, agentId: bigint, item: unknown, read: EpochReader | undefined, { host, held }: HostReading): Promise<LicenceReport> {
   const c = new Checks();
   const listed = isObject(item) ? item : {};
   const signed = isObject(listed.licence) ? listed.licence : {};
@@ -3348,18 +3379,28 @@ async function checkLicence(ctx: Context, service: Service, agentId: bigint, ite
     }
   }
 
+  // A host that read the registry for its reply holds every state in it to the epoch the reply gives, so that epoch
+  // decides the state here. Whether it is the registry's own is the reply's line, not this licence's.
+  if (held) moved = held.epoch?.id.toLowerCase() !== l.epoch.toLowerCase();
+
   // The host's order (stateOf in exam.ts): expired once past the expiry, whatever else was true; before that suspended; before that lapsed while the id's epoch is not the licence's; otherwise valid.
   const computed: LicenceState = past ? "expired" : moved ? "lapsed" : "valid";
   const open = !past && moved === undefined;
   const why = past
     ? "it is past its expiry, whatever else was true of it"
-    : moved
-      ? "the agent's id is in another epoch than the one it was earned in"
-      : moved === false
-        ? "it has not expired and the id is in the epoch it was earned in"
-        : house
-          ? "it has not expired and the id's controller is the one it was earned under. A change of the model BrainChain runs the agent on would end the epoch too, and the registry does not show one"
-          : "it has not expired. The registry was not read, so valid and lapsed could not be told apart";
+    : held
+      ? moved
+        ? held.epoch
+          ? "the epoch the host's reply gives for the id is another than the one it was earned in"
+          : "the host's reply gives no epoch for the id, as no single account controls it"
+        : "it has not expired and the epoch the host's reply gives for the id is the one it was earned in"
+      : moved
+        ? "the agent's id is in another epoch than the one it was earned in"
+        : moved === false
+          ? "it has not expired and the id is in the epoch it was earned in"
+          : house
+            ? "it has not expired and the id's controller is the one it was earned under. A change of the model BrainChain runs the agent on would end the epoch too, and the registry does not show one"
+            : "it has not expired. The registry was not read, so valid and lapsed could not be told apart";
   if (claimed === "suspended" && !past) {
     report.state = "suspended";
     c.add("licence-state", "ok", `state: suspended, as the host says. Only the host counts the audits behind a suspension. Without it the licence would be ${computed}: ${why}`);
@@ -3369,7 +3410,8 @@ async function checkLicence(ctx: Context, service: Service, agentId: bigint, ite
   } else {
     report.state = computed;
     const known = LICENCE_STATES.includes(claimed) ? "" : ", which is not a state a licence has";
-    const trails = !past && (claimed === "valid" || claimed === "lapsed") ? ". The host reads each id's epoch every ten minutes, so its state can trail the registry by that long" : "";
+    // Only a state from the host's own round can trail: one held to the reply's reading follows it exactly.
+    const trails = !held && !past && (claimed === "valid" || claimed === "lapsed") ? ". The host reads each id's epoch every ten minutes, so its state can trail the registry by that long" : "";
     c.add("licence-state", "fail", `state: the host says ${claimed}${known}, and the checks give ${computed}: ${why}${trails}`);
   }
   return report;

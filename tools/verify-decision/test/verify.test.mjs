@@ -2291,10 +2291,14 @@ describe("an agent's licences", () => {
     const l = { ...signedBy(key), agent, class: "code", epoch: epochOf(agent, controller, build), controller, build, sitting: SITTING, decisions: ["4", "5", "6", "7"], accepted: 4, of: 5, issuedAt: NOW - DAY, expiresAt: NOW + 59 * DAY, ...rest };
     return { licence: l, signature: await signedAs(signs, "BrainChain licence\n", l) };
   }
-  /** GET /licences/<chain>/<id> as exam-routes.ts answers it, read against a registry that gives `registry`. `epoch` is the epoch the reply gives for the id, which a host from before that field leaves out. */
-  async function answered(signed, state = "valid", { registry, identity = { client: identityChain(registry) }, chain = {}, listed = {}, epoch } = {}) {
+  /**
+   * GET /licences/<chain>/<id> as exam-routes.ts answers it, read against a registry that gives `registry`. `epoch` is
+   * the epoch the reply gives for the id and `reading` what it says of the registry, "read" or "unreadable". A host
+   * from before either field leaves it out.
+   */
+  async function answered(signed, state = "valid", { registry, identity = { client: identityChain(registry) }, chain = {}, listed = {}, epoch, reading } = {}) {
     const items = signed ? [{ class: signed.licence.class, state, licence: signed, audits: { passed: 1, failed: 0 }, ...listed }] : [];
-    pages.set("/licences/4663/501", { body: JSON.stringify({ agent: { chainId: 4663, id: "501" }, ...(epoch === undefined ? {} : { epoch }), licences: items, signedAs: "personal_sign (EIP-191)" }) });
+    pages.set("/licences/4663/501", { body: JSON.stringify({ agent: { chainId: 4663, id: "501" }, ...(reading === undefined ? {} : { registry: reading }), ...(epoch === undefined ? {} : { epoch }), licences: items, signedAs: "personal_sign (EIP-191)" }) });
     return verifyLicences(onChain({ sets: [set], ...chain }), brainHost(identity), 501n);
   }
   /** The one licence of a reply without an epoch of its own. */
@@ -2503,6 +2507,59 @@ describe("an agent's licences", () => {
     // A controller cannot declare the prefix: on the registry it reads as what follows, and the licence earned under that is no house licence.
     const posed = await answered(await licence({ build: "x" }), "valid", { epoch: reads(HOLDER, "x"), registry: { build: "House: house:  x" } });
     assert.deepEqual([failed(posed), lines(posed.licences[0])], [[], GOOD]);
+  });
+
+  it("hold every state to the epoch of a reply that read the registry, and fall back when it could not", async () => {
+    const signed = await licence();
+    const read = { reading: "read" };
+    const report = await answered(signed, "valid", { ...read, epoch: reads() });
+    assert.deepEqual(lines(report), ["licences-fetch ok", "licences-epoch ok"]);
+    assert.deepEqual([report.registry, lines(report.licences[0])], ["read", GOOD]);
+    assert.equal(check(report.licences[0], "licence-state").message, "state: valid, as the host says: it has not expired and the epoch the host's reply gives for the id is the one it was earned in");
+
+    // The reply is its own measure: a state that does not follow from its epoch fails, with no round to wait for.
+    const [early] = (await answered(signed, "lapsed", { ...read, epoch: reads() })).licences;
+    assert.equal(check(early, "licence-state").message, "state: the host says lapsed, and the checks give valid: it has not expired and the epoch the host's reply gives for the id is the one it was earned in");
+    const [late] = (await answered(signed, "valid", { ...read, epoch: reads(STRANGER), registry: { owner: STRANGER } })).licences;
+    assert.equal(check(late, "licence-state").message, "state: the host says valid, and the checks give lapsed: the epoch the host's reply gives for the id is another than the one it was earned in");
+    const nobody = await answered(signed, "lapsed", { ...read, epoch: null, registry: { owner: null } });
+    assert.deepEqual([failed(nobody), failed(nobody.licences[0])], [[], []]);
+    assert.equal(check(nobody.licences[0], "licence-state").message, "state: lapsed, as the host says: the host's reply gives no epoch for the id, as no single account controls it");
+    // The order holds as before: expired first, then a suspension as the host gives it.
+    const past = await licence({ expiresAt: NOW - 60 });
+    assert.deepEqual(failed((await answered(past, "lapsed", { ...read, epoch: reads(STRANGER), registry: { owner: STRANGER } })).licences[0]), ["licence-state"]);
+    assert.deepEqual(failed((await answered(signed, "suspended", { ...read, epoch: reads(STRANGER), registry: { owner: STRANGER } })).licences[0]), []);
+
+    // The host read the registry up to a minute before this tool did. Where the two differ, the reply's line fails and says so; each state still follows the reply.
+    const sold = await answered(signed, "valid", { ...read, epoch: reads(), registry: { owner: STRANGER } });
+    assert.deepEqual([failed(sold), failed(sold.licences[0])], [["licences-epoch"], []]);
+    assert.equal(check(sold, "licences-epoch").message, `epoch: the host gives controller ${brief(HOLDER)}, and the identity registry gives 0x4444…4444. The host's reading is up to a minute old, so run the command again`);
+    const gone = await answered(signed, "lapsed", { ...read, epoch: null });
+    assert.equal(check(gone, "licences-epoch").message, `epoch: the host gives no epoch for the id, as it does when no single account controls it, and the identity registry gives controller ${brief(HOLDER)}. The host's reading is up to a minute old, so run the command again`);
+    const unhashed = await answered(signed, "lapsed", { ...read, epoch: { ...reads(), id: `0x${"ee".repeat(32)}` } });
+    assert.equal(check(unhashed, "licences-epoch").message, "epoch: the epoch the host names, 0xeeee…eeee, is not the hash of the controller and build it gives");
+    assert.deepEqual(failed(unhashed.licences[0]), []);
+
+    // A house licence's model is the reply's to say, as any other state.
+    const MODEL = "house: anthropic/claude-sonnet-5.5";
+    const house = await licence({ build: MODEL });
+    assert.deepEqual(lines((await answered(house, "valid", { ...read, epoch: reads(HOLDER, MODEL), registry: { build: "" } })).licences[0]), GOOD);
+    assert.deepEqual(failed((await answered(house, "lapsed", { ...read, epoch: reads(HOLDER, MODEL), registry: { build: "" } })).licences[0]), ["licence-state"]);
+
+    // A host that could not read the registry says so: its states are its last round's, and the line is an error.
+    const unread = await answered(signed, "valid", { reading: "unreadable", epoch: null });
+    assert.deepEqual(lines(unread), ["licences-fetch ok", "licences-epoch error"]);
+    assert.equal(check(unread, "licences-epoch").message, "epoch: the host could not read the identity registry for its reply, so the states it gives are those of its last own reading, up to ten minutes old");
+    assert.deepEqual([unread.registry, unread.epoch, lines(unread.licences[0])], ["unreadable", undefined, GOOD]);
+    assert.equal(outcomeOf([{ checks: [...unread.checks, ...unread.licences[0].checks] }]), "unverified");
+    const [trailing] = (await answered(signed, "valid", { reading: "unreadable", epoch: null, registry: { owner: STRANGER } })).licences;
+    assert.match(check(trailing, "licence-state").message, /^state: the host says valid, and the checks give lapsed: .*\. The host reads each id's epoch every ten minutes, so its state can trail the registry by that long$/);
+    assert.deepEqual(failed((await answered(house, "lapsed", { reading: "unreadable", epoch: null, registry: { build: "" } })).licences[0]), []);
+    // A reply that contradicts itself, or says something else of its reading.
+    assert.deepEqual(failed(await answered(signed, "valid", { reading: "unreadable", epoch: reads() })), ["licences-epoch"]);
+    const odd = await answered(signed, "valid", { reading: "cached", epoch: reads() });
+    assert.equal(check(odd, "licences-epoch").message, 'epoch: the host\'s reply says "cached" of its reading of the registry, where it says read or unreadable');
+    assert.deepEqual(failed(await answered(signed, "valid", read)), ["licences-epoch"]);
   });
 
   it("report a suspension as the host's word, and say what could not be told without the registry", async () => {
@@ -3050,7 +3107,7 @@ describe("the command line", () => {
       const l = { ...signedBy(BRAIN), decisionLog: LOG, agent: AGENT, class: "code", epoch: epochOf(AGENT, HOLDER, "worker-1"), controller: HOLDER, build: "worker-1", sitting: `0x${"5e".repeat(32)}`, decisions: ["4"], accepted: 4, of: 5, issuedAt: now - 500, expiresAt: now + 5_000_000 };
       const licences = (state) => pages.set("/licences/4663/501", { body: JSON.stringify({ agent: { chainId: 4663, id: "501" }, licences: state ? [{ class: "code", state, licence: { licence: l, signature: "0x" }, audits: { passed: 0, failed: 0 } }] : [] }) });
       const signature = await signedAs(BRAIN, "BrainChain licence\n", l);
-      pages.set("/licences/4663/501", { body: JSON.stringify({ epoch: { id: l.epoch, controller: HOLDER, build: "worker-1" }, licences: [{ class: "code", state: "valid", licence: { licence: l, signature }, audits: { passed: 0, failed: 0 } }] }) });
+      pages.set("/licences/4663/501", { body: JSON.stringify({ registry: "read", epoch: { id: l.epoch, controller: HOLDER, build: "worker-1" }, licences: [{ class: "code", state: "valid", licence: { licence: l, signature }, audits: { passed: 0, failed: 0 } }] }) });
       const licence = await runAsync("mainnet", "--licence", "501", ...host, ...registry);
       assert.equal(licence.code, 0, licence.stderr + licence.stdout);
       assert.deepEqual(licence.stdout.split("\n").map((text) => text.split(":")[0]), ["Agent 501's licences on BrainChain mainnet, read from http", "", "  ok    fetched 1 licence from http", "  ok    epoch", "", "  code", "  ok    licence", "  ok    signature", "  ok    brain", "  ok    expiry", "  ok    epoch", "  ok    state", "", "Verdict", "Not checked", ""]);
