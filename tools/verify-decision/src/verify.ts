@@ -57,7 +57,7 @@ export interface Run {
 /** A grade or ruling decided by a panel, as its record states it. */
 export interface PanelReport {
   rule: string;
-  /** Every member that answered, the decision model first, with its probability of paying. */
+  /** Every member that answered, Jev first, with its probability of paying. */
   judges: { model: string; paid: number }[];
   degraded: boolean;
   /** When degraded: the members the panel decided without, and what it then had to put on paying to pay. */
@@ -799,7 +799,7 @@ export async function verifyDecision(ctx: Context, id: bigint, receipt?: GivenRe
     c.check(
       "subject",
       record.subject.toLowerCase() === decision.subject,
-      `subject: ${short(decision.subject)}, as recorded on chain. It is tied to the call the decision model was shown only once the change is queued`,
+      `subject: ${short(decision.subject)}, as recorded on chain. It is tied to the call Jev was shown only once the change is queued`,
       "the record's subject differs from the one on chain",
     );
   } else if (outside) {
@@ -816,12 +816,12 @@ export async function verifyDecision(ctx: Context, id: bigint, receipt?: GivenRe
   const judged = decision.kind === Kind.Grade || decision.kind === Kind.Ruling;
   const options = optionsOf(record.request.questions.decision);
   if (judged && record.panel !== undefined && Object.keys(record.probabilities).length === 0) {
-    c.add("options", "ok", "the record holds none of the decision model's probabilities, as a panel that decided without the decision model records it");
+    c.add("options", "ok", "the record holds no probabilities of Jev's, as a panel that decided without Jev records it");
   } else {
     c.check(
       "options",
       same(Object.keys(record.probabilities).sort(), [...options].sort()),
-      "probabilities cover exactly the options the decision model was asked",
+      "probabilities cover exactly the options Jev was asked",
       "the probabilities do not match the options in the question",
     );
   }
@@ -855,8 +855,8 @@ export async function verifyDecision(ctx: Context, id: bigint, receipt?: GivenRe
     c.check(
       "top-option",
       chosen !== undefined && chosen >= top - 1e-9,
-      `${named(record.answer)} is the decision model's most likely option, at ${chosen}`,
-      `${named(record.answer)} is not the decision model's most likely option`,
+      `${named(record.answer)} is Jev's most likely option, at ${chosen}`,
+      `${named(record.answer)} is not Jev's most likely option`,
     );
   }
   if (decision.kind === Kind.Hire) {
@@ -993,7 +993,7 @@ async function checkBrief(ctx: Context, c: Checks, task: bigint, decision: Decis
     c.check(
       "levels",
       same(state.task?.levels, brief.levels) && same(state.task?.paidLevels, brief.levels.slice(0, brief.passIndex + 1)),
-      "the levels and paid levels the decision model was shown are the brief's",
+      "the levels and paid levels Jev was shown are the brief's",
       "the levels in the question are not the brief's",
     );
   }
@@ -1003,7 +1003,7 @@ async function checkBrief(ctx: Context, c: Checks, task: bigint, decision: Decis
   c.check(
     "levels",
     same(question.criteria, ascending),
-    "the levels the decision model scored against are the brief's, lowest first",
+    "the levels Jev scored against are the brief's, lowest first",
     "the levels in the question are not the brief's",
   );
   if (predatesPaidLevels(record)) return c.add("confidence-recomputed", "skip", PREDATES_PAID_LEVELS);
@@ -1062,7 +1062,7 @@ function checkRun(c: Checks, decision: Decision, record: Published, state: State
 
 const predatesPaidLevels = (record: Published): boolean => record.scoreConfidence === undefined && record.panel === undefined;
 const PREDATES_PAID_LEVELS =
-  "grade confidence: this grade predates the rule that gates on the paid levels, so its confidence is the decision model's score confidence, which the probabilities alone do not give";
+  "grade confidence: this grade predates the rule that gates on the paid levels, so its confidence is Jev's score confidence, which the probabilities alone do not give";
 
 /** The question's levels and the record's own pass level, where no brief says them. Undefined once a line says why there are none to use. */
 function ownPassLevel(c: Checks, record: Published): { levels: number; passFrom: number; paidKeys: string[] } | undefined {
@@ -1125,7 +1125,7 @@ interface Paying {
 function checkPaying(c: Checks, record: Published, p: Paying): void {
   if (record.panel !== undefined) return checkPanel(c, record, p);
   const jev = p.paidOf(record.probabilities);
-  const steps: string[] = [p.how ?? `the decision model puts ${jev} on ${p.yes}`];
+  const steps: string[] = [p.how ?? `Jev puts ${jev} on ${p.yes}`];
   let paying = jev;
   if (record.second) {
     const second = p.paidOf(record.second.probabilities);
@@ -1156,7 +1156,7 @@ function checkPanel(c: Checks, record: Published, p: Paying): void {
   const { rule, rules, judges, degraded } = record.panel;
   const options = optionsOf(record.request.questions.decision);
   const jev = Object.keys(record.probabilities).length > 0 ? p.paidOf(record.probabilities) : undefined;
-  const members = jev === undefined ? [] : [{ name: "the decision model", paid: jev }];
+  const members = jev === undefined ? [] : [{ name: "Jev", paid: jev }];
   if (record.second) members.push({ name: record.second.model, paid: checkJudge(c, "second-grader", `the second grader (${record.second.model})`, record.second, p.paidOf, options) });
   for (const judge of judges) members.push({ name: judge.model, paid: checkJudge(c, "judge", `the judge ${judge.model}`, judge, p.paidOf, options) });
   if (members.length < 2) {
@@ -1168,9 +1168,9 @@ function checkPanel(c: Checks, record: Published, p: Paying): void {
   const missing = degraded?.missing ?? [];
   const recomputed = panelRules(members.map((m) => m.paid));
   const wrong: string[] = [];
-  if (jev !== undefined && !close(record.jevPaid, jev)) wrong.push(`the decision model's probability of paying recomputes to ${jev}, not the recorded ${record.jevPaid}`);
-  if (jev === undefined && record.jevPaid !== undefined) wrong.push("the record holds none of the decision model's probabilities, yet states its probability of paying");
-  if (jev === undefined && !missing.includes(record.model)) wrong.push(`the record holds none of the decision model's probabilities, and the panel does not say it decided without the decision model (${record.model})`);
+  if (jev !== undefined && !close(record.jevPaid, jev)) wrong.push(`Jev's probability of paying recomputes to ${jev}, not the recorded ${record.jevPaid}`);
+  if (jev === undefined && record.jevPaid !== undefined) wrong.push("the record holds no probabilities of Jev's, yet states Jev's probability of paying");
+  if (jev === undefined && !missing.includes(record.model)) wrong.push(`the record holds no probabilities of Jev's, and the panel does not say it decided without Jev (${record.model})`);
   if (!record.second && missing.length === 0) wrong.push("the record holds no second grader, and the panel does not say it decided without one");
   if (degraded && degraded.bar !== DEGRADED_BAR) wrong.push(`the panel decided without ${list(missing)} at ${degraded.bar}, where the brain pays a panel short of a member only from ${DEGRADED_BAR}`);
   for (const [name, value] of Object.entries(rules)) {
@@ -1180,7 +1180,7 @@ function checkPanel(c: Checks, record: Published, p: Paying): void {
   for (const name of PANEL_RULES) if (!Object.hasOwn(rules, name)) wrong.push(`the record gives no value for ${name}`);
   if (!isRule(rule)) wrong.push(`the record names the rule "${rule}", which is none of ${list([...PANEL_RULES])}`);
 
-  const without = missing.map((name) => (jev === undefined && name === record.model ? `the decision model (${name})` : name));
+  const without = missing.map((name) => (jev === undefined && name === record.model ? `Jev (${name})` : name));
   const bar = degraded ? `, without ${list(without)}, so it pays only from ${percent(Math.round(degraded.bar * 10_000))}` : "";
   c.check(
     "panel",
@@ -1192,7 +1192,7 @@ function checkPanel(c: Checks, record: Published, p: Paying): void {
     c.add("confidence-recomputed", "skip", "confidence: the panel names no rule the brain decides by");
     return;
   }
-  const steps = [jev === undefined ? "the decision model did not answer" : (p.how ?? `the decision model puts ${jev} on ${p.yes}`), `under ${rule} the panel puts ${recomputed[rule].toFixed(4)} on paying`];
+  const steps = [jev === undefined ? "Jev did not answer" : (p.how ?? `Jev puts ${jev} on ${p.yes}`), `under ${rule} the panel puts ${recomputed[rule].toFixed(4)} on paying`];
   checkDecided(c, record, p, recomputed[rule], steps, `the panel's ${rule} rule`, degraded?.bar);
 }
 
@@ -1204,7 +1204,7 @@ function checkJudge(c: Checks, name: string, who: string, judge: Judge, paidOf: 
     name,
     covers && close(judge.paid, paid),
     `${who} puts ${paid} on paying${judge.receipt ? `, with receipt ${judge.receipt.id}` : ", without a receipt"}`,
-    covers ? `${who} puts ${paid} on paying by its probabilities, not the recorded ${judge.paid}` : `the probabilities of ${who} do not cover exactly the options the decision model was asked`,
+    covers ? `${who} puts ${paid} on paying by its probabilities, not the recorded ${judge.paid}` : `the probabilities of ${who} do not cover exactly the options Jev was asked`,
   );
   return paid;
 }
@@ -1328,8 +1328,8 @@ async function checkChange(ctx: Context, c: Checks, id: bigint, decision: Decisi
     c.check(
       "change-call",
       same(decodeChange(target, data), state.call),
-      "the queued call is the call the decision model was shown",
-      "the call the decision model was shown differs from the queued call",
+      "the queued call is the call Jev was shown",
+      "the call Jev was shown differs from the queued call",
     );
     const change = await client.readContract({ address: set.executor, abi: decisionExecutorAbi, functionName: "getChange", args: [changeId] });
     const status = change.vetoed ? "vetoed by the guardian" : change.executed ? "executed" : `executable from ${utc(change.eta).slice(0, 16)} UTC`;

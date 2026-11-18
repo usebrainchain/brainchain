@@ -443,7 +443,7 @@ describe("a queued change", () => {
 
   it("does not claim the subject of a change never queued is the call Jev was shown", async () => {
     const queued = await shown(exact, decoded);
-    assert.match(check(queued, "subject").message, /^subject: 0x\w{4}…\w{4}, as recorded on chain\. It is tied to the call the decision model was shown only once the change is queued$/);
+    assert.match(check(queued, "subject").message, /^subject: 0x\w{4}…\w{4}, as recorded on chain\. It is tied to the call Jev was shown only once the change is queued$/);
     const pending = await shown(exact, decoded, false);
     assert.deepEqual(failed(pending), []);
     assert.equal(check(pending, "subject").message, check(queued, "subject").message);
@@ -711,7 +711,7 @@ describe("a panel of judges", () => {
     assert.deepEqual(lines(report).slice(-6), ["levels ok", "second-grader ok", "judge ok", "panel ok", "confidence-recomputed ok", "threshold ok"]);
     assert.equal(check(report, "second-grader").message, `the second grader (${SECOND}) puts 0.8 on paying, with receipt rcpt-2`);
     assert.equal(check(report, "judge").message, `the judge ${THIRD} puts 0.7 on paying, with receipt rcpt-3`);
-    assert.equal(check(report, "panel").message, `panel: lower-of decides over the decision model at 0.9, ${SECOND} at 0.8 and ${THIRD} at 0.7; the candidates are as recorded: lower-of 0.7, majority 0.8, median 0.8`);
+    assert.equal(check(report, "panel").message, `panel: lower-of decides over Jev at 0.9, ${SECOND} at 0.8 and ${THIRD} at 0.7; the candidates are as recorded: lower-of 0.7, majority 0.8, median 0.8`);
     assert.equal(check(report, "confidence-recomputed").message, "confidence recomputed: paid levels 1, 2 hold 0.5 + 0.4 = 0.9000; under lower-of the panel puts 0.7000 on paying, so accept at 0.7000");
     assert.deepEqual(report.panel, { rule: "lower-of", judges: [{ model: "jev-1.14.0", paid: 0.9 }, { model: SECOND, paid: 0.8 }, { model: THIRD, paid: 0.7 }], degraded: false });
 
@@ -733,7 +733,7 @@ describe("a panel of judges", () => {
     const two = await verify(recorded(graded("accept", 0.85, { panel: { rule: "median", rules: { "lower-of": 0.8, majority: 0.8, median: 0.85 }, judges: [] } })));
     assert.deepEqual(failed(two), []);
     assert.equal(check(two, "judge"), undefined);
-    assert.match(check(two, "panel").message, /^panel: median decides over the decision model at 0\.9 and deepseek\S+ at 0\.8; the candidates are as recorded: lower-of 0\.8, majority 0\.8, median 0\.85$/);
+    assert.match(check(two, "panel").message, /^panel: median decides over Jev at 0\.9 and deepseek\S+ at 0\.8; the candidates are as recorded: lower-of 0\.8, majority 0\.8, median 0\.85$/);
   });
 
   it("rules under the panel's rule as a grade is decided", async () => {
@@ -741,7 +741,7 @@ describe("a panel of judges", () => {
     const report = await verify({ kind: 3, ...recorded(ruled("pay", 0.9, judges)) });
     assert.deepEqual(failed(report), []);
     assert.equal(status(report, "top-option"), undefined);
-    assert.equal(check(report, "confidence-recomputed").message, "confidence recomputed: the decision model puts 0.95 on pay; under majority the panel puts 0.9000 on paying, so pay at 0.9000");
+    assert.equal(check(report, "confidence-recomputed").message, "confidence recomputed: Jev puts 0.95 on pay; under majority the panel puts 0.9000 on paying, so pay at 0.9000");
     assert.ok(failed(await verify({ kind: 3, ...recorded(ruled("pay", 0.4, judges)) })).includes("confidence-recomputed"));
   });
 
@@ -751,7 +751,7 @@ describe("a panel of judges", () => {
     const report = await verify(recorded(unsure));
     assert.deepEqual(failed(report), []);
     assert.equal(status(report, "second-grader"), undefined);
-    assert.equal(check(report, "panel").message, `panel: lower-of decides over the decision model at 0.9 and ${THIRD} at 0.75, without ${SECOND}, so it pays only from 90%; the candidates are as recorded: lower-of 0.75, majority 0.75, median 0.825`);
+    assert.equal(check(report, "panel").message, `panel: lower-of decides over Jev at 0.9 and ${THIRD} at 0.75, without ${SECOND}, so it pays only from 90%; the candidates are as recorded: lower-of 0.75, majority 0.75, median 0.825`);
     assert.match(check(report, "confidence-recomputed").message, /under lower-of the panel puts 0\.7500 on paying; a panel short of a member pays only from 90%, so reject at 0\.2500$/);
     assert.deepEqual(report.panel, { rule: "lower-of", judges: [{ model: "jev-1.14.0", paid: 0.9 }, { model: THIRD, paid: 0.75 }], degraded: true, missing: [SECOND], bar: 0.9 });
     // At the board's usual cutoff that panel would have accepted.
@@ -767,20 +767,20 @@ describe("a panel of judges", () => {
     const ruling = { ...withoutJev(ruled("pay", 0.95, judges)), choiceConfidence: undefined };
     const report = await verify({ kind: 3, ...recorded(ruling) });
     assert.deepEqual(failed(report), []);
-    assert.equal(check(report, "options").message, "the record holds none of the decision model's probabilities, as a panel that decided without the decision model records it");
-    assert.match(check(report, "panel").message, new RegExp(`^panel: lower-of decides over ${SECOND} at 0\\.95 and ${THIRD} at 0\\.95, without the decision model \\(jev-latest\\), so it pays only from 90%`));
-    assert.match(check(report, "confidence-recomputed").message, /^confidence recomputed: the decision model did not answer; under lower-of the panel puts 0\.9500 on paying; a panel short of a member pays only from 90%, so pay at 0\.9500$/);
+    assert.equal(check(report, "options").message, "the record holds no probabilities of Jev's, as a panel that decided without Jev records it");
+    assert.match(check(report, "panel").message, new RegExp(`^panel: lower-of decides over ${SECOND} at 0\\.95 and ${THIRD} at 0\\.95, without Jev \\(jev-latest\\), so it pays only from 90%`));
+    assert.match(check(report, "confidence-recomputed").message, /^confidence recomputed: Jev did not answer; under lower-of the panel puts 0\.9500 on paying; a panel short of a member pays only from 90%, so pay at 0\.9500$/);
     assert.deepEqual(report.panel.judges, [{ model: SECOND, paid: 0.95 }, { model: THIRD, paid: 0.95 }]);
 
     const twoLeft = { "lower-of": 0.7, majority: 0.7, median: 0.75 };
     const onGrade = await verify(recorded(withoutJev(graded("reject", 0.3, { panel: { rule: "lower-of", rules: twoLeft, judges: [third()], degraded } }))));
     assert.deepEqual(failed(onGrade), []);
-    assert.match(check(onGrade, "confidence-recomputed").message, /^confidence recomputed: the decision model did not answer; under lower-of the panel puts 0\.7000 on paying; a panel short of a member pays only from 90%, so reject at 0\.3000$/);
+    assert.match(check(onGrade, "confidence-recomputed").message, /^confidence recomputed: Jev did not answer; under lower-of the panel puts 0\.7000 on paying; a panel short of a member pays only from 90%, so reject at 0\.3000$/);
 
     // Jev's probabilities missing from a panel that does not say it went without Jev.
     const unsaid = await verify(recorded(withoutJev(graded("accept", 0.7, { panel: { rule: "lower-of", rules: twoLeft, judges: [third()] } }))));
     assert.deepEqual(failed(unsaid), ["panel"]);
-    assert.match(check(unsaid, "panel").message, /holds none of the decision model's probabilities, and the panel does not say it decided without the decision model \(jev-latest\)/);
+    assert.match(check(unsaid, "panel").message, /holds no probabilities of Jev's, and the panel does not say it decided without Jev \(jev-latest\)/);
   });
 
   it("fails a candidate's value that the judges' probabilities do not give", async () => {
