@@ -7,11 +7,13 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import {
   BaseError,
+  ContractFunctionRevertedError,
   createPublicClient,
   decodeFunctionData,
   encodeAbiParameters,
   encodeFunctionData,
   getAddress,
+  hexToBytes,
   http,
   keccak256,
   pad,
@@ -493,7 +495,7 @@ interface Fetched {
 
 /** What is being fetched: names it in messages, and caps it. */
 interface Wanted {
-  what: "record" | "brief" | "receipt" | "network manifest";
+  what: "record" | "brief" | "receipt" | "network manifest" | "agent record" | "record entry" | "record head" | "licence list" | "papers file" | "exam item";
   limit: number;
   /** The caller's RPC is on a private address, so what it names may be too. */
   allowPrivate: boolean;
@@ -1923,7 +1925,11 @@ const reputationAbi = parseAbi([
 const identityAbi = parseAbi([
   "event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)",
   "event MetadataSet(uint256 indexed agentId, string indexed indexedMetadataKey, string metadataKey, bytes metadataValue)",
+  "function ownerOf(uint256 tokenId) view returns (address)",
+  "function getMetadata(uint256 agentId, string metadataKey) view returns (bytes)",
 ]);
+// ERC-8217's binding adapter: the NFT an agent id is bound to.
+const adapterAbi = parseAbi(["function bindingOf(uint256 agentId) view returns (uint8 standard, address tokenContract, uint256 tokenId)"]);
 
 const TAG = "brainchain";
 // Robinhood Chain's RPC reads logs over at most this many blocks, and only when each topic it filters on has one value.
@@ -1932,6 +1938,9 @@ const LOG_SPAN = 10_000_000n;
 const PADDED = /^0x0{24}([0-9a-f]{40})$/i;
 const NO_RECEIPT =
   "no receipt: the entry's feedbackHash is zero. Only a task an agent paid BrainChain for has a signed receipt; house tasks, tasks posted straight on the board, ACP orders and older entries have none";
+// An exam outcome is written under licence:<class>, as the brain's main.ts tags it.
+const LICENCE_TAG = /^licence:[a-z][a-z0-9-]{0,31}$/;
+const NO_RECORD_ENTRY = "no record entry: the entry's feedbackHash is zero, so it commits to nothing the brain key signed for this exam outcome";
 
 /** An entry as its NewFeedback event states it. The registry names it by agent, writer and index. */
 export interface Feedback {
@@ -1966,6 +1975,8 @@ export interface EntryReport {
   task?: number;
   board?: Address;
   set?: string;
+  /** The entry of the agent's record that feedbackURI serves, as the brain key signed it. Entries from before agents' records point straight at a receipt and have none. */
+  record?: { seq: number; kind: RecordKind; outcome: RecordOutcome; ref: string; receipt?: string };
   /** The decision the entry's receipt names, checked with the receipt. Its checks are among the entry's. */
   decision?: DecisionReport & { set: string };
   /** That decision's record was served without the work, so its hashes could not be checked. */
@@ -2013,24 +2024,29 @@ export async function entriesOf(registry: Registry, agentId: bigint, writers: re
 
 /**
  * One entry, end to end: as the registry holds it, the task its endpoint
- * names, the receipt its feedbackHash commits to, the decision and payment
- * that receipt names, and the board's settlement and hire behind its value
- * and its agent.
+ * names, what its feedbackHash commits to, and the board's settlement and
+ * hire behind its value and its agent. feedbackURI serves the entry of the
+ * agent's record that the brain key signed for the outcome, which names the
+ * receipt where an agent paid; an entry from before agents' records points
+ * straight at the receipt. Either way the receipt's decision and payment are
+ * checked.
  */
 export async function verifyEntry(ctx: Context, registry: Registry, f: Feedback): Promise<EntryReport> {
   const c = new Checks();
   const report = entryReport(registry, f, c.list);
   await checkStored(registry, c, f);
 
-  const page = taskPage(ctx.network.sets, f.endpoint);
+  const exam = LICENCE_TAG.test(f.tag2);
+  const page = exam ? undefined : taskPage(ctx.network.sets, f.endpoint);
   if (page) report.task = Number(page.task);
   if (page?.board) report.board = page.board;
   if (page?.set) report.set = page.set.key;
-  checkEndpoint(c, f.endpoint, page);
+  if (exam) checkLicencesPage(c, registry, f);
+  else checkEndpoint(c, f.endpoint, page);
 
   let receipt: EntryReceipt | undefined;
-  if (eq(f.feedbackHash, NO)) c.add("feedback-hash", "skip", NO_RECEIPT);
-  else receipt = await entryReceipt(ctx, c, f);
+  if (eq(f.feedbackHash, NO)) c.add("feedback-hash", "skip", exam ? NO_RECORD_ENTRY : NO_RECEIPT);
+  else receipt = await entryBacking(ctx, registry, c, f, report, page);
   if (receipt) {
     const on = contextFor(ctx, receipt.set);
     const decided = await verifyDecision(on, receipt.decision, receipt.given);
@@ -2054,12 +2070,12 @@ async function checkStored({ client, address }: Registry, c: Checks, f: Feedback
   if (value !== f.value || decimals !== f.valueDecimals || tag1 !== f.tag1 || tag2 !== f.tag2) {
     wrong.push(`the registry holds ${value} with ${decimals} decimals under ${tag1} and ${tag2}, where its NewFeedback event says ${f.value} with ${f.valueDecimals} under ${f.tag1} and ${f.tag2}`);
   }
-  if (f.tag1 !== TAG || f.tag2 !== "task") wrong.push(`its tags are ${f.tag1} and ${f.tag2}, where BrainChain writes ${TAG} and task`);
+  if (f.tag1 !== TAG || (f.tag2 !== "task" && !LICENCE_TAG.test(f.tag2))) wrong.push(`its tags are ${f.tag1} and ${f.tag2}, where BrainChain writes ${TAG} and task, or licence:<class> for an exam`);
   if (f.valueDecimals !== 0 || (f.value !== 0n && f.value !== 100n)) wrong.push(`its value is ${f.value} with ${f.valueDecimals} decimals, where BrainChain writes 100 or 0 with none`);
   c.check(
     "entry",
     wrong.length === 0,
-    `entry: value ${f.value} for agent ${f.agentId} under ${TAG} and task, written by ${short(f.clientAddress)} in block ${f.block}, as the registry holds it${revoked ? ". Revoked since, so the registry's summaries leave it out" : ""}`,
+    `entry: value ${f.value} for agent ${f.agentId} under ${TAG} and ${f.tag2}, written by ${short(f.clientAddress)} in block ${f.block}, as the registry holds it${revoked ? ". Revoked since, so the registry's summaries leave it out" : ""}`,
     `entry: ${wrong.join("; ")}`,
   );
 }
@@ -2090,32 +2106,147 @@ function checkEndpoint(c: Checks, endpoint: string, page: TaskPage | undefined):
   c.add("endpoint", "ok", `endpoint: task ${page.task} on board ${short(page.board)}, contract set ${page.set.key}`);
 }
 
+function checkLicencesPage(c: Checks, registry: Registry, f: Feedback): void {
+  const path = `/licences/${registry.chainId}/${f.agentId}`;
+  c.check(
+    "endpoint",
+    URL.canParse(f.endpoint) && new URL(f.endpoint).pathname === path,
+    `endpoint: the licences of agent ${f.agentId}`,
+    `endpoint: ${display(f.endpoint)} is not agent ${f.agentId}'s licences at ${path}, which BrainChain names in an exam outcome`,
+  );
+}
+
 interface EntryReceipt {
   decision: bigint;
   set: ContractSet;
   given: GivenReceipt;
   outcome: string;
+  payload: ReceiptPayload;
 }
 
-/** The receipt at feedbackURI, once its bytes hash to feedbackHash and it names a decision the DecisionLog it names holds, at the address the brain serves that receipt from. */
-async function entryReceipt(ctx: Context, c: Checks, f: Feedback): Promise<EntryReceipt | undefined> {
+/** How a hash and what it commits to are named on a check's line. */
+interface Commitment {
+  name: string;
+  label: string;
+  what: "receipt" | "record entry";
+  /** Whose hash it is, as in "feedbackHash". */
+  by: string;
+}
+
+/** The bytes served at `uri`, once they hash to `hash`. */
+async function committed(ctx: Context, c: Checks, { name, label, what, by }: Commitment, uri: string, hash: Hex): Promise<Uint8Array | undefined> {
   let bytes: Uint8Array;
   try {
-    ({ bytes } = await fetchBytes(f.feedbackURI, { what: "receipt", limit: MAX_RECEIPT_BYTES, allowPrivate: await allowsPrivate(ctx.client) }));
+    ({ bytes } = await fetchBytes(uri, { what, limit: MAX_RECEIPT_BYTES, allowPrivate: await allowsPrivate(ctx.client) }));
   } catch (error) {
-    c.add("feedback-hash", "error", `could not fetch the receipt: ${errorMessage(error)}`);
+    c.add(name, "error", `could not fetch the ${what}: ${errorMessage(error)}`);
     return undefined;
   }
-  const hash = keccak256(bytes);
-  const where = display(f.feedbackURI);
-  if (!eq(hash, f.feedbackHash)) {
-    c.add("feedback-hash", "fail", `feedback hash: the receipt at ${where} hashes to ${short(hash)}, not to feedbackHash ${short(f.feedbackHash)}`);
+  const served = keccak256(bytes);
+  const where = display(uri);
+  if (!eq(served, hash)) {
+    c.add(name, "fail", `${label}: the ${what} at ${where} hashes to ${short(served)}, not to ${by} ${short(hash)}`);
     return undefined;
   }
-  c.add("feedback-hash", "ok", `feedback hash: the receipt at ${where} hashes to feedbackHash ${short(hash)}`);
+  c.add(name, "ok", `${label}: the ${what} at ${where} hashes to ${by} ${short(served)}`);
+  return bytes;
+}
 
+const jsonOf = (bytes: Uint8Array): unknown => {
   const text = decodeText(bytes);
-  const value = text === undefined ? undefined : parseJson(text);
+  return text === undefined ? undefined : parseJson(text);
+};
+
+// Where the brain serves an entry of an agent's record (entryPath in agent-record.ts).
+const ENTRY_PATH = /^\/agents\/\d{1,12}\/\d{1,78}\/record\/[1-9]\d{0,9}\.json$/;
+
+/**
+ * What feedbackURI serves, once its bytes hash to feedbackHash: the entry of
+ * the agent's record the brain key signed for this outcome, checked here, or
+ * the receipt an entry from before agents' records points straight at. Either
+ * way, the receipt to check the decision with, when there is one.
+ */
+async function entryBacking(ctx: Context, registry: Registry, c: Checks, f: Feedback, report: EntryReport, page: TaskPage | undefined): Promise<EntryReceipt | undefined> {
+  const exam = LICENCE_TAG.test(f.tag2);
+  const path = URL.canParse(f.feedbackURI) ? new URL(f.feedbackURI).pathname : "";
+  const what = exam || ENTRY_PATH.test(path) ? "record entry" : "receipt";
+  const bytes = await committed(ctx, c, { name: "feedback-hash", label: "feedback hash", what, by: "feedbackHash" }, f.feedbackURI, f.feedbackHash);
+  if (!bytes) return undefined;
+  const value = jsonOf(bytes);
+  if (!exam && !(isObject(value) && "entry" in value)) return namedReceipt(ctx, c, f.feedbackURI, value);
+
+  const signed = signedEntry(value);
+  if (!signed) {
+    c.add("entry-record", "fail", `record entry: ${display(f.feedbackURI)} is not an entry of an agent's record as BrainChain signs one`);
+    return undefined;
+  }
+  const { entry } = signed;
+  report.record = { seq: entry.seq, kind: entry.kind, outcome: entry.outcome, ref: clean(entry.ref), ...(entry.receipt ? { receipt: clean(entry.receipt.path) } : {}) };
+  const own = `/agents/${entry.agent.chainId}/${entry.agent.id}/record/${entry.seq}.json`;
+  const wrong: string[] = [];
+  if (entry.agent.id !== f.agentId.toString()) wrong.push(`agent ${entry.agent.id}, not agent ${f.agentId}, whom the feedback is for`);
+  if (entry.agent.chainId !== registry.chainId || !eq(entry.agent.registry, registry.identity)) {
+    wrong.push(`the registry ${short(entry.agent.registry)} on chain ${entry.agent.chainId}, not ${short(registry.identity)} on chain ${registry.chainId}`);
+  }
+  if (path !== own) wrong.push(`entry ${entry.seq}, which the brain serves at ${own}, not at ${display(f.feedbackURI)}`);
+  if ((entry.kind === "exam") !== exam) wrong.push(`${entry.kind === "exam" ? "an exam" : `a ${entry.kind}`}, where the feedback's tag is ${f.tag2}`);
+  const ref = refFault(entry);
+  if (ref) wrong.push(ref);
+  if (entry.kind !== "exam" && page?.board && entry.ref !== `task:${page.board.toLowerCase()}:${page.task}`) wrong.push(`${entry.ref}, not task ${page.task} on board ${short(page.board)}, which the endpoint names`);
+  c.check("entry-record", wrong.length === 0, `record entry: entry ${entry.seq} of agent ${entry.agent.id}'s record, ${entry.kind} ${entry.outcome} for ${entry.ref}, served at its own address`, `record entry: names ${list(wrong)}`);
+
+  const signer = await signerOfMessage(ENTRY_PREFIX, entry, signed.signature);
+  c.check(
+    "entry-signature",
+    signer !== undefined && eq(signer, entry.brain),
+    `signature: the record entry is signed by ${short(entry.brain)}, the brain it names`,
+    signer ? `signature: the record entry is signed by ${short(signer)}, not by ${short(entry.brain)}, the brain it names` : "signature: the record entry's signature does not recover",
+  );
+  const fault = await brainFault(ctx, { ...entry, at: entry.issuedAt });
+  c.check("entry-brain", fault === undefined, `brain: ${brainNamed(ctx, entry)} when the record entry was signed`, `brain: ${fault}`);
+  const owed = entry.outcome === "accepted" ? 100n : 0n;
+  c.check(
+    "entry-outcome",
+    f.value === owed,
+    `outcome: the record entry says ${entry.outcome}, which BrainChain writes as ${owed}`,
+    `outcome: the record entry says ${entry.outcome}, which BrainChain writes as ${owed}, and the feedback's value is ${f.value}`,
+  );
+  if (wrong.length > 0 || !entry.receipt) return undefined;
+  const origin = new URL(f.feedbackURI).origin;
+  const receipt = await receiptOf(ctx, c, origin, entry);
+  if (receipt) checkSettled(c, entry, receipt);
+  return receipt;
+}
+
+// Where the brain serves a receipt (receiptPath in receipts.ts).
+const RECEIPT_PATH = /^\/receipts\/0x[0-9a-f]{40}\/[1-9]\d{0,77}\.json$/;
+
+/** The receipt a record entry names, read from the host that serves the entry, once its bytes hash to the hash the entry carries. */
+async function receiptOf(ctx: Context, c: Checks, origin: string, entry: RecordEntry): Promise<EntryReceipt | undefined> {
+  const { path, hash } = entry.receipt!;
+  if (!RECEIPT_PATH.test(path)) {
+    c.add("record-receipt", "fail", `receipt hash: the record entry names ${display(path)}, which is not an address the brain serves a receipt at`);
+    return undefined;
+  }
+  const uri = `${origin}${path}`;
+  const bytes = await committed(ctx, c, { name: "record-receipt", label: "receipt hash", what: "receipt", by: "its record entry's hash" }, uri, hash);
+  return bytes && namedReceipt(ctx, c, uri, jsonOf(bytes));
+}
+
+/** A receipt and the record entry that names it state one outcome, one payment and one decision: the brain copies the entry's from the receipt (reputation.ts). */
+function checkSettled(c: Checks, entry: RecordEntry, { payload: p }: EntryReceipt): void {
+  const wrong: string[] = [];
+  if ((p.outcome === "accepted") !== (entry.outcome === "accepted")) wrong.push(`the entry says ${entry.outcome} and the receipt ${p.outcome}`);
+  if (p.job !== "task") wrong.push(`the receipt is for a ${p.job}, and the entry is for ${entry.ref}`);
+  const paid = entry.paid;
+  if (!paid || paid.payer !== p.payer || paid.amount !== p.amount || paid.asset !== p.asset || paid.network !== p.network) wrong.push("the entry's payment is not the receipt's payer, amount, asset and network");
+  if (entry.decision && (!eq(entry.decision.log, p.decisionLog) || entry.decision.id !== p.decision)) wrong.push(`the entry names decision ${entry.decision.id} on DecisionLog ${short(entry.decision.log)}, and the receipt decision ${p.decision} on ${short(p.decisionLog)}`);
+  c.check("record-settled", wrong.length === 0, `settled: the record entry and its receipt state the same outcome, ${entry.outcome}, the same payment and the same decision`, `settled: ${list(wrong)}`);
+}
+
+/** A receipt as BrainChain signs one, naming a decision the DecisionLog it names holds, at the address the brain serves that receipt from. */
+async function namedReceipt(ctx: Context, c: Checks, uri: string, value: unknown): Promise<EntryReceipt | undefined> {
+  const where = display(uri);
   const receipt = parseReceipt(value);
   if (!receipt || receipt.x402) {
     c.add("entry-receipt", "fail", `receipt: ${where} is not a receipt as BrainChain signs one`);
@@ -2131,9 +2262,9 @@ async function entryReceipt(ctx: Context, c: Checks, f: Feedback): Promise<Entry
   const path = `/receipts/${decisionLog.toLowerCase()}/${decision}.json`;
   const wrong: string[] = [];
   if (BigInt(decision) < 1n || BigInt(decision) > recorded) wrong.push(`decision ${decision}, and DecisionLog ${short(set.log)} holds decisions 1 to ${recorded}`);
-  if (!URL.canParse(f.feedbackURI) || new URL(f.feedbackURI).pathname !== path) wrong.push(`decision ${decision} on DecisionLog ${short(set.log)}, whose receipt the brain serves at ${path}, not at ${where}`);
+  if (!URL.canParse(uri) || new URL(uri).pathname !== path) wrong.push(`decision ${decision} on DecisionLog ${short(set.log)}, whose receipt the brain serves at ${path}, not at ${where}`);
   c.check("entry-receipt", wrong.length === 0, `receipt: names decision ${decision} on DecisionLog ${short(set.log)}, contract set ${set.key}, and is served at that decision's address`, `receipt: names ${list(wrong)}`);
-  return wrong.length === 0 ? { decision: BigInt(decision), set, given: { from: clean(f.feedbackURI), value }, outcome } : undefined;
+  return wrong.length === 0 ? { decision: BigInt(decision), set, given: { from: clean(uri), value }, outcome, payload: receipt.payload } : undefined;
 }
 
 const setContexts = new WeakMap<Context, Map<string, Context>>();
@@ -2148,15 +2279,16 @@ function contextFor(ctx: Context, set: ContractSet): Context {
   return found;
 }
 
-async function checkEntryTask(ctx: Context, c: Checks, id: bigint, page: TaskPage | undefined): Promise<void> {
-  if (!page?.set) return c.add("entry-task", "skip", `task: the endpoint names no task on a board this tool carries, so decision ${id} is not tied to one`);
+/** `by` is what names the task: an entry's endpoint, or a record entry's ref. */
+async function checkEntryTask(ctx: Context, c: Checks, id: bigint, page: TaskPage | undefined, by = "the endpoint"): Promise<void> {
+  if (!page?.set) return c.add("entry-task", "skip", `task: ${by} names no task on a board this tool carries, so decision ${id} is not tied to one`);
   const { subject } = await readDecision(ctx, id);
   const board = short(page.set.board);
   c.check(
     "entry-task",
     subject === taskSubject(ctx.network.chainId, page.set.board, page.task),
-    `task: decision ${id} is about task ${page.task} on board ${board}, the task the endpoint names`,
-    `task: decision ${id} on DecisionLog ${short(ctx.set.log)} is not about task ${page.task} on board ${board}, the task the endpoint names`,
+    `task: decision ${id} is about task ${page.task} on board ${board}, the task ${by} names`,
+    `task: decision ${id} on DecisionLog ${short(ctx.set.log)} is not about task ${page.task} on board ${board}, the task ${by} names`,
   );
 }
 
@@ -2289,10 +2421,1042 @@ export function entrySummary(reports: EntryReport[]): EntrySummary {
   const count = (outcome: EntryOutcome): number => outcomes.filter((o) => o === outcome).length;
   return {
     entries: reports.length,
-    withReceipt: reports.filter((r) => !eq(r.feedbackHash, NO)).length,
+    // A record entry names its receipt, where an agent paid; an older entry's hash is the receipt's own.
+    withReceipt: reports.filter((r) => (r.record ? r.record.receipt !== undefined : !eq(r.feedbackHash, NO))).length,
     verified: count("match"),
     withheld: count("withheld"),
     failed: count("mismatch"),
     unverified: count("unverified"),
   };
+}
+
+/** The chain agents' ERC-8004 ids are on, and how the brain resolves who controls one (epoch.ts). */
+export interface Identity {
+  chainId: number;
+  /** The identity registry. Where the tool carries none, the one a signed object names is read. */
+  registry?: Address;
+  /** Binding adapters on that chain. An id one of them owns is bound to an NFT, and whoever holds the NFT controls it. */
+  adapters: readonly Address[];
+  /** House workers by agent id. BrainChain signs their entries under the build it runs them as, which the registry does not hold. */
+  house?: Readonly<Record<string, string>>;
+  /** Reads that chain. Without it, nothing that needs the registry is checked. */
+  client?: PublicClient;
+}
+
+/** A brain host, and the registry the agents it signs for are on. */
+export interface Service {
+  /** Such as https://brain.usebrainchain.com. */
+  url: string;
+  identity: Identity;
+  /** Unix milliseconds. The clock when absent. */
+  now?: () => number;
+}
+
+/** Each BrainChain network's brain host and identity registry, by BrainChain chain id. `rpc` is a public RPC for the registry's chain, and `name` that chain's. */
+export const SERVICES: Readonly<Record<number, { url: string; identity: Omit<Identity, "client"> & { name: string; rpc: string } }>> = {
+  274663: {
+    url: "https://brain.usebrainchain.com",
+    identity: { chainId: REPUTATION.chainId, name: "Robinhood Chain", rpc: ROBINHOOD_RPC, registry: REPUTATION.identity, adapters: ["0x000000009d62675362a58911e3f32FEcf46F5E18"], house: REPUTATION.house },
+  },
+  // The tool carries no identity registry for Robinhood Chain testnet.
+  274630: { url: "https://brain.testnet.usebrainchain.com", identity: { chainId: 46630, name: "Robinhood Chain testnet", rpc: "https://rpc.testnet.chain.robinhood.com", adapters: [] } },
+};
+
+// The first line of each message the brain key signs about an agent, so a signature on one fits no other (agent-record.ts, exam.ts, papers.ts).
+const ENTRY_PREFIX = "BrainChain record entry\n";
+const HEAD_PREFIX = "BrainChain record head\n";
+const LICENCE_PREFIX = "BrainChain licence\n";
+const PAPERS_PREFIX = "BrainChain papers\n";
+// The brain signs a head again within a minute. One older than this could leave out entries written since.
+const HEAD_MAX_AGE = 15 * 60;
+// How far the brain's clock, this one and a block's time may differ, in seconds.
+const CLOCK_SLACK = 5 * 60;
+// Papers are signed moments after the head they name is read.
+const PAPERS_LAG = 60;
+// The most entries the brain lists in one reply (RECORD_PAGE in agent-routes.ts).
+const RECORD_PAGE = 200;
+const MAX_RECORD_PAGES = 100;
+// 200 entries of about 1.2 KB each, and the head.
+const MAX_PAGE_BYTES = 1024 * 1024;
+const MAX_HEAD_BYTES = 16 * 1024;
+const MAX_LICENCES_BYTES = 256 * 1024;
+const MAX_PAPERS_BYTES = 256 * 1024;
+const MAX_ITEM_BYTES = 1024 * 1024;
+
+/** The agent a signed object is about: the chain and registry its ERC-8004 id is on, and the id in decimal. */
+export interface AgentName {
+  chainId: number;
+  registry: Address;
+  id: string;
+}
+
+const RECORD_KINDS = ["task", "exam", "audit"] as const;
+const RECORD_OUTCOMES = ["accepted", "rejected", "undelivered"] as const;
+export type RecordKind = (typeof RECORD_KINDS)[number];
+export type RecordOutcome = (typeof RECORD_OUTCOMES)[number];
+
+/** One outcome of an agent's work, as the brain key signs it into the agent's record. */
+export interface RecordEntry {
+  version: 1;
+  /** BrainChain's chain id, the DecisionLog, and the key that signed. */
+  chainId: number;
+  decisionLog: Address;
+  brain: Address;
+  agent: AgentName;
+  /** From 1. `prev` is the hash of the entry before, 32 zero bytes for the first. */
+  seq: number;
+  prev: Hex;
+  /** The epoch bound when the agent was hired, or when its sitting opened. */
+  epoch: Hex;
+  controller: Address;
+  build: string;
+  kind: RecordKind;
+  outcome: RecordOutcome;
+  /** `task:<board>:<task id>` or `sitting:<sitting id>`, in lowercase. */
+  ref: string;
+  decision?: { log: Address; id: string };
+  ruled?: true;
+  receipt?: { path: string; hash: Hex };
+  paid?: { payer: string; amount: string; asset: string; network: string };
+  issuedAt: number;
+}
+
+export interface SignedEntry {
+  entry: RecordEntry;
+  signature: Hex;
+}
+
+/** The number and hash of an agent's latest entry, signed when it is asked for. */
+export interface RecordHead {
+  version: 1;
+  chainId: number;
+  decisionLog: Address;
+  brain: Address;
+  agent: AgentName;
+  seq: number;
+  hash: Hex;
+  /** Unix seconds when the head was signed. */
+  at: number;
+}
+
+export interface SignedHead {
+  head: RecordHead;
+  signature: Hex;
+}
+
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const isAccount = (value: unknown): value is Address => typeof value === "string" && ADDRESS.test(value);
+const isHash = (value: unknown): value is Hex => typeof value === "string" && BYTES32.test(value);
+const isSignature = (value: unknown): value is Hex => typeof value === "string" && /^0x[0-9a-f]*$/i.test(value);
+const isAgentName = (value: unknown): value is AgentName =>
+  isObject(value) && uint(value.chainId) && isAccount(value.registry) && typeof value.id === "string" && /^(0|[1-9]\d{0,77})$/.test(value.id) && BigInt(value.id) >> 256n === 0n;
+
+function isEntry(e: unknown): e is RecordEntry {
+  if (!isObject(e)) return false;
+  const { decision, receipt, paid } = e;
+  return (
+    e.version === 1 &&
+    uint(e.chainId) &&
+    isAccount(e.decisionLog) &&
+    isAccount(e.brain) &&
+    isAgentName(e.agent) &&
+    uint(e.seq) &&
+    e.seq >= 1 &&
+    isHash(e.prev) &&
+    isHash(e.epoch) &&
+    isAccount(e.controller) &&
+    typeof e.build === "string" &&
+    (RECORD_KINDS as readonly unknown[]).includes(e.kind) &&
+    (RECORD_OUTCOMES as readonly unknown[]).includes(e.outcome) &&
+    typeof e.ref === "string" &&
+    uint(e.issuedAt) &&
+    (decision === undefined || (isObject(decision) && isAccount(decision.log) && typeof decision.id === "string" && AMOUNT.test(decision.id))) &&
+    (e.ruled === undefined || e.ruled === true) &&
+    (receipt === undefined || (isObject(receipt) && typeof receipt.path === "string" && isHash(receipt.hash))) &&
+    (paid === undefined || (isObject(paid) && ["payer", "amount", "asset", "network"].every((k) => typeof paid[k] === "string")))
+  );
+}
+
+// An entry's hash is over exactly these two fields, so a third would leave it unsaid which bytes the next entry names.
+const isSigned = (value: unknown, of: string): value is Record<string, unknown> => isObject(value) && Object.keys(value).length === 2 && of in value && isSignature(value.signature);
+const signedEntry = (value: unknown): SignedEntry | undefined => (isSigned(value, "entry") && isEntry(value.entry) ? (value as unknown as SignedEntry) : undefined);
+
+function signedHead(value: unknown): SignedHead | undefined {
+  if (!isSigned(value, "head") || !isObject(value.head)) return undefined;
+  const h = value.head;
+  const valid = h.version === 1 && uint(h.chainId) && isAccount(h.decisionLog) && isAccount(h.brain) && isAgentName(h.agent) && uint(h.seq) && h.seq >= 1 && isHash(h.hash) && uint(h.at);
+  return valid ? (value as unknown as SignedHead) : undefined;
+}
+
+/** An entry's hash: keccak256 of the bytes it is served as, which are `{ entry, signature }` in canonical JSON. The next entry's `prev`, the head's `hash` and an ERC-8004 entry's feedbackHash are this value. */
+export const entryHash = (signed: SignedEntry): Hex => keccak256(toBytes(canonicalStringify(signed)));
+
+/** Who signed `prefix` and then `value` in canonical JSON, as personal_sign does. */
+async function signerOfMessage(prefix: string, value: unknown, signature: Hex): Promise<Address | undefined> {
+  try {
+    return await recoverMessageAddress({ message: `${prefix}${canonicalStringify(value)}`, signature });
+  } catch {
+    return undefined;
+  }
+}
+
+const TASK_REF = /^task:(0x[0-9a-f]{40}):([1-9]\d{0,77})$/;
+const SITTING_REF = /^sitting:0x[0-9a-f]{64}$/;
+
+/** What an entry names that its kind does not: a task or an audit names its board and task, an exam its sitting and no receipt. */
+function refFault(entry: RecordEntry): string | undefined {
+  if (entry.kind !== "exam") return TASK_REF.test(entry.ref) ? undefined : `the ref ${entry.ref}, where ${entry.kind === "audit" ? "an audit" : "a task"} names task:<board>:<id>`;
+  if (!SITTING_REF.test(entry.ref)) return `the ref ${entry.ref}, where an exam names sitting:<id>`;
+  return entry.receipt ? "a receipt, and a sitting has none" : undefined;
+}
+
+/** The task a record entry's ref names, with the contract set of its board where the tool carries it. */
+function taskOf(sets: readonly ContractSet[], ref: string): TaskPage | undefined {
+  const named = TASK_REF.exec(ref);
+  if (!named) return undefined;
+  const board = getAddress(named[1]!);
+  return { task: BigInt(named[2]!), board, set: sets.find((s) => eq(s.board, board)) };
+}
+
+interface Tenure {
+  brain: Address;
+  /** The time of the block that named it, and of the block that named the next, in Unix seconds. */
+  from: bigint;
+  until?: bigint;
+}
+
+const tenures = new WeakMap<object, Map<string, Promise<Tenure[]>>>();
+
+/**
+ * Every key a DecisionLog has named its brain, oldest first. The contract
+ * writes `brain` in its constructor, in setBrain and in attestBrain, and each
+ * emits BrainSet, so these events are the whole history of brain().
+ */
+function brainsOf({ client }: Pick<Context, "client">, set: ContractSet): Promise<Tenure[]> {
+  let known = tenures.get(client);
+  if (!known) tenures.set(client, (known = new Map()));
+  let found = known.get(set.log);
+  if (!found) known.set(set.log, (found = readBrains(client, set)));
+  return found;
+}
+
+async function readBrains(client: PublicClient, set: ContractSet): Promise<Tenure[]> {
+  const [events, now] = await Promise.all([
+    client.getContractEvents({ address: set.log, abi: decisionLogAbi, eventName: "BrainSet", fromBlock: BigInt(set.fromBlock), strict: true }),
+    client.readContract({ address: set.log, abi: decisionLogAbi, functionName: "brain" }),
+  ]);
+  const named = [...events].sort((a, b) => (a.blockNumber === b.blockNumber ? a.logIndex - b.logIndex : a.blockNumber < b.blockNumber ? -1 : 1));
+  const last = named.at(-1)?.args.brain;
+  // An RPC that returns part of the log's events would make a real brain key read as one never named.
+  if (!last || !eq(last, now)) throw new Error(`the BrainSet events read for DecisionLog ${short(set.log)} do not end at ${short(now)}, the key brain() names, so its history could not be read`);
+  const times = await Promise.all(named.map(({ blockNumber }) => client.getBlock({ blockNumber }).then((block) => block.timestamp)));
+  return named.map(({ args }, i) => ({ brain: args.brain, from: times[i]!, ...(i + 1 < named.length ? { until: times[i + 1]! } : {}) }));
+}
+
+/** What the brain key signed: under which key and log, and when it says it did. */
+interface Statement {
+  chainId: number;
+  decisionLog: Address;
+  brain: Address;
+  at: number;
+}
+
+/**
+ * Why a statement's key was not the brain when it signed, or undefined when
+ * the DecisionLog it names is one of the network's, named that key its brain,
+ * and the statement's time falls within the key's time as brain. A statement
+ * of the present, such as a head, must name the active set's log: a retired
+ * log names its last brain for good, whatever became of that key.
+ */
+async function brainFault(ctx: Context, s: Statement, present = false): Promise<string | undefined> {
+  const { network } = ctx;
+  if (s.chainId !== network.chainId) return `it names chain ${s.chainId}, not ${network.name} (${network.chainId})`;
+  const set = network.sets.find((x) => eq(x.log, s.decisionLog));
+  if (!set) return `it names DecisionLog ${short(s.decisionLog)}, none of the contract sets on ${network.name}`;
+  const active = network.sets[0]!;
+  if (present && set !== active) return `it names DecisionLog ${short(set.log)} of the retired set ${set.key}, and the brain signs what holds now under the active set's ${short(active.log)}`;
+  const held = (await brainsOf(ctx, set)).filter((t) => eq(t.brain, s.brain));
+  if (held.length === 0) return `DecisionLog ${short(set.log)} (set ${set.key}) never named ${short(s.brain)} its brain`;
+  const at = BigInt(s.at);
+  const slack = BigInt(CLOCK_SLACK);
+  if (held.some((t) => at >= t.from - slack && (t.until === undefined || at <= t.until + slack))) return undefined;
+  const spans = held.map((t) => `from ${utc(t.from)} UTC${t.until === undefined ? "" : ` to ${utc(t.until)} UTC`}`);
+  return `DecisionLog ${short(set.log)} (set ${set.key}) named ${short(s.brain)} its brain ${list(spans)}, and it is dated ${utc(at)} UTC`;
+}
+
+const brainNamed = ({ network }: Context, s: Pick<Statement, "brain" | "decisionLog">): string =>
+  `${short(s.brain)} was the brain of DecisionLog ${short(s.decisionLog)} (set ${network.sets.find((x) => eq(x.log, s.decisionLog))?.key})`;
+
+/** A run of entry numbers. */
+export interface Span {
+  from: number;
+  to: number;
+}
+
+function spansOf(seqs: number[]): Span[] {
+  const runs: Span[] = [];
+  for (const seq of [...seqs].sort((a, b) => a - b)) {
+    const last = runs.at(-1);
+    if (last && seq <= last.to + 1) last.to = seq;
+    else runs.push({ from: seq, to: seq });
+  }
+  return runs;
+}
+
+const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
+/** "entry 7", "entries 1 to 4 and 9". */
+const entriesNamed = (seqs: number[]): string => `${seqs.length === 1 ? "entry" : "entries"} ${list(spansOf(seqs).map(({ from, to }) => (from === to ? `${from}` : `${from} to ${to}`)))}`;
+/** Each fault once, with every entry that has it. */
+function grouped(faults: [number, string][]): string[] {
+  const by = new Map<string, number[]>();
+  for (const [seq, fault] of faults) by.set(fault, [...(by.get(fault) ?? []), seq]);
+  return [...by].map(([fault, seqs]) => `${entriesNamed(seqs)}: ${fault}`);
+}
+const few = (faults: string[]): string => (faults.length <= 3 ? faults.join("; ") : `${faults.slice(0, 3).join("; ")}; and ${faults.length - 3} more`);
+const span = (seconds: number): string =>
+  seconds < 120 ? plural(seconds, "second", "seconds") : seconds < 7_200 ? `${Math.floor(seconds / 60)} minutes` : seconds < 172_800 ? `${Math.floor(seconds / 3_600)} hours` : `${Math.floor(seconds / 86_400)} days`;
+const secondsNow = (service: Pick<Service, "now">): number => Math.floor((service.now ?? Date.now)() / 1000);
+const hostOfService = (service: Pick<Service, "url">): string => service.url.replace(/\/+$/, "");
+
+async function fetchJson(ctx: Pick<Context, "client">, uri: string, what: Wanted["what"], limit: number): Promise<unknown> {
+  const { bytes } = await fetchBytes(uri, { what, limit, allowPrivate: await allowsPrivate(ctx.client) });
+  const value = jsonOf(bytes);
+  if (value === undefined) throw new Error(`${display(uri)} sent something other than JSON, such as an error page`);
+  return value;
+}
+
+/** A reply the host could not be reached for is an error. One that is not what it should be is a failure. */
+const unread = (c: Checks, name: string, what: string, error: unknown): void =>
+  c.add(name, error instanceof Mismatch ? "fail" : "error", error instanceof Mismatch ? errorMessage(error) : `could not read ${what}: ${errorMessage(error)}`);
+
+interface Listed {
+  entries: SignedEntry[];
+  head: SignedHead;
+  pages: number;
+}
+
+/** Where the brain lists an agent's record. */
+export const recordUrl = (service: Pick<Service, "url" | "identity">, agentId: bigint): string => `${hostOfService(service)}/agents/${service.identity.chainId}/${agentId}/record`;
+
+/** An agent's entries from `from` on and the head signed over them, read a page at a time until the host names no next one. */
+async function readRecord(ctx: Pick<Context, "client">, service: Service, agentId: bigint, from = 1): Promise<Listed> {
+  const url = recordUrl(service, agentId);
+  const entries: SignedEntry[] = [];
+  let asked = from;
+  for (let pages = 1; ; pages++) {
+    const uri = `${url}?from=${asked}&limit=${RECORD_PAGE}`;
+    const body = await fetchJson(ctx, uri, "agent record", MAX_PAGE_BYTES);
+    const listed = isObject(body) && Array.isArray(body.entries) ? body.entries.map(signedEntry) : undefined;
+    let head = isObject(body) ? signedHead(body.head) : undefined;
+    if (!listed || !head) throw new Mismatch(`${display(uri)} is not an agent's record: a signed head and a list of entries`);
+    const bad = listed.indexOf(undefined);
+    if (bad >= 0) throw new Mismatch(`${display(uri)} lists, in place ${bad + 1}, something other than a record entry as BrainChain signs one`);
+    entries.push(...(listed as SignedEntry[]));
+    const { next } = body as { next?: unknown };
+    if (next === undefined) {
+      // The brain signs the head before it reads the entries, so an entry written between the two runs past it.
+      if ((entries.at(-1)?.entry.seq ?? 0) > head.head.seq) head = await readHead(ctx, service, agentId);
+      return { entries, head, pages };
+    }
+    const following = typeof next === "string" ? Number(/[?&]from=([1-9]\d{0,15})(?:&|$)/.exec(next)?.[1]) : NaN;
+    if (!(following > asked)) throw new Mismatch(`${display(uri)} names a next page that does not move on from entry ${asked}`);
+    if (pages === MAX_RECORD_PAGES) throw new TooLarge(`the record goes on past entry ${following - 1}, and this tool reads ${MAX_RECORD_PAGES * RECORD_PAGE} entries at most`);
+    asked = following;
+  }
+}
+
+async function readHead(ctx: Pick<Context, "client">, service: Service, agentId: bigint): Promise<SignedHead> {
+  const uri = `${recordUrl(service, agentId)}/head`;
+  const head = signedHead(await fetchJson(ctx, uri, "record head", MAX_HEAD_BYTES));
+  if (!head) throw new Mismatch(`${display(uri)} is not a record's head as BrainChain signs one`);
+  return head;
+}
+
+/** Where entries from `from` on stop being one unbroken run: each numbered after the one before and naming its hash, the first naming none. */
+function chainFaults(entries: SignedEntry[], hashes: Hex[], from: number): string[] {
+  const faults: string[] = [];
+  for (const [i, { entry }] of entries.entries()) {
+    if (entry.seq !== from + i) {
+      // Every later place is off by the same gap.
+      faults.push(`entry ${from + i} is missing: entry ${entry.seq} stands in its place`);
+      break;
+    }
+    const before = i === 0 ? (from === 1 ? NO : undefined) : hashes[i - 1]!;
+    if (before === undefined || eq(entry.prev, before)) continue;
+    faults.push(i === 0 ? `entry 1 names ${short(entry.prev)} as the entry before it, where the first names 32 zero bytes` : `entry ${entry.seq} names ${short(entry.prev)} as the entry before it, and entry ${entry.seq - 1} hashes to ${short(before)}`);
+  }
+  return faults;
+}
+
+async function signatureFaults(entries: SignedEntry[]): Promise<[number, string][]> {
+  const faults: [number, string][] = [];
+  for (const { entry, signature } of entries) {
+    const signer = await signerOfMessage(ENTRY_PREFIX, entry, signature);
+    if (!signer) faults.push([entry.seq, "its signature does not recover"]);
+    else if (!eq(signer, entry.brain)) faults.push([entry.seq, `signed by ${short(signer)}, not by ${short(entry.brain)}, the brain it names`]);
+  }
+  return faults;
+}
+
+/** Where a head is not the brain's word on where the entries end. */
+async function headFaults({ head, signature }: SignedHead, last: SignedEntry | undefined, lastHash: Hex | undefined): Promise<string[]> {
+  const faults: string[] = [];
+  const signer = await signerOfMessage(HEAD_PREFIX, head, signature);
+  if (!signer) faults.push("its signature does not recover");
+  else if (!eq(signer, head.brain)) faults.push(`it is signed by ${short(signer)}, not by ${short(head.brain)}, the brain it names`);
+  if (!last || !lastHash) faults.push(`it ends at entry ${head.seq}, and no entry was listed`);
+  else if (head.seq !== last.entry.seq) faults.push(`it ends at entry ${head.seq}, and the entries listed end at entry ${last.entry.seq}`);
+  else if (!eq(head.hash, lastHash)) faults.push(`it names the hash ${short(head.hash)}, and entry ${head.seq} hashes to ${short(lastHash)}`);
+  return faults;
+}
+
+/** Why something signed at `at` does not speak for the present: too old, or dated ahead of this clock. */
+function staleness(at: number, now: number): string | undefined {
+  const age = now - at;
+  if (age > HEAD_MAX_AGE) return `${span(age)} ago, and one older than ${HEAD_MAX_AGE / 60} minutes could leave out what was written since`;
+  return age < -CLOCK_SLACK ? `${span(-age)} ahead of this clock` : undefined;
+}
+
+const signedAgo = (at: number, now: number): string => `${utc(BigInt(at))} UTC, ${now > at ? `${span(now - at)} ago` : "just now"}`;
+
+/** The brain's epochId (epoch.ts): an agent's id, whoever controlled it and the build it declared. */
+export function epochId(agent: AgentName, controller: Address, build: string): Hex {
+  const address = (value: string): Address => getAddress(value.toLowerCase());
+  return keccak256(
+    encodeAbiParameters(
+      [{ type: "uint256" }, { type: "address" }, { type: "uint256" }, { type: "address" }, { type: "string" }],
+      [BigInt(agent.chainId), address(agent.registry), BigInt(agent.id), address(controller), build],
+    ),
+  );
+}
+
+/** The epoch an agent's id is in now. */
+export interface CurrentEpoch {
+  id: Hex;
+  controller: Address;
+  build: string;
+  /** The NFT the id is bound to, when the registry's owner is a binding adapter. */
+  bound?: { token: Address; tokenId: string };
+}
+
+// The adapter's code for ERC-721, the one standard whose token has a single holder.
+const ERC721 = 0;
+const MAX_BUILD = 96;
+const reverted = (error: unknown): boolean => error instanceof BaseError && error.walk((e) => e instanceof ContractFunctionRevertedError) !== null;
+
+/** A build as the brain reads it (buildLabel in epoch.ts): printable ASCII on one line, 96 characters at most. */
+function buildLabel(raw: Hex): string {
+  return new TextDecoder("utf-8", { fatal: false })
+    .decode(hexToBytes(raw))
+    .replace(/[^\x20-\x7e]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_BUILD);
+}
+
+/**
+ * The epoch the registry gives an agent's id now, as the brain works it out
+ * (controlOf and declaredBuild in epoch.ts): its owner on the registry, or the
+ * holder of the ERC-721 token a binding adapter binds it to, and the text
+ * under its "build" metadata key. Null when the id does not exist or no single
+ * account holds it. A registry that cannot be read throws.
+ */
+export async function currentEpoch(client: PublicClient, identity: { chainId: number; registry: Address; adapters: readonly Address[] }, agentId: bigint): Promise<CurrentEpoch | null> {
+  const { registry } = identity;
+  const orNull = <T>(error: unknown): T | null => {
+    if (reverted(error)) return null;
+    throw error;
+  };
+  const owner = await client.readContract({ address: registry, abi: identityAbi, functionName: "ownerOf", args: [agentId] }).catch(orNull<Address>);
+  if (!owner) return null;
+  let controller = owner;
+  let bound: CurrentEpoch["bound"];
+  const adapter = identity.adapters.find((a) => eq(a, owner));
+  if (adapter) {
+    const binding = await client.readContract({ address: adapter, abi: adapterAbi, functionName: "bindingOf", args: [agentId] }).catch(orNull<readonly [number, Address, bigint]>);
+    if (!binding || binding[0] !== ERC721) return null;
+    const holder = await client.readContract({ address: binding[1], abi: identityAbi, functionName: "ownerOf", args: [binding[2]] }).catch(orNull<Address>);
+    if (!holder) return null;
+    controller = holder;
+    bound = { token: binding[1], tokenId: binding[2].toString() };
+  }
+  // A registry without the metadata read declares no build.
+  const raw = await client.readContract({ address: registry, abi: identityAbi, functionName: "getMetadata", args: [agentId, "build"] }).catch(orNull<Hex>);
+  const build = raw ? buildLabel(raw) : "";
+  return { id: epochId({ chainId: identity.chainId, registry, id: agentId.toString() }, controller, build), controller: getAddress(controller.toLowerCase()), build, ...(bound ? { bound } : {}) };
+}
+
+/** What one epoch of a record came to. */
+export interface EpochCount {
+  id: Hex;
+  controller: Address;
+  build: string;
+  /** The epoch's first entry and when it was issued, in Unix seconds. */
+  from: number;
+  since: number;
+  entries: number;
+  /** By kind and outcome, such as `task:accepted`. */
+  counts: Partial<Record<`${RecordKind}:${RecordOutcome}`, number>>;
+}
+
+/** An entry's receipt, checked with the decision it names. */
+export interface RecordReceipt {
+  seq: number;
+  path: string;
+  decision?: DecisionReport & { set: string };
+  /** That decision's record was served without the work, so its hashes could not be checked. */
+  withheld?: boolean;
+  /** The receipt's own checks and its decision's. The record's `record-receipt` line for this entry sums them up. */
+  checks: Check[];
+}
+
+export interface RecordReport {
+  agentId: string;
+  /** Where the record was read. */
+  url: string;
+  /** The agent every entry and the head name, once they agree with the one asked for. */
+  agent?: AgentName;
+  entries: number;
+  head?: { seq: number; hash: Hex; brain: Address; at: number; signedAt: string; ageSeconds: number };
+  /** Each epoch in the record, in the order it first appears. */
+  epochs: EpochCount[];
+  /** With `epoch`: the epoch the registry gives now and the entries that belong to it, or null when no single account controls the id. `sameController` is set for a house worker. */
+  current?: (CurrentEpoch & { entries: Span[]; sameController?: Span[] }) | null;
+  receipts: RecordReceipt[];
+  withheld?: boolean;
+  checks: Check[];
+}
+
+/**
+ * An agent's record, end to end: every entry from the first, numbered with no
+ * gap and each naming the hash of the one before, each signed by a key the
+ * DecisionLog it names had named its brain, up to a fresh head signed by the
+ * brain of the active DecisionLog. Each receipt an entry names is fetched,
+ * hashed and checked with its decision. With `epoch`, the identity registry
+ * is read for the epoch the id is in now.
+ */
+export async function verifyRecord(ctx: Context, service: Service, agentId: bigint, options: { epoch?: boolean } = {}): Promise<RecordReport> {
+  const c = new Checks();
+  const url = recordUrl(service, agentId);
+  const report: RecordReport = { agentId: agentId.toString(), url, entries: 0, epochs: [], receipts: [], checks: c.list };
+  let listed: Listed;
+  try {
+    listed = await readRecord(ctx, service, agentId);
+  } catch (error) {
+    unread(c, "record-fetch", "the record", error);
+    return report;
+  }
+  const { entries, head, pages } = listed;
+  const hashes = entries.map(entryHash);
+  const now = secondsNow(service);
+  report.entries = entries.length;
+  report.head = { seq: head.head.seq, hash: head.head.hash, brain: head.head.brain, at: head.head.at, signedAt: `${utc(BigInt(head.head.at))} UTC`, ageSeconds: now - head.head.at };
+  c.add("record-fetch", "ok", `fetched ${plural(entries.length, "entry", "entries")} and the head from ${display(url)}${pages > 1 ? `, in ${pages} pages` : ""}`);
+
+  const { chainId, registry } = service.identity;
+  const asked: AgentName = { chainId, registry: registry ?? head.head.agent.registry, id: report.agentId };
+  const names = (a: AgentName): string => `agent ${a.id} on registry ${short(a.registry)}, chain ${a.chainId}`;
+  const other = (a: AgentName): boolean => a.id !== asked.id || a.chainId !== asked.chainId || !eq(a.registry, asked.registry);
+  const others = grouped(entries.filter(({ entry }) => other(entry.agent)).map(({ entry }) => [entry.seq, `for ${names(entry.agent)}`]));
+  if (other(head.head.agent)) others.unshift(`the head: for ${names(head.head.agent)}`);
+  if (others.length === 0) report.agent = asked;
+  c.check(
+    "record-agent",
+    others.length === 0,
+    `agent: every entry and the head are for ${names(asked)}${registry ? "" : ". This tool carries no registry for that chain, so the address is the record's own"}`,
+    `agent: asked for ${names(asked)}. ${few(others)}`,
+  );
+
+  const breaks = chainFaults(entries, hashes, 1);
+  c.check("record-chain", breaks.length === 0 && entries.length > 0, `chain: entries 1 to ${entries.length} are numbered with no gap, each names the hash of the one before it, and the first names none`, `chain: ${entries.length === 0 ? "the record lists no entry" : few(breaks)}`);
+
+  const unsigned = grouped(await signatureFaults(entries));
+  c.check("record-signatures", unsigned.length === 0, `signatures: ${entries.length === 1 ? "the entry is" : `each of the ${entries.length} entries is`} signed by the brain it names`, `signatures: ${few(unsigned)}`);
+
+  const ends = await headFaults(head, entries.at(-1), hashes.at(-1));
+  c.check("record-head", ends.length === 0, `head: signed by ${short(head.head.brain)}, the brain it names, it ends at entry ${head.head.seq} with the hash ${short(head.head.hash)}, as the entries do`, `head: ${ends.join("; ")}`);
+
+  const stale = staleness(head.head.at, now);
+  c.check("record-fresh", stale === undefined, `fresh: the head was signed ${signedAgo(head.head.at, now)}`, `fresh: the head is dated ${utc(BigInt(head.head.at))} UTC, ${stale}`);
+
+  try {
+    const faults: [number, string][] = [];
+    const by = new Map<string, { entry: RecordEntry; seqs: number[] }>();
+    for (const { entry } of entries) {
+      const fault = await brainFault(ctx, { ...entry, at: entry.issuedAt });
+      if (fault) {
+        faults.push([entry.seq, fault]);
+        continue;
+      }
+      const key = `${entry.decisionLog}:${entry.brain}`.toLowerCase();
+      by.set(key, { entry, seqs: [...(by.get(key)?.seqs ?? []), entry.seq] });
+    }
+    const wrong = grouped(faults);
+    const fault = await brainFault(ctx, head.head, true);
+    if (fault) wrong.unshift(`the head: ${fault}`);
+    const signed = [...by.values()].map(({ entry, seqs }) => `${brainNamed(ctx, entry)} when it signed ${entriesNamed(seqs)}`);
+    c.check("record-brain", wrong.length === 0, `brain: ${[...signed, `${brainNamed(ctx, head.head)}, the active set's, when it signed the head`].join("; ")}`, `brain: ${few(wrong)}`);
+  } catch (error) {
+    c.add("record-brain", "error", `brain: could not read which keys the DecisionLog named its brain: ${errorMessage(error)}`);
+  }
+
+  const epochs = grouped(entries.filter(({ entry }) => epochId(entry.agent, entry.controller, entry.build) !== entry.epoch.toLowerCase()).map(({ entry }) => [entry.seq, "its epoch is not the hash of its agent, controller and build"]));
+  c.check("record-epochs", epochs.length === 0, "epochs: each entry's epoch is the hash of its agent, controller and build", `epochs: ${few(epochs)}`);
+
+  const seen = new Map<string, number>();
+  const refs: [number, string][] = [];
+  for (const { entry } of entries) {
+    const fault = refFault(entry);
+    const first = seen.get(entry.ref);
+    if (fault) refs.push([entry.seq, `it names ${fault}`]);
+    else if (first !== undefined) refs.push([entry.seq, `it names ${entry.ref}, which entry ${first} settled`]);
+    else seen.set(entry.ref, entry.seq);
+  }
+  c.check("record-refs", refs.length === 0, "refs: each entry names a task or a sitting as its kind does, and none is named twice", `refs: ${few(grouped(refs))}`);
+
+  for (const { entry } of entries) {
+    let epoch = report.epochs.find((e) => eq(e.id, entry.epoch));
+    if (!epoch) report.epochs.push((epoch = { id: entry.epoch, controller: entry.controller, build: clean(entry.build), from: entry.seq, since: entry.issuedAt, entries: 0, counts: {} }));
+    epoch.entries += 1;
+    epoch.counts[`${entry.kind}:${entry.outcome}`] = (epoch.counts[`${entry.kind}:${entry.outcome}`] ?? 0) + 1;
+  }
+
+  for (const { entry } of entries) if (entry.receipt) await checkRecordReceipt(ctx, service, c, report, entry);
+  if (options.epoch) await checkCurrent(service, c, report, entries);
+  return report;
+}
+
+/** One entry's receipt and the decision it names, as one line on the record. */
+async function checkRecordReceipt(ctx: Context, service: Service, c: Checks, report: RecordReport, entry: RecordEntry): Promise<void> {
+  const at = `entry ${entry.seq}`;
+  if (ctx.offline) return c.add("record-receipt", "skip", `${at}: it names a receipt, and none is fetched offline`);
+  const rc = new Checks();
+  const found: RecordReceipt = { seq: entry.seq, path: clean(entry.receipt!.path), checks: rc.list };
+  report.receipts.push(found);
+  let decision: bigint | undefined;
+  try {
+    const receipt = await receiptOf(ctx, rc, hostOfService(service), entry);
+    if (receipt) {
+      const on = contextFor(ctx, receipt.set);
+      const decided = await verifyDecision(on, receipt.decision, receipt.given);
+      rc.list.push(...decided.checks);
+      found.decision = { ...decided, set: receipt.set.key };
+      decision = receipt.decision;
+      if (decided.withheld) found.withheld = report.withheld = true;
+      await checkEntryTask(on, rc, receipt.decision, taskOf(ctx.network.sets, entry.ref), "the record entry");
+      checkSettled(rc, entry, receipt);
+    }
+  } catch (error) {
+    rc.add("rpc", "error", `could not check the receipt: ${errorMessage(error)}`);
+  }
+  const named = (status: Status): string[] => rc.list.filter((x) => x.status === status).map((x) => x.name);
+  const failed = named("fail");
+  const errors = named("error");
+  if (failed.length > 0) return c.add("record-receipt", "fail", `${at}: ${plural(failed.length, "check", "checks")} on its receipt failed (${failed.join(", ")})`);
+  if (errors.length > 0) return c.add("record-receipt", "error", `${at}: its receipt could not be checked (${errors.join(", ")})`);
+  const how = found.withheld ? "passes the checks a record served without the work allows" : "verifies";
+  c.add("record-receipt", "ok", `${at}: the receipt at ${found.path} hashes to the entry's ${short(entry.receipt!.hash)}, and decision ${decision} in set ${found.decision?.set} ${how} with it, for the task, outcome and payment the entry states`);
+}
+
+async function checkCurrent(service: Service, c: Checks, report: RecordReport, entries: SignedEntry[]): Promise<void> {
+  const { client, adapters, house } = service.identity;
+  const { agent } = report;
+  if (!agent) return c.add("current-epoch", "skip", "current epoch: the record is not the asked agent's, so the registry was not read");
+  if (!client) return c.add("current-epoch", "skip", "current epoch: no client for the identity registry's chain was given, so the registry was not read");
+  let now: CurrentEpoch | null;
+  try {
+    now = await currentEpoch(client, { ...agent, adapters }, BigInt(agent.id));
+  } catch (error) {
+    return c.add("current-epoch", "error", `current epoch: could not read the identity registry: ${errorMessage(error)}`);
+  }
+  if (!now) {
+    report.current = null;
+    return c.add("current-epoch", "ok", `current epoch: no single account controls agent ${agent.id} on the identity registry now, so none of its entries belongs to a current epoch`);
+  }
+  const { id, controller } = now;
+  const seqs = (mine: (entry: RecordEntry) => boolean): number[] => entries.filter(({ entry }) => mine(entry)).map(({ entry }) => entry.seq);
+  const mine = seqs((entry) => eq(entry.epoch, id));
+  report.current = { ...now, build: clean(now.build), entries: spansOf(mine) };
+  const who = now.bound ? `${short(controller)}, who holds token ${now.bound.tokenId} of ${short(now.bound.token)}, which the id is bound to,` : short(controller);
+  const lead = `current epoch: the identity registry gives controller ${who} and ${now.build === "" ? "no build" : `the build "${now.build}"`}, which is epoch ${short(id)}`;
+  const belong = mine.length === 0 ? `None of the ${plural(entries.length, "entry", "entries")} belongs to it` : `${mine.length} of ${plural(entries.length, "entry", "entries")} belong${mine.length === 1 ? "s" : ""} to it: ${entriesNamed(mine)}`;
+  const name = house?.[agent.id];
+  if (name === undefined) return c.add("current-epoch", "ok", `${lead}. ${belong}`);
+  const same = seqs((entry) => eq(entry.controller, controller));
+  report.current.sameController = spansOf(same);
+  c.add("current-epoch", "ok", `${lead}. ${belong}. Agent ${agent.id} is the house worker ${name}: BrainChain signs a house worker's entries under the build it runs it as, which the registry does not hold, so they fall outside this epoch. ${same.length === 0 ? "None names" : `${same.length} name${same.length === 1 ? "s" : ""}`} the current controller`);
+}
+
+export type LicenceState = "valid" | "expired" | "suspended" | "lapsed";
+const LICENCE_STATES: readonly string[] = ["valid", "expired", "suspended", "lapsed"];
+
+/** A pass at the exam, as the brain key signs it. It stands for one epoch. */
+export interface Licence {
+  version: 1;
+  chainId: number;
+  decisionLog: Address;
+  brain: Address;
+  agent: AgentName;
+  class: string;
+  epoch: Hex;
+  controller: Address;
+  build: string;
+  sitting: Hex;
+  /** The decision on each item delivered, in the sitting's order, on the log named above. */
+  decisions: string[];
+  accepted: number;
+  of: number;
+  issuedAt: number;
+  expiresAt: number;
+}
+
+function isLicence(l: unknown): l is Licence {
+  return (
+    isObject(l) &&
+    l.version === 1 &&
+    uint(l.chainId) &&
+    isAccount(l.decisionLog) &&
+    isAccount(l.brain) &&
+    isAgentName(l.agent) &&
+    typeof l.class === "string" &&
+    isHash(l.epoch) &&
+    isAccount(l.controller) &&
+    typeof l.build === "string" &&
+    isHash(l.sitting) &&
+    Array.isArray(l.decisions) &&
+    l.decisions.every((d) => typeof d === "string") &&
+    uint(l.accepted) &&
+    uint(l.of) &&
+    uint(l.issuedAt) &&
+    uint(l.expiresAt)
+  );
+}
+
+export interface LicenceReport {
+  class: string;
+  /** The state the service gives. */
+  claimed: string;
+  /** The state the checks give. `suspended` is the service's word, which nothing here can check. */
+  state?: LicenceState;
+  sitting?: Hex;
+  accepted?: number;
+  of?: number;
+  issuedAt?: number;
+  expiresAt?: number;
+  /** Audits passed and failed since the licence was issued, as the service counts them. */
+  audits?: { passed: number; failed: number };
+  checks: Check[];
+}
+
+export interface LicencesReport {
+  agentId: string;
+  url: string;
+  licences: LicenceReport[];
+  /** The fetch. Each licence's checks are its own. */
+  checks: Check[];
+}
+
+/**
+ * An agent's licences as the brain host lists them: each one's signature, the
+ * key behind it, its expiry, the epoch the registry gives the id now against
+ * the one it was earned in, and the state those give against the state the
+ * service claims.
+ */
+export async function verifyLicences(ctx: Context, service: Service, agentId: bigint): Promise<LicencesReport> {
+  const c = new Checks();
+  const url = `${hostOfService(service)}/licences/${service.identity.chainId}/${agentId}`;
+  const report: LicencesReport = { agentId: agentId.toString(), url, licences: [], checks: c.list };
+  let listed: unknown[];
+  try {
+    const body = await fetchJson(ctx, url, "licence list", MAX_LICENCES_BYTES);
+    if (!isObject(body) || !Array.isArray(body.licences)) throw new Mismatch(`${display(url)} is not a list of an agent's licences`);
+    listed = body.licences;
+  } catch (error) {
+    unread(c, "licences-fetch", "the licences", error);
+    return report;
+  }
+  c.add("licences-fetch", "ok", `fetched ${plural(listed.length, "licence", "licences")} from ${display(url)}`);
+  const epochs = new Map<string, Promise<CurrentEpoch | null>>();
+  for (const item of listed) report.licences.push(await checkLicence(ctx, service, agentId, item, epochs));
+  return report;
+}
+
+async function checkLicence(ctx: Context, service: Service, agentId: bigint, item: unknown, epochs: Map<string, Promise<CurrentEpoch | null>>): Promise<LicenceReport> {
+  const c = new Checks();
+  const listed = isObject(item) ? item : {};
+  const signed = isObject(listed.licence) ? listed.licence : {};
+  const claimed = typeof listed.state === "string" ? clean(listed.state) : "none";
+  const report: LicenceReport = { class: typeof listed.class === "string" ? clean(listed.class) : "unknown", claimed, checks: c.list };
+  const { licence: l, signature } = signed;
+  if (!isLicence(l) || !isSignature(signature)) {
+    c.add("licence", "fail", "licence: not a licence as BrainChain signs one");
+    return report;
+  }
+  const audits = listed.audits;
+  Object.assign(report, { sitting: l.sitting, accepted: l.accepted, of: l.of, issuedAt: l.issuedAt, expiresAt: l.expiresAt });
+  if (isObject(audits) && uint(audits.passed) && uint(audits.failed)) report.audits = { passed: audits.passed, failed: audits.failed };
+
+  const { identity } = service;
+  const wrong: string[] = [];
+  if (l.agent.id !== agentId.toString()) wrong.push(`agent ${l.agent.id}, not agent ${agentId}`);
+  if (l.agent.chainId !== identity.chainId || (identity.registry && !eq(l.agent.registry, identity.registry))) wrong.push(`the registry ${short(l.agent.registry)} on chain ${l.agent.chainId}, not ${identity.registry ? `${short(identity.registry)} on ` : ""}chain ${identity.chainId}`);
+  if (l.class !== listed.class) wrong.push(`the class ${l.class}, and the service lists it under ${report.class}`);
+  if (epochId(l.agent, l.controller, l.build) !== l.epoch.toLowerCase()) wrong.push("an epoch that is not the hash of its agent, controller and build");
+  c.check("licence", wrong.length === 0, `licence: ${l.class}, for agent ${l.agent.id}, on ${l.accepted} of ${l.of} items accepted in sitting ${short(l.sitting)}, issued ${utc(BigInt(l.issuedAt))} UTC`, `licence: names ${list(wrong)}`);
+
+  const signer = await signerOfMessage(LICENCE_PREFIX, l, signature);
+  c.check(
+    "licence-signature",
+    signer !== undefined && eq(signer, l.brain),
+    `signature: signed by ${short(l.brain)}, the brain it names`,
+    signer ? `signature: signed by ${short(signer)}, not by ${short(l.brain)}, the brain it names` : "signature: does not recover",
+  );
+  try {
+    const fault = await brainFault(ctx, { ...l, at: l.issuedAt });
+    c.check("licence-brain", fault === undefined, `brain: ${brainNamed(ctx, l)} when it signed the licence`, `brain: ${fault}`);
+  } catch (error) {
+    c.add("licence-brain", "error", `brain: could not read which keys the DecisionLog named its brain: ${errorMessage(error)}`);
+  }
+
+  const now = secondsNow(service);
+  const past = now >= l.expiresAt;
+  c.add("licence-expiry", "ok", `expiry: ${past ? `expired ${utc(BigInt(l.expiresAt))} UTC, ${span(now - l.expiresAt)} ago` : `expires ${utc(BigInt(l.expiresAt))} UTC, in ${span(l.expiresAt - now)}`}`);
+
+  // Undefined when the registry was not read, so valid and lapsed cannot be told apart.
+  let moved: boolean | undefined;
+  if (!identity.client) {
+    c.add("licence-epoch", "skip", "epoch: no client for the identity registry's chain was given, so the registry was not read");
+  } else {
+    const registry = identity.registry ?? l.agent.registry;
+    let reading = epochs.get(registry);
+    if (!reading) epochs.set(registry, (reading = currentEpoch(identity.client, { chainId: identity.chainId, registry, adapters: identity.adapters }, agentId)));
+    try {
+      const current = await reading;
+      moved = current?.id !== l.epoch.toLowerCase();
+      const earned = `controller ${short(l.controller)} and ${l.build === "" ? "no build" : `the build "${l.build}"`}`;
+      c.add(
+        "licence-epoch",
+        "ok",
+        !current
+          ? `epoch: no single account controls agent ${agentId} on the identity registry now, so the licence, earned under ${earned}, has lapsed`
+          : moved
+            ? `epoch: the identity registry gives controller ${short(current.controller)} and ${current.build === "" ? "no build" : `the build "${current.build}"`} now. The licence was earned under ${earned}, so it has lapsed`
+            : `epoch: the identity registry gives ${earned} now, the epoch the licence was earned in`,
+      );
+    } catch (error) {
+      c.add("licence-epoch", "error", `epoch: could not read the identity registry: ${errorMessage(error)}`);
+      return report;
+    }
+  }
+
+  // The service puts lapsed before suspended before expired, and stops reading a licence's epoch once it is suspended or expired.
+  const computed: LicenceState = moved ? "lapsed" : past ? "expired" : "valid";
+  const allowed = new Set<string>([computed]);
+  if (past && moved !== false) allowed.add("expired").add("lapsed");
+  if (!past && moved === undefined) allowed.add("lapsed");
+  const why = moved ? "the agent's id is in another epoch than the one it was earned in" : past ? "it is past its expiry" : moved === undefined ? "it has not expired" : "it has not expired and the id is in the epoch it was earned in";
+  if (claimed === "suspended") {
+    report.state = "suspended";
+    c.add("licence-state", "ok", `state: suspended, as the service says. Only the service counts the audits behind a suspension. Without it the licence would be ${computed}: ${why}`);
+  } else if (allowed.has(claimed)) {
+    report.state = claimed as LicenceState;
+    c.add("licence-state", "ok", `state: ${claimed}, as the service says: ${why}${moved === undefined && !past ? ". The registry was not read, so valid and lapsed could not be told apart" : ""}`);
+  } else {
+    report.state = computed;
+    const known = LICENCE_STATES.includes(claimed) ? "" : ", which is not a state a licence has";
+    const lag = claimed === "valid" && computed === "lapsed" ? ". The service reads the registry every few minutes, so a change made since its last reading does not show there yet" : "";
+    c.add("licence-state", "fail", `state: the service says ${claimed}${known}, and the checks give ${computed}: ${why}${lag}`);
+  }
+  return report;
+}
+
+interface Papers {
+  version: 1;
+  chainId: number;
+  decisionLog: Address;
+  brain: Address;
+  agent: AgentName;
+  /** Unix seconds when the papers were signed. */
+  at: number;
+  epoch: { id: Hex; controller: Address; build: string; number: number };
+  record?: { entries: number; head: Hex };
+  licences: unknown[];
+}
+
+function isPapers(p: unknown): p is Papers {
+  if (!isObject(p) || !isObject(p.epoch)) return false;
+  const { epoch, record } = p;
+  return (
+    p.version === 1 &&
+    uint(p.chainId) &&
+    isAccount(p.decisionLog) &&
+    isAccount(p.brain) &&
+    isAgentName(p.agent) &&
+    uint(p.at) &&
+    isHash(epoch.id) &&
+    isAccount(epoch.controller) &&
+    typeof epoch.build === "string" &&
+    uint(epoch.number) &&
+    (record === undefined || (isObject(record) && uint(record.entries) && record.entries >= 1 && isHash(record.head))) &&
+    Array.isArray(p.licences)
+  );
+}
+
+export interface PapersReport {
+  agentId: string;
+  url: string;
+  /** What the papers state, once they are read. The checks say whether the brain key signed it. */
+  at?: number;
+  signedAt?: string;
+  brain?: Address;
+  epoch?: { id: Hex; controller: Address; build: string; number: number };
+  record?: { entries: number; head: Hex };
+  licences?: { class: string; state: string }[];
+  checks: Check[];
+}
+
+/**
+ * An agent's papers: the file's `brainchain.signed` is the text the brain key
+ * signed and holds the papers the file shows, the key is the brain of the
+ * active DecisionLog, the papers are recent, and the head they name is an
+ * entry of the record its fresh signed head ends.
+ */
+export async function verifyPapers(ctx: Context, service: Service, agentId: bigint): Promise<PapersReport> {
+  const c = new Checks();
+  const url = `${hostOfService(service)}/papers/${service.identity.chainId}/${agentId}`;
+  const report: PapersReport = { agentId: agentId.toString(), url, checks: c.list };
+  let signed: string;
+  let shown: unknown;
+  let signature: Hex;
+  try {
+    const body = await fetchJson(ctx, url, "papers file", MAX_PAPERS_BYTES);
+    const held = isObject(body) && isObject(body.brainchain) ? body.brainchain : {};
+    if (typeof held.signed !== "string" || !isSignature(held.signature)) throw new Mismatch(`${display(url)} is not an agent's papers: it holds no signed text under brainchain`);
+    ({ signed, papers: shown, signature } = held as { signed: string; papers: unknown; signature: Hex });
+  } catch (error) {
+    unread(c, "papers-fetch", "the papers", error);
+    return report;
+  }
+  c.add("papers-fetch", "ok", `fetched the papers from ${display(url)}`);
+
+  const stated = signed.startsWith(PAPERS_PREFIX) ? parseJson(signed.slice(PAPERS_PREFIX.length)) : undefined;
+  if (!signed.startsWith(PAPERS_PREFIX)) c.add("papers-signed", "fail", `signed text: it does not start with ${JSON.stringify(PAPERS_PREFIX)}, the line the brain key signs papers under`);
+  else c.check("papers-signed", same(stated, shown), "signed text: it is the papers line and then the papers the file shows", "signed text: the papers the file shows are not the ones in the text that was signed");
+  if (!isPapers(stated)) {
+    if (signed.startsWith(PAPERS_PREFIX)) c.add("papers", "fail", "papers: the signed text does not hold papers as BrainChain signs them");
+    return report;
+  }
+  const p = stated;
+  const now = secondsNow(service);
+  Object.assign(report, { at: p.at, signedAt: `${utc(BigInt(p.at))} UTC`, brain: p.brain, epoch: { id: p.epoch.id, controller: p.epoch.controller, build: clean(p.epoch.build), number: p.epoch.number } });
+  if (p.record) report.record = { entries: p.record.entries, head: p.record.head };
+  report.licences = p.licences.filter(isObject).map((l) => ({ class: clean(String(l.class)), state: clean(String(l.state)) }));
+
+  const signer = await recoverMessageAddress({ message: signed, signature }).catch(() => undefined);
+  c.check(
+    "papers-signature",
+    signer !== undefined && eq(signer, p.brain),
+    `signature: the text is signed by ${short(p.brain)}, the brain the papers name`,
+    signer ? `signature: the text is signed by ${short(signer)}, not by ${short(p.brain)}, the brain the papers name` : "signature: does not recover",
+  );
+
+  const { identity } = service;
+  const wrong: string[] = [];
+  if (p.agent.id !== report.agentId) wrong.push(`agent ${p.agent.id}, not agent ${agentId}`);
+  if (p.agent.chainId !== identity.chainId || (identity.registry && !eq(p.agent.registry, identity.registry))) wrong.push(`the registry ${short(p.agent.registry)} on chain ${p.agent.chainId}, not ${identity.registry ? `${short(identity.registry)} on ` : ""}chain ${identity.chainId}`);
+  if (epochId(p.agent, p.epoch.controller, p.epoch.build) !== p.epoch.id.toLowerCase()) wrong.push("an epoch that is not the hash of its agent, controller and build");
+  c.check("papers-agent", wrong.length === 0, `agent: the papers are for agent ${p.agent.id} on registry ${short(p.agent.registry)}, chain ${p.agent.chainId}, in epoch ${short(p.epoch.id)}`, `agent: the papers name ${list(wrong)}`);
+
+  try {
+    const fault = await brainFault(ctx, p, true);
+    c.check("papers-brain", fault === undefined, `brain: ${brainNamed(ctx, p)}, the active set's, when it signed the papers`, `brain: ${fault}`);
+  } catch (error) {
+    c.add("papers-brain", "error", `brain: could not read which keys the DecisionLog named its brain: ${errorMessage(error)}`);
+  }
+  const stale = staleness(p.at, now);
+  c.check("papers-fresh", stale === undefined, `fresh: the papers were signed ${signedAgo(p.at, now)}`, `fresh: the papers are dated ${utc(BigInt(p.at))} UTC, ${stale}`);
+
+  await checkPapersRecord(ctx, service, c, agentId, p, now);
+  return report;
+}
+
+/**
+ * The papers name the record's head as it was when they were signed. The
+ * record may have grown since, so the entries from that one on are read: it
+ * must hash as the papers say, lead without a gap to a fresh head the active
+ * brain signed, and every entry after it must be newer than the papers.
+ */
+async function checkPapersRecord(ctx: Context, service: Service, c: Checks, agentId: bigint, p: Papers, now: number): Promise<void> {
+  const named = p.record;
+  const from = named?.entries ?? 1;
+  let listed: Listed;
+  try {
+    listed = await readRecord(ctx, service, agentId, from);
+  } catch (error) {
+    if (!(error instanceof NotFound)) return unread(c, "papers-record", "the record", error);
+    return c.check("papers-record", !named, "record: the papers name no record, and the host serves none for this agent", `record: the papers name a record of ${plural(from, "entry", "entries")}, and the host serves none for this agent`);
+  }
+  const { entries, head } = listed;
+  const hashes = entries.map(entryHash);
+  const wrong = [...chainFaults(entries, hashes, from), ...grouped(await signatureFaults(entries)), ...(await headFaults(head, entries.at(-1), hashes.at(-1))).map((fault) => `the record's head: ${fault}`)];
+  const { agent } = head.head;
+  if (agent.id !== p.agent.id || agent.chainId !== p.agent.chainId || !eq(agent.registry, p.agent.registry)) wrong.push(`the record's head is for agent ${agent.id} on registry ${short(agent.registry)}, chain ${agent.chainId}`);
+  const stale = staleness(head.head.at, now);
+  if (stale) wrong.push(`the record's head is dated ${utc(BigInt(head.head.at))} UTC, ${stale}`);
+  try {
+    const fault = await brainFault(ctx, head.head, true);
+    if (fault) wrong.push(`the record's head: ${fault}`);
+  } catch (error) {
+    return c.add("papers-record", "error", `record: could not read which keys the DecisionLog named its brain: ${errorMessage(error)}`);
+  }
+  if (named && hashes[0] && !eq(hashes[0], named.head)) wrong.push(`the papers name the head ${short(named.head)}, and entry ${from} hashes to ${short(hashes[0])}`);
+  const since = (named ? entries.slice(1) : entries).map(({ entry }) => entry);
+  const before = since.filter((entry) => entry.issuedAt < p.at - PAPERS_LAG).map((entry) => entry.seq);
+  if (before.length > 0) wrong.push(`the papers, signed ${utc(BigInt(p.at))} UTC, leave out ${entriesNamed(before)}, issued before then`);
+  const grown = `reached entry ${head.head.seq}, and every entry ${named ? `after entry ${from}` : "in it"} was issued once the papers were signed`;
+  const agrees = !named
+    ? `record: the papers name no record. One has since begun and ${grown}`
+    : `record: the papers name ${plural(from, "entry", "entries")} and the head ${short(named.head)}, which entry ${from} hashes to${since.length === 0 ? ", as the record's signed head says" : `. The record has since ${grown}`}`;
+  c.check("papers-record", wrong.length === 0, agrees, `record: ${few(wrong)}`);
+}
+
+export interface ItemReport {
+  id: Hex;
+  url: string;
+  title?: string;
+  template?: string;
+  /** How the item's uses went, as the service states it. */
+  retired?: { uses: number; passed: number; retiredAt: number };
+  checks: Check[];
+}
+
+/** A retired exam item as the brain host publishes it: the item without its id, in canonical JSON, hashes to its id, the commitment it was known by while it was in use. */
+export async function verifyItem(ctx: Pick<Context, "client">, service: Pick<Service, "url">, id: Hex): Promise<ItemReport> {
+  const c = new Checks();
+  const asked = id.toLowerCase() as Hex;
+  const url = `${hostOfService(service)}/exams/items/${asked}.json`;
+  const report: ItemReport = { id: asked, url, checks: c.list };
+  let item: Record<string, unknown>;
+  try {
+    const body = await fetchJson(ctx, url, "exam item", MAX_ITEM_BYTES).catch((error: unknown) => {
+      throw error instanceof NotFound ? new Error(`${errorMessage(error)}. An item is published once it is retired`) : error;
+    });
+    if (!isObject(body) || !isObject(body.item) || typeof body.item.id !== "string") throw new Mismatch(`${display(url)} is not a published exam item`);
+    item = body.item;
+    const { retired } = body;
+    if (isObject(retired) && uint(retired.uses) && uint(retired.passed) && uint(retired.retiredAt)) report.retired = { uses: retired.uses, passed: retired.passed, retiredAt: retired.retiredAt };
+  } catch (error) {
+    unread(c, "item-fetch", "the item", error);
+    return report;
+  }
+  if (typeof item.title === "string") report.title = clean(item.title);
+  if (typeof item.template === "string") report.template = clean(item.template);
+  c.add("item-fetch", "ok", `fetched the item from ${display(url)}`);
+  const { id: stated, ...rest } = item as { id: string };
+  const hash = keccak256(toBytes(canonicalStringify(rest)));
+  const wrong: string[] = [];
+  if (stated.toLowerCase() !== asked) wrong.push(`the file holds item ${short(stated)}, not ${short(asked)}`);
+  if (stated.toLowerCase() !== hash) wrong.push(`the item without its id hashes to ${short(hash)}, not to its id ${short(stated)}`);
+  c.check("item-commitment", wrong.length === 0, `commitment: the item without its id, as canonical JSON, hashes to ${short(hash)}, its id and the one asked for`, `commitment: ${wrong.join("; ")}`);
+  return report;
 }
