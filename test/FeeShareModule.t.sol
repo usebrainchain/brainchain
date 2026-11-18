@@ -224,8 +224,9 @@ contract FeeShareModuleTest is Test {
         assertEq(module.due(), 0);
     }
 
-    /// Whatever the ledger reports and however often the operator calls, the lock never holds more than the share
-    /// of the most the ledger has reported, less what was passed before the module.
+    /// Whatever the ledger reports and however often the operator calls, the lock holds exactly the highest share the
+    /// module was called at, less what was passed before the module: a ledger that reads lower and recovers never
+    /// has the same share passed twice.
     function testFuzz_neverMoreThanTheShare(uint64[8] memory steps, uint8 numerator, uint256 passedBefore) public {
         uint256 n = bound(numerator, 1, 6);
         passedBefore = bound(passedBefore, 0, 1 ether);
@@ -235,16 +236,22 @@ contract FeeShareModuleTest is Test {
         vm.deal(address(safe), 1_000_000 ether);
 
         uint256 paidOut;
-        uint256 highest;
+        uint256 expected = passedBefore;
         for (uint256 i; i < steps.length; i++) {
             paidOut = steps[i] % 2 == 0 ? paidOut + steps[i] : steps[i];
-            if (paidOut > highest) highest = paidOut;
             _paidOut(paidOut);
+            uint256 share = paidOut * n / 6;
             vm.prank(operator);
-            try m.passAndPair(1, 2) {} catch {}
-            uint256 share = highest * n / 6;
-            assertLe(address(lock).balance, share > passedBefore ? share - passedBefore : 0);
-            assertEq(address(lock).balance, m.passed() - passedBefore);
+            if (share > expected) {
+                (uint256 amount,) = m.passAndPair(1, 2);
+                assertEq(amount, share - expected);
+                expected = share;
+            } else {
+                vm.expectRevert(FeeShareModule.NothingDue.selector);
+                m.passAndPair(1, 2);
+            }
+            assertEq(m.passed(), expected);
+            assertEq(address(lock).balance, expected - passedBefore);
         }
     }
 }

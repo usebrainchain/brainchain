@@ -18,6 +18,11 @@ interface IPairLock {
 /// paid out to the income account, less what was passed on before, so the module can never move more than that and
 /// never to anywhere else. The Safe, the ledger, the lock, the fraction and the operator are fixed at deployment.
 /// The Safe ends it by disabling the module.
+///
+/// The share is counted on the ledger's payouts, in the fee token, and paid from the Safe in native token, one for
+/// one: the fee token is the wrapped native token. It is due once the ledger has paid out, whether or not the income
+/// account has forwarded its part to the Safe yet, and whatever part it forwards. The lock pairs everything it holds,
+/// so native token someone else sent it is paired in the same call.
 contract FeeShareModule {
     uint8 private constant CALL = 0;
 
