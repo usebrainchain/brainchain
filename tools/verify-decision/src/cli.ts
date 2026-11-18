@@ -47,7 +47,7 @@ const USAGE = `Usage:
   brainchain-verify mainnet --agent <agentId> [--rpc <url>] [--registry-rpc <url>] [--json]
   brainchain-verify <mainnet|testnet|chainId> --record <agentId> [--epoch] [--service <url>] [--rpc <url>] [--registry-rpc <url>] [--json]
   brainchain-verify <mainnet|testnet|chainId> --licence <agentId> [--service <url>] [--rpc <url>] [--registry-rpc <url>] [--json]
-  brainchain-verify <mainnet|testnet|chainId> --papers <agentId> [--service <url>] [--rpc <url>] [--json]
+  brainchain-verify <mainnet|testnet|chainId> --papers <agentId> [--service <url>] [--rpc <url>] [--registry-rpc <url>] [--json]
   brainchain-verify <mainnet|testnet|chainId> --item <itemId> [--service <url>] [--rpc <url>] [--json]
 
 Checks a BrainChain decision against the chain: reads it from the DecisionLog,
@@ -71,8 +71,9 @@ about an agent the same way: its record, licences and papers. Needs no keys.
                  agent's id is in now, and say which entries belong to it
   --licence <id> check an agent's licences: each one's signature and key, its
                  expiry, and the state the host gives against the registry
-  --papers <id>  check an agent's papers: the signed text, its key, its age and
-                 the record head it names
+  --papers <id>  check an agent's papers: the signed text, its key, its age, the
+                 epoch they state against the registry and the record head they
+                 name
   --item <id>    check a retired exam item against the commitment it was known
                  by while it was in use
   --service <url>
@@ -169,9 +170,9 @@ if (hosted && (reputation || idArg !== undefined || taskArg !== undefined || rec
 }
 if (!hosted && serviceArg !== undefined) usage("--service is for --record, --licence, --papers and --item");
 if (epoch && recordArg === undefined) usage("--epoch is for --record");
-// The registry says which epoch an id is in now: a licence's state turns on it, and a record reads it only when asked.
-const readsRegistry = licenceArg !== undefined || (recordArg !== undefined && epoch);
-if (registryRpcArg !== undefined && !reputation && !readsRegistry) usage(recordArg === undefined ? "--registry-rpc is for --entry, --agent, --licence and --record with --epoch" : "With --record, --registry-rpc is read only with --epoch");
+// The registry says which epoch an id is in now: a licence's state and the papers turn on it, and a record reads it only when asked.
+const readsRegistry = licenceArg !== undefined || papersArg !== undefined || (recordArg !== undefined && epoch);
+if (registryRpcArg !== undefined && !reputation && !readsRegistry) usage(recordArg === undefined ? "--registry-rpc is for --entry, --agent, --licence, --papers and --record with --epoch" : "With --record, --registry-rpc is read only with --epoch");
 if (entryArg !== undefined && agentArg !== undefined) usage("Name one entry with --entry, or an agent with --agent");
 if (!reputation && !hosted && taskArg === undefined && idArg === undefined && receiptArg === undefined) usage("Name a decision id, a task with --task, or an entry with --entry");
 const given = taskArg ?? idArg;
@@ -424,13 +425,15 @@ interface Hosted {
   /** What a match shows, and what no check here can. */
   match: string;
   notChecked: string;
+  /** Signed papers the registry no longer bears out: what the verdict says, in place of a mismatch. */
+  stale?: string;
 }
 
-function reportHosted({ header, checks, withheld = [], fields, lines, match, notChecked }: Hosted): never {
+function reportHosted({ header, checks, withheld = [], fields, lines, match, notChecked, stale }: Hosted): never {
   const failed = tally(checks, "fail");
   const errors = tally(checks, "error");
   const skipped = tally(checks, "skip");
-  const overall = outcomeOf([{ checks, withheld: withheld.length > 0 }]);
+  const overall = stale ? "stale" : outcomeOf([{ checks, withheld: withheld.length > 0 }]);
   const status = failed + errors > 0 ? 1 : 0;
   if (json) {
     const out = {
@@ -451,15 +454,17 @@ function reportHosted({ header, checks, withheld = [], fields, lines, match, not
   console.log(`${header}\n`);
   for (const text of lines) console.log(text);
   const verdict =
-    overall === "mismatch"
-      ? `MISMATCH. ${failed} check${failed === 1 ? "" : "s"} failed; see the FAIL lines.`
-      : overall === "unverified"
-        ? "UNVERIFIED. Some checks could not run; the ERROR lines say what could not be read."
-        : overall === "withheld"
-          ? `withheld, not a full match. ${withheldNotChecked(withheld)}`
-          : skipped > 0
-            ? "match. Every check that could run passed; the skip lines say what could not be checked."
-            : `match. ${match}`;
+    overall === "stale"
+      ? `STALE. ${stale}`
+      : overall === "mismatch"
+        ? `MISMATCH. ${failed} check${failed === 1 ? "" : "s"} failed; see the FAIL lines.`
+        : overall === "unverified"
+          ? "UNVERIFIED. Some checks could not run; the ERROR lines say what could not be read."
+          : overall === "withheld"
+            ? `withheld, not a full match. ${withheldNotChecked(withheld)}`
+            : skipped > 0
+              ? "match. Every check that could run passed; the skip lines say what could not be checked."
+              : `match. ${match}`;
   console.log(`\nVerdict: ${verdict}`);
   console.log(`Not checked: ${notChecked} See ${TRUST_MODEL}`);
   process.exit(status);
@@ -550,8 +555,8 @@ async function checkHosted(): Promise<never> {
     }
     const r = await verifyPapers(ctx, service, agentId);
     const lines = r.checks.map(line);
-    // What the papers say is shown only once the checks show the brain key said it.
-    if (r.epoch && r.checks.every((c) => c.status === "ok")) {
+    // What the papers say is shown only once the checks show the brain key said it, stale or not.
+    if (r.epoch && r.checks.every((c) => c.status === "ok" || c.name === "papers-epoch")) {
       lines.push(
         "",
         `The papers state, signed ${r.signedAt}:`,
@@ -565,8 +570,12 @@ async function checkHosted(): Promise<never> {
       checks: r.checks,
       fields: { service: url, ...r },
       lines,
-      match: "The brain key of the active DecisionLog signed these papers, and the record head they name is the record's.",
+      match: "The brain key of the active DecisionLog signed these papers, the identity registry gives the id the epoch they state, and the record head they name is the record's.",
       notChecked: "the licences, counts and ceiling the papers list, which --licence and --record check at their source, or the file's fields outside brainchain, which nothing signs.",
+      // Papers the brain key signed before the id left their epoch are stale, not forged. Any other failure still reads as a mismatch.
+      ...(r.stale && r.checks.every((c) => c.status !== "fail" || c.name === "papers-epoch")
+        ? { stale: "The papers no longer hold: the agent's id has left the epoch they state, as the epoch line shows. The host signs papers anew at most once a minute, so run the command again in a minute." }
+        : {}),
     });
   } catch (error) {
     fail(errorMessage(error));

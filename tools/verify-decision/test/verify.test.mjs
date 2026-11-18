@@ -2680,7 +2680,7 @@ describe("an agent's licences", () => {
 
 describe("an agent's papers", () => {
   const lines = (report) => report.checks.map((c) => `${c.name} ${c.status}`);
-  const GOOD = ["papers-fetch ok", "papers-signed ok", "papers-signature ok", "papers-agent ok", "papers-brain ok", "papers-fresh ok", "papers-record ok"];
+  const GOOD = ["papers-fetch ok", "papers-signed ok", "papers-signature ok", "papers-agent ok", "papers-brain ok", "papers-fresh ok", "papers-epoch ok", "papers-record ok"];
   const named = (entries) => ({ entries: entries.length, head: hashOf(entries.at(-1)), url: `${base}/agents/4663/501/record`, thisEpoch: { "task:accepted": entries.length }, earlierEpochs: 0, earlierEntries: 0 });
 
   /** make in papers.ts: the papers, the exact text the brain key signed, and its signature, inside a registration file. `show` is what the file shows as the papers. */
@@ -2690,9 +2690,10 @@ describe("an agent's papers", () => {
     const signed = `BrainChain papers\n${canonicalStringify(p)}`;
     return { type: "https://eips.ethereum.org/EIPS/eip-8004#registration-v1", name: "Agent 501", active: true, brainchain: { papers: show ? show(p) : p, signed, signature: await key.signMessage({ message: signed }) } };
   }
-  async function shown(file, chain = {}) {
+  /** `registry` is the identity registry as it stands now, by default in the epoch the papers state. */
+  async function shown(file, chain = {}, registry = identityChain()) {
     pages.set("/papers/4663/501", { body: JSON.stringify(file) });
-    return verifyPapers(onChain({ sets: [set], ...chain }), brainHost(), 501n);
+    return verifyPapers(onChain({ sets: [set], ...chain }), brainHost({ client: registry }), 501n);
   }
 
   beforeEach(() => unserve("/agents/", "/papers/"));
@@ -2708,6 +2709,7 @@ describe("an agent's papers", () => {
     assert.equal(check(report, "papers-agent").message, `agent: the papers are for agent 501 on registry 0x8004…a432, chain 4663, in epoch ${brief(epochOf(AGENT, HOLDER, "worker-1"))}`);
     assert.equal(check(report, "papers-brain").message, `brain: ${brief(BRAIN.address)} was the brain of DecisionLog 0x2222…2222 (set t), the active set's, when it signed the papers`);
     assert.equal(check(report, "papers-fresh").message, `fresh: the papers were signed ${at(NOW - 20)}, 20 seconds ago`);
+    assert.equal(check(report, "papers-epoch").message, `epoch: the identity registry gives controller ${brief(HOLDER)} and the build "worker-1", epoch ${brief(epochOf(AGENT, HOLDER, "worker-1"))} now, as the papers state`);
     assert.equal(check(report, "papers-record").message, `record: the papers name 3 entries and the head ${brief(hashOf(entries[2]))}, which entry 3 hashes to, as the record's signed head says`);
     assert.deepEqual({ ...report, checks: undefined }, {
       agentId: "501",
@@ -2718,6 +2720,7 @@ describe("an agent's papers", () => {
       epoch: { id: epochOf(AGENT, HOLDER, "worker-1"), controller: HOLDER, build: "worker-1", number: 1 },
       record: { entries: 3, head: hashOf(entries[2]) },
       licences: [{ class: "code", state: "valid" }],
+      current: { id: epochOf(AGENT, HOLDER, "worker-1"), controller: HOLDER, build: "worker-1" },
       checks: undefined,
     });
 
@@ -2751,11 +2754,52 @@ describe("an agent's papers", () => {
 
     const theirs = await shown(await papers({ agent: { ...AGENT, id: "502" }, epoch: { id: `0x${"ee".repeat(32)}`, controller: HOLDER, build: "worker-1", number: 1 } }));
     assert.deepEqual(failed(theirs), ["papers-agent"]);
+    assert.equal(check(theirs, "papers-epoch").message, "epoch: the papers are not the asked agent's, so the registry was not read");
     assert.equal(check(theirs, "papers-agent").message, "agent: the papers name agent 502, not agent 501 and an epoch that is not the hash of its agent, controller and build");
 
     const old = await shown(await papers({ at: NOW - 20 * 60 }));
     assert.deepEqual(failed(old), ["papers-fresh"]);
     assert.equal(check(old, "papers-fresh").message, `fresh: the papers are dated ${at(NOW - 20 * 60)}, 20 minutes ago, and one older than 15 minutes could leave out what was written since`);
+  });
+
+  it("are stale once the id has left the epoch they state, as papers signed before a sale still say", async () => {
+    const stated = `controller ${brief(HOLDER)} and the build "worker-1", epoch ${brief(epochOf(AGENT, HOLDER, "worker-1"))}`;
+    // The id was sold after the host signed the papers it still serves: signed, fresh and for an epoch that has ended.
+    const sold = await shown(await papers({ licences: [{ class: "code", state: "valid" }] }), {}, identityChain({ owner: STRANGER }));
+    assert.deepEqual(failed(sold), ["papers-epoch"]);
+    assert.equal(sold.stale, true);
+    assert.equal(check(sold, "papers-epoch").message, `epoch: the papers state ${stated}, and the identity registry gives controller ${brief(STRANGER)} and the build "worker-1" now`);
+    assert.deepEqual(sold.current, { id: epochOf(AGENT, getAddress(STRANGER), "worker-1"), controller: getAddress(STRANGER), build: "worker-1" });
+    assert.equal(check(sold, "papers-signature").status, "ok");
+
+    const rebuilt = await shown(await papers(), {}, identityChain({ build: "worker-2" }));
+    assert.equal(check(rebuilt, "papers-epoch").message, `epoch: the papers state ${stated}, and the identity registry gives controller ${brief(HOLDER)} and the build "worker-2" now`);
+    // An id bound to a token nobody holds has no controller.
+    const unheld = await shown(await papers(), {}, identityChain({ owner: ADAPTER, binding: [0, STRANGER, 9n] }));
+    assert.equal(check(unheld, "papers-epoch").message, `epoch: the papers state ${stated}, and no single account controls agent 501 on the identity registry now`);
+    assert.equal(unheld.current, null);
+    // Held by whoever holds the token the id is bound to.
+    const bound = await shown(await papers(), {}, identityChain({ owner: ADAPTER, binding: [0, STRANGER, 9n], holder: HOLDER }));
+    assert.deepEqual(failed(bound), []);
+    assert.equal(bound.stale, undefined);
+
+    // A build BrainChain states itself is not on the registry: the controller alone says whether the papers hold.
+    const MODEL = "house: anthropic/claude-sonnet-5";
+    const house = await shown(await papers({ build: MODEL }), {}, identityChain({ build: "anything" }));
+    assert.deepEqual(failed(house), []);
+    assert.equal(check(house, "papers-epoch").message, `epoch: the identity registry gives controller ${brief(HOLDER)} now, as the papers state. Their build, "${MODEL}", is BrainChain's own statement of the model it runs this agent on, which the registry does not hold`);
+    const moved = await shown(await papers({ build: MODEL }), {}, identityChain({ owner: STRANGER }));
+    assert.equal(check(moved, "papers-epoch").message, `epoch: the papers state controller ${brief(HOLDER)} and the build "${MODEL}", epoch ${brief(epochOf(AGENT, HOLDER, MODEL))}, and the identity registry gives controller ${brief(STRANGER)} now`);
+    assert.equal(moved.stale, true);
+
+    // A registry that cannot be read says nothing about the epoch, and no client reads none.
+    const down = await shown(await papers(), {}, identityChain({ down: true }));
+    assert.deepEqual([status(down, "papers-epoch"), down.stale, outcomeOf([down])], ["error", undefined, "unverified"]);
+    assert.match(check(down, "papers-epoch").message, /^epoch: could not read the identity registry: registry down$/);
+    pages.set("/papers/4663/501", { body: JSON.stringify(await papers()) });
+    const unread = await verifyPapers(onChain({ sets: [set] }), brainHost(), 501n);
+    assert.equal(check(unread, "papers-epoch").message, "epoch: no client for the identity registry's chain was given, so the registry was not read");
+    assert.equal(status(unread, "papers-epoch"), "skip");
   });
 
   it("hold the head they name to the record, which may have grown since they were signed", async () => {
@@ -3101,7 +3145,7 @@ describe("the command line", () => {
     const shape = [
       ["mainnet", "--record"], ["mainnet", "--record", "1", "--licence", "1"], ["mainnet", "--papers", "1", "--item", ITEM], ["mainnet", "1", "--record", "1"], ["mainnet", "--record", "1", "--set", "v4"],
       ["mainnet", "--licence", "1", "--offline"], ["mainnet", "--record", "1", "--agent", "1"], ["mainnet", "--papers", "1", "--task", "1"], ["mainnet", "1", "--service", "https://x.invalid"], ["mainnet", "--agent", "1", "--service", "https://x.invalid"],
-      ["mainnet", "--papers", "1", "--epoch"], ["mainnet", "1", "--epoch"], ["mainnet", "--papers", "1", "--registry-rpc", "https://x.invalid"], ["mainnet", "--item", ITEM, "--registry-rpc", "https://x.invalid"], ["mainnet", "--record", "1", "--registry-rpc", "https://x.invalid"],
+      ["mainnet", "--papers", "1", "--epoch"], ["mainnet", "1", "--epoch"], ["mainnet", "--item", ITEM, "--registry-rpc", "https://x.invalid"], ["mainnet", "--record", "1", "--registry-rpc", "https://x.invalid"],
     ];
     const values = [["mainnet", "--record", "x"], ["testnet", "--licence", "1.5"], ["mainnet", "--papers", "-1"], ["mainnet", "--item", "0x12"], ["mainnet", "--item", "12"], ["mainnet", "--record", "1", "--service", "ftp://x"]];
     for (const args of [...shape, ...values]) {
@@ -3121,7 +3165,7 @@ describe("the command line", () => {
     assert.equal(run("mainnet", "01").stderr, "A decision id is a whole number from 1, written without leading zeros\n");
     assert.equal(run("mainnet", "--item", "0x12").stderr, "An item id is 0x and 64 hex digits\n");
     assert.match(run("mainnet", "--record", "1", "--registry-rpc", "https://x.invalid").stderr, /^With --record, --registry-rpc is read only with --epoch\n/);
-    assert.match(run("mainnet", "--papers", "1", "--registry-rpc", "https://x.invalid").stderr, /^--registry-rpc is for --entry, --agent, --licence and --record with --epoch\n/);
+    assert.match(run("mainnet", "--item", ITEM, "--registry-rpc", "https://x.invalid").stderr, /^--registry-rpc is for --entry, --agent, --licence, --papers and --record with --epoch\n/);
     assert.match(run("--help").stdout, /brainchain-verify <mainnet\|testnet\|chainId> --record <agentId> \[--epoch\] \[--service <url>\] \[--rpc <url>\] \[--registry-rpc <url>\] \[--json\]\n/);
   });
 
@@ -3137,9 +3181,10 @@ describe("the command line", () => {
       return params.topics[0] === topic && params.address.toLowerCase() === LOG.toLowerCase() ? [log(LOG, encodeEventTopics({ abi: decisionLogAbi, eventName: "BrainSet", args: { brain: BRAIN.address } }), "0x", 970n)] : [];
     });
     const identityAbi = parseAbi(["function ownerOf(uint256 tokenId) view returns (address)", "function getMetadata(uint256 agentId, string metadataKey) view returns (bytes)"]);
+    let owner = HOLDER;
     const robinhood = await stubRpc(4663, (method, [params] = []) => {
       const { functionName } = decodeFunctionData({ abi: identityAbi, data: params.data });
-      return encodeFunctionResult({ abi: identityAbi, functionName, result: functionName === "ownerOf" ? HOLDER : toHex("worker-1") });
+      return encodeFunctionResult({ abi: identityAbi, functionName, result: functionName === "ownerOf" ? owner : toHex("worker-1") });
     });
     const host = ["--service", base, "--rpc", urlOf(brainchain)];
     const registry = ["--registry-rpc", urlOf(robinhood)];
@@ -3225,14 +3270,32 @@ describe("the command line", () => {
       const text = `BrainChain papers\n${canonicalStringify(stated)}`;
       pages.set("/papers/4663/501", { body: JSON.stringify({ name: "Agent 501", brainchain: { papers: stated, signed: text, signature: await BRAIN.signMessage({ message: text }) } }) });
       listRecord([entries[1]], head, { from: 2 });
-      const papers = await runAsync("mainnet", "--papers", "501", ...host);
+      const papers = await runAsync("mainnet", "--papers", "501", ...host, ...registry);
       assert.equal(papers.code, 0, papers.stderr + papers.stdout);
-      assert.deepEqual(papers.stdout.split("\n").map((line) => line.split(":")[0]), [
-        "Agent 501's papers on BrainChain mainnet, read from http", "", "  ok    fetched the papers from http", "  ok    signed text", "  ok    signature", "  ok    agent", "  ok    brain", "  ok    fresh", "  ok    record", "",
-        "The papers state, signed 2026-11-18 12:00:00 UTC".slice(0, 29), `  epoch 1 (${brief(stated.epoch.id)})`, "  record", "  licences", "", "Verdict", "Not checked", "",
-      ].map((expected, i) => (i === 10 ? `The papers state, signed ${at(now - 5).slice(0, 13)}` : expected)));
+      const shape = (verdict) => [
+        "Agent 501's papers on BrainChain mainnet, read from http", "", "  ok    fetched the papers from http", "  ok    signed text", "  ok    signature", "  ok    agent", "  ok    brain", "  ok    fresh", `  ${verdict === "match" ? "ok   " : "FAIL "} epoch`, "  ok    record", "",
+        `The papers state, signed ${at(now - 5).slice(0, 13)}`, `  epoch 1 (${brief(stated.epoch.id)})`, "  record", "  licences", "", "Verdict", "Not checked", "",
+      ];
+      assert.deepEqual(papers.stdout.split("\n").map((line) => line.split(":")[0]), shape("match"));
       assert.match(papers.stdout, new RegExp(`\\n {2}record: 2 entries, head ${brief(head.head.hash)}\\n {2}licences: code valid\\n`));
-      assert.match(papers.stdout, /\nVerdict: match\. The brain key of the active DecisionLog signed these papers, and the record head they name is the record's\.\n/);
+      assert.match(papers.stdout, /\nVerdict: match\. The brain key of the active DecisionLog signed these papers, the identity registry gives the id the epoch they state, and the record head they name is the record's\.\n/);
+
+      // Papers the host signed before the id was sold: signed and fresh, and stale.
+      owner = STRANGER;
+      const sold = await runAsync("mainnet", "--papers", "501", ...host, ...registry);
+      assert.equal(sold.code, 1);
+      assert.deepEqual(sold.stdout.split("\n").map((line) => line.split(":")[0]), shape("stale"));
+      assert.match(sold.stdout, new RegExp(`\\n {2}FAIL {2}epoch: the papers state controller ${brief(HOLDER)} and the build "worker-1", epoch ${brief(stated.epoch.id)}, and the identity registry gives controller 0x4444…4444 and the build "worker-1" now\\n`));
+      assert.match(sold.stdout, /\nVerdict: STALE\. The papers no longer hold: the agent's id has left the epoch they state, as the epoch line shows\. The host signs papers anew at most once a minute, so run the command again in a minute\.\n/);
+      const soldJson = JSON.parse((await runAsync("mainnet", "--papers", "501", ...host, ...registry, "--json")).stdout);
+      assert.deepEqual([soldJson.verdict, soldJson.failed, soldJson.stale, soldJson.current.controller], ["stale", 1, true, getAddress(STRANGER)]);
+      // A stale epoch beside any other failure is a mismatch.
+      const aged = { ...stated, at: now - 3_600 };
+      const agedText = `BrainChain papers\n${canonicalStringify(aged)}`;
+      pages.set("/papers/4663/501", { body: JSON.stringify({ name: "Agent 501", brainchain: { papers: aged, signed: agedText, signature: await BRAIN.signMessage({ message: agedText }) } }) });
+      const old = await runAsync("mainnet", "--papers", "501", ...host, ...registry, "--json");
+      assert.deepEqual([JSON.parse(old.stdout).verdict, old.code], ["mismatch", 1]);
+      owner = HOLDER;
 
       const rest = { template: "window-sum", title: "Sum a sliding window", salt: `0x${"02".repeat(32)}`, createdAt: now - 500 };
       const id = keccak256(toBytes(canonicalStringify(rest)));

@@ -32,7 +32,7 @@ brainchain-verify mainnet --entry <agentId>:[<writer>:]<feedbackIndex> [--rpc <u
 brainchain-verify mainnet --agent <agentId> [--rpc <url>] [--registry-rpc <url>] [--json]
 brainchain-verify <mainnet|testnet|chainId> --record <agentId> [--epoch] [--service <url>] [--rpc <url>] [--registry-rpc <url>] [--json]
 brainchain-verify <mainnet|testnet|chainId> --licence <agentId> [--service <url>] [--rpc <url>] [--registry-rpc <url>] [--json]
-brainchain-verify <mainnet|testnet|chainId> --papers <agentId> [--service <url>] [--rpc <url>] [--json]
+brainchain-verify <mainnet|testnet|chainId> --papers <agentId> [--service <url>] [--rpc <url>] [--registry-rpc <url>] [--json]
 brainchain-verify <mainnet|testnet|chainId> --item <itemId> [--service <url>] [--rpc <url>] [--json]
 ```
 
@@ -52,7 +52,7 @@ brainchain-verify <mainnet|testnet|chainId> --item <itemId> [--service <url>] [-
 | `--papers <agentId>` | Check an agent's papers. See [papers](#papers). |
 | `--item <itemId>` | Check a retired exam item against the commitment it was known by. See [exam items](#exam-items). |
 | `--service <url>` | Another brain host for `--record`, `--licence`, `--papers` and `--item`. Without it, `https://brain.usebrainchain.com` on mainnet and `https://brain.testnet.usebrainchain.com` on testnet. A host on a private address is read only when `--rpc` is on one too. |
-| `--registry-rpc <url>` | Another RPC for Robinhood Chain, where the ERC-8004 registries are. `--entry`, `--agent` and `--licence` read it, and `--record` only with `--epoch`. |
+| `--registry-rpc <url>` | Another RPC for Robinhood Chain, where the ERC-8004 registries are. `--entry`, `--agent`, `--licence` and `--papers` read it, and `--record` only with `--epoch`. |
 | `--offline` | Fetch no receipt from the brain host. A receipt given with `--receipt` is still checked. |
 | `--json` | One JSON object on stdout. |
 | `--version` | Print the version. |
@@ -88,7 +88,7 @@ Under the header, a decision about a task names the task by its brief's title, o
 
 Each line is one check. `ok` passed and `FAIL` means the record and the chain disagree. `skip` is a check with nothing to run on, such as a brief the host does not have, with the reason on the line. `ERROR` is a check that could not run because something it reads could not be read: the host did not answer in up to three tries and 30 seconds in all, answered with an error, or sent more than the tool reads. A record the host does not have, or one the tool refuses to read (see `fetch`), is an `ERROR` too, since no other check can run without it. An `ERROR` line gives the reason the host sent with its error, where it sent one. With `--task` or `--agent`, a decision or entry the RPC cannot read gets one `ERROR` line, named `rpc`, and the others are still checked. Each RPC call gets two tries of 8 seconds, and an RPC error names the RPC by chain and origin, such as `BrainChain RPC https://rpc.usebrainchain.com` or `Robinhood Chain RPC https://rpc.mainnet.chain.robinhood.com`.
 
-The verdict is `match`, `withheld`, `UNVERIFIED` or `MISMATCH`. `withheld` means a record served without the work passed the checks that could run, and says what they leave out.
+The verdict is `match`, `withheld`, `UNVERIFIED` or `MISMATCH`. `withheld` means a record served without the work passed the checks that could run, and says what they leave out. `--papers` can also give `STALE`: see [papers](#papers).
 
 ## What it checks
 
@@ -407,11 +407,14 @@ npx brainchain-verify mainnet --papers 20424
 | `papers-agent` | The papers are for the agent asked for, on the identity registry, and the epoch id they state is the hash of the agent, controller and build they state. |
 | `papers-brain` | That key was the active DecisionLog's brain when it signed the papers. See [the brain key](#the-brain-key). |
 | `papers-fresh` | The papers were signed at most 15 minutes ago. The host signs them anew when asked, at most once a minute. |
+| `papers-epoch` | The epoch the papers state is the one the identity registry gives the id now, worked out as [the current epoch](#the-current-epoch) describes. For a build BrainChain states itself, the controller alone is compared. A registry RPC that does not answer is an `ERROR`. |
 | `papers-record` | The head the papers name is an entry of the agent's record. |
 
 The papers name the record's length and head as they were when the papers were signed, and the record may have grown since. So `papers-record` reads the record from the entry the papers name. That entry must hash to the head the papers state, and lead entry by entry to a fresh head the active brain signed, as for `--record`. Every entry after it must be issued no more than a minute before the papers were signed. An older one is an entry the papers left out. Papers that name no record pass when the host serves none for the agent, or when every entry it serves was issued after the papers were signed.
 
-A `match` shows that the active DecisionLog's brain key signed these papers within the last 15 minutes, and that the record head they name is the record's.
+The host keeps the papers it signed for up to a minute. Papers signed just before the id changed hands, or before its controller declared a new build, are still signed and fresh, and state an epoch the id has left. `papers-epoch` fails on them, and the verdict is `STALE` rather than `MISMATCH` when no other check failed. A stale verdict exits 1. Run the command again a minute later for the papers of the new epoch.
+
+A `match` shows that the active DecisionLog's brain key signed these papers within the last 15 minutes, that the identity registry gives the id the epoch they state, and that the record head they name is the record's.
 
 It does not check the licences the papers list, this epoch's counts or the ceiling. `--licence` and `--record` check those at their source. The file's fields outside `brainchain`, such as its name, image and services, are not signed by anyone.
 
@@ -441,7 +444,7 @@ For an agent's record, licences and papers, the tool shows whose key signed and 
 | Code | Meaning |
 | --- | --- |
 | 0 | Every check that could run passed. Skips do not fail a decision. A `withheld` verdict also exits 0, so read the verdict if you need to tell it from a full match. |
-| 1 | A check failed, a check could not run (an `ERROR` line, such as a record, brief or receipt the host did not serve), or the decision or entry could not be read: an unknown id, a task with no decisions, an entry the registry does not hold, an RPC error, a `--receipt` that cannot be read or is not a receipt. An agent with no record on the brain host, an item the host has not published and an agent with no licence exit 1 too. |
+| 1 | A check failed, a check could not run (an `ERROR` line, such as a record, brief or receipt the host did not serve), or the decision or entry could not be read: an unknown id, a task with no decisions, an entry the registry does not hold, an RPC error, a `--receipt` that cannot be read or is not a receipt. An agent with no record on the brain host, an item the host has not published, an agent with no licence and stale papers exit 1 too. |
 | 2 | Bad arguments, or an RPC that serves another chain. |
 
 ## JSON
@@ -487,11 +490,11 @@ For an agent's record, licences and papers, the tool shows whose key signed and 
 
 With `--entry` or `--agent`, the object holds `registry`, `verdict`, `summary` and `entries` instead of `set` and `decisions`, and `agentId` with `--agent`. `verdict` is `match`, `no-receipt`, `withheld`, `mismatch` or `unverified`. It is `no-receipt` only when every check passed and every entry's hash was zero. `summary` counts `entries`, `withReceipt`, `verified`, `withheld`, `failed` and `unverified`. `withReceipt` counts an entry that points at a record entry only when that record entry names a receipt. `verified` counts only entries whose verdict is `match`. Each entry carries its name as `entry`, the fields of its `NewFeedback` event, the `task`, `board` and `set` its endpoint names, the `decision` its receipt names with its `id`, `set` and `kind`, its own `verdict` and its `checks`. An entry that points at a record entry carries `record`: that entry's `seq`, `kind`, `outcome` and `ref`, and its receipt's path as `receipt` when it names one.
 
-With `--record`, `--licence`, `--papers` or `--item`, the object holds `network`, `chainId`, `verdict`, `failed`, `errors`, `skipped`, the brain host as `service`, the address read as `url`, the `checks`, and `notChecked` for that command. `verdict` is `match`, `withheld`, `mismatch` or `unverified`.
+With `--record`, `--licence`, `--papers` or `--item`, the object holds `network`, `chainId`, `verdict`, `failed`, `errors`, `skipped`, the brain host as `service`, the address read as `url`, the `checks`, and `notChecked` for that command. `verdict` is `match`, `withheld`, `mismatch` or `unverified`, or `stale` for `--papers`.
 
 - `--record` adds `agentId`, the `agent` the record names once it is the one asked for, the number of `entries`, and the `head` with its `seq`, `hash`, `brain`, `at`, `signedAt` and `ageSeconds`. `epochs` lists each epoch with its `id`, `controller`, `build`, first entry as `from`, that entry's time as `since`, its `entries` and its `counts` under keys such as `task:accepted`. `receipts` holds one object for each entry with a receipt: its `seq`, `path`, the `decision` it names, its own `verdict` and every check on it. With `--epoch`, `current` holds the epoch's `id`, `controller` and `build`, `bound` for an id bound to an NFT, and `entries` as runs of `from` and `to`. `buildFrom` is `registry`, or `record` when the build is read from the newest entry of an agent BrainChain runs itself, and `registryBuild` is then what the registry holds. `current` is `null` when no single account controls the id.
 - `--licence` adds `agentId`, `registry` and the `epoch` the host gives for the id where its reply carries them, and `licences`. Each licence carries its `class`, the state the host gives as `claimed`, the `state` the checks give, its `sitting`, `accepted`, `of`, `issuedAt` and `expiresAt`, the host's `audits` counts, its own `verdict` and its `checks`. The top-level `checks` hold the fetch and `licences-epoch`.
-- `--papers` adds `agentId` and what the papers state: `at`, `signedAt`, `brain`, `epoch`, `record` and each licence's `class` and `state`. These are the papers' own values, and the checks say whether the brain key signed them.
+- `--papers` adds `agentId` and what the papers state: `at`, `signedAt`, `brain`, `epoch`, `record` and each licence's `class` and `state`. These are the papers' own values, and the checks say whether the brain key signed them. `current` is the epoch the identity registry gives the id now, as its `id`, `controller` and `build`, with `bound` for an id bound to an NFT, or `null` when no single account controls it. Stale papers carry `stale: true`, and their `verdict` is `stale`.
 - `--item` adds the item's `id`, its `title` and `template`, and `retired` with the host's `uses`, `passed` and `retiredAt`.
 
 ## Building

@@ -3497,14 +3497,19 @@ export interface PapersReport {
   epoch?: { id: Hex; controller: Address; build: string; number: number };
   record?: { entries: number; head: Hex };
   licences?: { class: string; state: string }[];
+  /** The epoch the identity registry gives the id now, once it is read, or null when no single account controls the id. */
+  current?: CurrentEpoch | null;
+  /** The id has left the epoch the papers state, so they no longer hold, however well signed. `papers-epoch` fails and says how. */
+  stale?: true;
   checks: Check[];
 }
 
 /**
  * An agent's papers: the file's `brainchain.signed` is the text the brain key
  * signed and holds the papers the file shows, the key is the brain of the
- * active DecisionLog, the papers are recent, and the head they name is an
- * entry of the record its fresh signed head ends.
+ * active DecisionLog, the papers are recent, the epoch they state is the one
+ * the identity registry gives the id now, and the head they name is an entry
+ * of the record its fresh signed head ends.
  */
 export async function verifyPapers(ctx: Context, service: Service, agentId: bigint): Promise<PapersReport> {
   const c = new Checks();
@@ -3550,7 +3555,8 @@ export async function verifyPapers(ctx: Context, service: Service, agentId: bigi
   if (p.agent.id !== report.agentId) wrong.push(`agent ${p.agent.id}, not agent ${agentId}`);
   if (p.agent.chainId !== identity.chainId || (identity.registry && !eq(p.agent.registry, identity.registry))) wrong.push(`the registry ${short(p.agent.registry)} on chain ${p.agent.chainId}, not ${identity.registry ? `${short(identity.registry)} on ` : ""}chain ${identity.chainId}`);
   if (epochId(p.agent, p.epoch.controller, p.epoch.build) !== p.epoch.id.toLowerCase()) wrong.push("an epoch that is not the hash of its agent, controller and build");
-  c.check("papers-agent", wrong.length === 0, `agent: the papers are for agent ${p.agent.id} on registry ${short(p.agent.registry)}, chain ${p.agent.chainId}, in epoch ${short(p.epoch.id)}`, `agent: the papers name ${list(wrong)}`);
+  const theirs = wrong.length === 0;
+  c.check("papers-agent", theirs, `agent: the papers are for agent ${p.agent.id} on registry ${short(p.agent.registry)}, chain ${p.agent.chainId}, in epoch ${short(p.epoch.id)}`, `agent: the papers name ${list(wrong)}`);
 
   try {
     const fault = await brainFault(ctx, p, true);
@@ -3561,8 +3567,44 @@ export async function verifyPapers(ctx: Context, service: Service, agentId: bigi
   const stale = staleness(p.at, now);
   c.check("papers-fresh", stale === undefined, `fresh: the papers were signed ${signedAgo(p.at, now)}`, `fresh: the papers are dated ${utc(BigInt(p.at))} UTC, ${stale}`);
 
+  if (theirs) await checkPapersEpoch(service, c, report, p);
+  else c.add("papers-epoch", "skip", "epoch: the papers are not the asked agent's, so the registry was not read");
   await checkPapersRecord(ctx, service, c, agentId, p, now);
   return report;
+}
+
+/**
+ * The epoch the papers state, held to the one the registry gives the id now.
+ * The host serves papers it signed up to a minute before, so papers made
+ * before the id changed hands are still signed and fresh for an epoch that
+ * has ended. A build BrainChain states itself is not on the registry, so for
+ * it the controller alone is compared, as for a record's current epoch.
+ */
+async function checkPapersEpoch(service: Service, c: Checks, report: PapersReport, p: Papers): Promise<void> {
+  const { client, chainId, registry, adapters } = service.identity;
+  if (!client) return c.add("papers-epoch", "skip", "epoch: no client for the identity registry's chain was given, so the registry was not read");
+  let current: CurrentEpoch | null;
+  try {
+    current = await currentEpoch(client, { chainId, registry: registry ?? p.agent.registry, adapters }, BigInt(p.agent.id));
+  } catch (error) {
+    return c.add("papers-epoch", "error", `epoch: could not read the identity registry: ${errorMessage(error)}`);
+  }
+  report.current = current && { ...current, build: clean(current.build) };
+  const house = isHouseBuild(p.epoch.build);
+  const stated = `controller ${short(p.epoch.controller)} and ${built(p.epoch.build)}, epoch ${short(p.epoch.id)}`;
+  const id = current && (house ? epochId(p.agent, current.controller, p.epoch.build) : current.id);
+  if (current && eq(id!, p.epoch.id)) {
+    return c.add(
+      "papers-epoch",
+      "ok",
+      house
+        ? `epoch: the identity registry gives controller ${short(current.controller)} now, as the papers state. Their build, "${p.epoch.build}", is BrainChain's own statement of the model it runs this agent on, which the registry does not hold`
+        : `epoch: the identity registry gives ${stated} now, as the papers state`,
+    );
+  }
+  report.stale = true;
+  const now = current ? `the identity registry gives controller ${short(current.controller)}${house ? "" : ` and ${built(current.build)}`} now` : `no single account controls agent ${p.agent.id} on the identity registry now`;
+  c.add("papers-epoch", "fail", `epoch: the papers state ${stated}, and ${now}`);
 }
 
 /**
