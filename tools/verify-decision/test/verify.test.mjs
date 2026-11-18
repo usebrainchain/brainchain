@@ -2962,10 +2962,11 @@ describe("the command line", () => {
       [], ["mainnet"], ["mainnet", "--task"], ["mainnet", "1", "2"], ["mainnet", "1", "--nope"], ["mainnet", "1", "--receipt"], ["mainnet", "--task", "1", "--receipt", "r.json"],
       ["mainnet", "1", "--rpc", "https://a.invalid", "--rpc", "https://b.invalid"], ["mainnet", "1", "--set", "v3", "--set", "v4"],
       ["mainnet", "1", "--entry", "20424:1"], ["mainnet", "--entry", "20424:1", "--agent", "20424"], ["mainnet", "--agent", "1", "--set", "v4"], ["mainnet", "--agent", "1", "--offline"], ["mainnet", "1", "--registry-rpc", "https://x.invalid"],
+      ["mainnet", "1", "--offline", "--payment-rpc", "https://x.invalid"], ["mainnet", "1", "--payment-rpc", "https://a.invalid", "--payment-rpc", "https://b.invalid"],
     ];
     const values = [
       ["mainnet", "abc"], ["mainnet", "1", "--rpc", "ftp://x"], ["nowhere", "1"], ["mainnet", "1", "--set", "v2"], ["mainnet", "1", "--set", "nope"],
-      ["mainnet", "--entry", "20424"], ["mainnet", "--entry", "20424:0"], ["mainnet", "--entry", `20424:${STRANGER}:1`], ["testnet", "--entry", "20424:1"], ["mainnet", "--agent", "x"], ["mainnet", "--agent", "1", "--registry-rpc", "ftp://x"],
+      ["mainnet", "--entry", "20424"], ["mainnet", "--entry", "20424:0"], ["mainnet", "--entry", `20424:${STRANGER}:1`], ["testnet", "--entry", "20424:1"], ["mainnet", "--agent", "x"], ["mainnet", "--agent", "1", "--registry-rpc", "ftp://x"], ["mainnet", "1", "--payment-rpc", "ftp://x"],
     ];
     for (const args of [...shape, ...values]) {
       const asJson = run(...args, "--json");
@@ -2980,6 +2981,9 @@ describe("the command line", () => {
       else assert.match(asText.stderr, /^[^\n]+\n$/, args.join(" "));
     }
     assert.match(run("mainnet", "1", "--set", "v3", "--set", "v4").stderr, /^--set given twice\n/);
+    assert.match(run("mainnet", "1", "--offline", "--payment-rpc", "https://x.invalid").stderr, /^With --offline, --payment-rpc is read only with --receipt\n/);
+    assert.equal(run("mainnet", "1", "--payment-rpc", "ftp://x").stderr, "--payment-rpc needs an http or https URL\n");
+    assert.match(run("--help").stdout, /\n {2}--payment-rpc <url>\n {17}another RPC for Robinhood Chain, or its testnet on testnet, where\n/);
   });
 
   it("takes a switch given twice as given once", () => {
@@ -3051,6 +3055,82 @@ describe("the command line", () => {
       assert.match(onlyError(entry.stdout), new RegExp(`^Robinhood Chain RPC ${closed}: HTTP request failed`));
     } finally {
       rpc.close();
+    }
+  });
+
+  it("reads a receipt's payment on Robinhood Chain from --payment-rpc", async () => {
+    const [active] = NETWORKS.mainnet.sets;
+    const subject = keccak256(encodeAbiParameters([{ type: "uint256" }, { type: "address" }, { type: "uint256" }], [BigInt(MAINNET), active.board, 7n]));
+    const TOKEN = "0x00000000000000000000000000000000000000E5";
+    const PAYER = "0x00000000000000000000000000000000000000a1";
+    const DESK = "0x00000000000000000000000000000000000000D5";
+    const TX = `0x${"9a".repeat(32)}`;
+    const payment = { network: "eip155:4663", asset: TOKEN, amount: "1000000", payer: PAYER, transaction: TX };
+    // A task's grade with its payment, versions and evidence hash, as withEvidence (evidence.ts) seals it.
+    const unsealed = { ...grade(), versions: { prompt: 1, brain: BRAIN.address }, payments: [payment] };
+    const inputHash = keccak256(toBytes(canonicalStringify(unsealed.request)));
+    const evidence = keccak256(toBytes(canonicalStringify({ version: 2, input: inputHash, judges: [{ model: unsealed.model, probabilities: unsealed.probabilities }], payments: [payment], versions: unsealed.versions, passFrom: unsealed.passFrom })));
+    const body = JSON.stringify({ ...unsealed, evidence });
+    pages.set("/cli-paid.json", { body });
+    const payload = { version: 1, chainId: MAINNET, decisionLog: active.log, brain: BRAIN.address, decision: "1", evidence, job: "task", outcome: "accepted", ...payment, issuedAt: 1_763_164_800 };
+    const types = { Receipt: ["version:uint256", "chainId:uint256", "decisionLog:address", "decision:uint256", "brain:address", "evidence:bytes32", "job:string", "outcome:string", "network:string", "payer:string", "asset:string", "amount:string", "transaction:string", "issuedAt:uint256"].map((f) => ({ name: f.split(":")[0], type: f.split(":")[1] })) };
+    const message = { ...payload, version: 1n, chainId: BigInt(MAINNET), decision: 1n, issuedAt: BigInt(payload.issuedAt) };
+    const signature = await BRAIN.signTypedData({ domain: { name: "BrainChain receipt", version: "1", chainId: MAINNET, verifyingContract: active.log }, types, primaryType: "Receipt", message });
+    pages.set(`/receipts/${active.log.toLowerCase()}/1.json`, { body: JSON.stringify({ format: "eip712", payload, signature }) });
+    const document = { chainId: MAINNET, payees: [{ network: payment.network, asset: TOKEN, payTo: DESK }], formerDesks: [] };
+    const signed = `BrainChain network manifest\n${canonicalStringify(document)}`;
+    const manifest = pages.get("/network.json");
+    pages.set("/network.json", { body: JSON.stringify({ manifest: document, signed, signature: await BRAIN.signMessage({ message: signed }) }) });
+
+    const decision = { kind: 2, subject, inputHash, answer: YES, confidenceBps: 9000, recordedAt: 1793000000n };
+    const brief = JSON.stringify(BRIEF);
+    const logs = [
+      log(active.log, encodeEventTopics({ abi: decisionLogAbi, eventName: "Recorded", args: { id: 1n, kind: 2, subject } }), encodeAbiParameters(parseAbiParameters("bytes32, bytes32, uint16, bytes32, string"), [inputHash, YES, 9000, keccak256(toBytes(body)), `${base}/cli-paid.json#evidence=${evidence}`]), 900n),
+      log(active.board, encodeEventTopics({ abi: taskBoardAbi, eventName: "Posted", args: { id: 7n, poster: STRANGER } }), encodeAbiParameters(parseAbiParameters("uint128, uint64, bytes32, string"), [1n, 0n, keccak256(toBytes(brief)), dataUri(brief)]), 800n),
+      log(active.board, encodeEventTopics({ abi: taskBoardAbi, eventName: "WorkGraded", args: { id: 7n, decisionId: 1n } }), encodeAbiParameters([{ type: "bool" }], [true]), 901n),
+    ];
+    const brainchain = await stubRpc(MAINNET, (method, [params] = []) => {
+      if (method === "eth_getLogs") return logs.filter((l) => l.topics[0] === params.topics[0] && l.address.toLowerCase() === params.address.toLowerCase());
+      if (method === "eth_getTransactionByHash") return { hash: params, from: BRAIN.address, to: active.log, blockHash: `0x${"ab".repeat(32)}`, blockNumber: toHex(900n), transactionIndex: "0x0", nonce: "0x0", gas: "0x0", gasPrice: "0x0", value: "0x0", input: "0x", type: "0x0", v: "0x1b", r: "0x1", s: "0x1" };
+      const abi = params.to.toLowerCase() === active.board.toLowerCase() ? taskBoardAbi : decisionLogAbi;
+      const { functionName } = decodeFunctionData({ abi, data: params.data });
+      const result = { count: abi === taskBoardAbi ? 7n : 1n, get: abi === taskBoardAbi ? paid : decision, brain: BRAIN.address }[functionName];
+      return encodeFunctionResult({ abi, functionName, result });
+    });
+    // Robinhood Chain as a fork or another node would serve it: the payment's transaction, moving the amount to the desk.
+    const transfer = encodeEventTopics({ abi: parseAbi(["event Transfer(address indexed from, address indexed to, uint256 value)"]), eventName: "Transfer", args: { from: PAYER, to: DESK } });
+    let mined = true;
+    const robinhood = await stubRpc(4663, (method, [hash] = []) =>
+      method === "eth_getTransactionReceipt" && hash === TX && mined ? { status: "0x1", transactionHash: TX, logs: [{ ...log(TOKEN, transfer, encodeAbiParameters([{ type: "uint256" }], [1_000_000n]), 5n), transactionHash: TX }] } : null,
+    );
+    try {
+      const rpcs = ["--rpc", urlOf(brainchain), "--payment-rpc", urlOf(robinhood)];
+      const read = await runAsync("mainnet", "1", ...rpcs);
+      assert.equal(read.code, 0, read.stdout + read.stderr);
+      assert.match(read.stdout, /\n {2}ok {4}payment: transaction 0x9a9a…9a9a on eip155:4663 moved 1000000 of 0x0000…00E5 from 0x0000…00a1 to the desk's 0x0000…00D5, as the receipt and the record say\n/);
+      assert.match(read.stdout, /\nVerdict: match\. /);
+
+      // Only that node knows the transaction: one that has not seen it yet is an error on the payment's line.
+      mined = false;
+      const unseen = JSON.parse((await runAsync("mainnet", "1", ...rpcs, "--json")).stdout).decisions[0].checks.find((c) => c.name === "receipt-payment");
+      assert.equal(unseen.status, "error");
+      assert.match(unseen.message, /was not checked: the RPC does not find it yet/);
+
+      // A node that does not answer is named, as --rpc and --registry-rpc are.
+      const closed = `http://127.0.0.1:${await closedPort()}`;
+      const down = await runAsync("mainnet", "1", "--rpc", urlOf(brainchain), "--payment-rpc", closed, "--json");
+      assert.equal(down.code, 1);
+      assert.match(onlyError(down.stdout), new RegExp(`^Robinhood Chain RPC ${closed}: HTTP request failed`));
+
+      // A node for another chain is refused before anything is read from it.
+      const crossed = await runAsync("mainnet", "1", "--rpc", urlOf(brainchain), "--payment-rpc", urlOf(brainchain));
+      assert.equal(crossed.code, 2);
+      assert.equal(crossed.stderr, "The payment RPC serves chain 274663, not Robinhood Chain (4663)\n");
+    } finally {
+      brainchain.close();
+      robinhood.close();
+      if (manifest) pages.set("/network.json", manifest);
+      else pages.delete("/network.json");
     }
   });
 
@@ -3146,6 +3226,7 @@ describe("the command line", () => {
       ["mainnet", "--record"], ["mainnet", "--record", "1", "--licence", "1"], ["mainnet", "--papers", "1", "--item", ITEM], ["mainnet", "1", "--record", "1"], ["mainnet", "--record", "1", "--set", "v4"],
       ["mainnet", "--licence", "1", "--offline"], ["mainnet", "--record", "1", "--agent", "1"], ["mainnet", "--papers", "1", "--task", "1"], ["mainnet", "1", "--service", "https://x.invalid"], ["mainnet", "--agent", "1", "--service", "https://x.invalid"],
       ["mainnet", "--papers", "1", "--epoch"], ["mainnet", "1", "--epoch"], ["mainnet", "--item", ITEM, "--registry-rpc", "https://x.invalid"], ["mainnet", "--record", "1", "--registry-rpc", "https://x.invalid"],
+      ["mainnet", "--licence", "1", "--payment-rpc", "https://x.invalid"], ["mainnet", "--papers", "1", "--payment-rpc", "https://x.invalid"], ["mainnet", "--item", ITEM, "--payment-rpc", "https://x.invalid"],
     ];
     const values = [["mainnet", "--record", "x"], ["testnet", "--licence", "1.5"], ["mainnet", "--papers", "-1"], ["mainnet", "--item", "0x12"], ["mainnet", "--item", "12"], ["mainnet", "--record", "1", "--service", "ftp://x"]];
     for (const args of [...shape, ...values]) {
@@ -3166,7 +3247,8 @@ describe("the command line", () => {
     assert.equal(run("mainnet", "--item", "0x12").stderr, "An item id is 0x and 64 hex digits\n");
     assert.match(run("mainnet", "--record", "1", "--registry-rpc", "https://x.invalid").stderr, /^With --record, --registry-rpc is read only with --epoch\n/);
     assert.match(run("mainnet", "--item", ITEM, "--registry-rpc", "https://x.invalid").stderr, /^--registry-rpc is for --entry, --agent, --licence, --papers and --record with --epoch\n/);
-    assert.match(run("--help").stdout, /brainchain-verify <mainnet\|testnet\|chainId> --record <agentId> \[--epoch\] \[--service <url>\] \[--rpc <url>\] \[--registry-rpc <url>\] \[--json\]\n/);
+    assert.match(run("--help").stdout, /brainchain-verify <mainnet\|testnet\|chainId> --record <agentId> \[--epoch\] \[--service <url>\] \[--rpc <url>\] \[--registry-rpc <url>\] \[--payment-rpc <url>\] \[--json\]\n/);
+    assert.match(run("mainnet", "--licence", "1", "--payment-rpc", "https://x.invalid").stderr, /^--payment-rpc is for decisions, --receipt, --entry, --agent and --record, which check a receipt's payment\n/);
   });
 
   it("checks an agent's record, licences and papers and an exam item, from the brain host over JSON-RPC", async () => {

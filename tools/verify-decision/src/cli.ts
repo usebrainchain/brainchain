@@ -6,6 +6,7 @@ import { createPublicClient, isAddress, type Hex, type PublicClient } from "viem
 import { decisionLogAbi, taskBoardAbi } from "./abi.js";
 import { NETWORKS } from "./deployments.js";
 import {
+  balancesFrom,
   clean,
   decisionsOf,
   entriesOf,
@@ -16,6 +17,7 @@ import {
   errorMessage,
   isReceipt,
   outcomeOf,
+  PAYMENT_RPCS,
   readReceipt,
   receiptDecision,
   REPUTATION,
@@ -40,12 +42,12 @@ import {
 } from "./verify.js";
 
 const USAGE = `Usage:
-  brainchain-verify <mainnet|testnet|chainId> <decisionId> [--set <TaskBoard>] [--rpc <url>] [--offline] [--json]
-  brainchain-verify <mainnet|testnet|chainId> --task <taskId> [--set <TaskBoard>] [--rpc <url>] [--offline] [--json]
-  brainchain-verify <mainnet|testnet|chainId> [<decisionId>] --receipt <file|url> [--set <TaskBoard>] [--rpc <url>] [--json]
-  brainchain-verify mainnet --entry <agentId>:[<writer>:]<feedbackIndex> [--rpc <url>] [--registry-rpc <url>] [--json]
-  brainchain-verify mainnet --agent <agentId> [--rpc <url>] [--registry-rpc <url>] [--json]
-  brainchain-verify <mainnet|testnet|chainId> --record <agentId> [--epoch] [--service <url>] [--rpc <url>] [--registry-rpc <url>] [--json]
+  brainchain-verify <mainnet|testnet|chainId> <decisionId> [--set <TaskBoard>] [--rpc <url>] [--payment-rpc <url>] [--offline] [--json]
+  brainchain-verify <mainnet|testnet|chainId> --task <taskId> [--set <TaskBoard>] [--rpc <url>] [--payment-rpc <url>] [--offline] [--json]
+  brainchain-verify <mainnet|testnet|chainId> [<decisionId>] --receipt <file|url> [--set <TaskBoard>] [--rpc <url>] [--payment-rpc <url>] [--json]
+  brainchain-verify mainnet --entry <agentId>:[<writer>:]<feedbackIndex> [--rpc <url>] [--registry-rpc <url>] [--payment-rpc <url>] [--json]
+  brainchain-verify mainnet --agent <agentId> [--rpc <url>] [--registry-rpc <url>] [--payment-rpc <url>] [--json]
+  brainchain-verify <mainnet|testnet|chainId> --record <agentId> [--epoch] [--service <url>] [--rpc <url>] [--registry-rpc <url>] [--payment-rpc <url>] [--json]
   brainchain-verify <mainnet|testnet|chainId> --licence <agentId> [--service <url>] [--rpc <url>] [--registry-rpc <url>] [--json]
   brainchain-verify <mainnet|testnet|chainId> --papers <agentId> [--service <url>] [--rpc <url>] [--registry-rpc <url>] [--json]
   brainchain-verify <mainnet|testnet|chainId> --item <itemId> [--service <url>] [--rpc <url>] [--json]
@@ -87,6 +89,9 @@ about an agent the same way: its record, licences and papers. Needs no keys.
   --registry-rpc <url>
                  another RPC for Robinhood Chain, where the registries are; with
                  --record it is read only with --epoch
+  --payment-rpc <url>
+                 another RPC for Robinhood Chain, or its testnet on testnet, where
+                 a receipt's payment is read; without it, the public RPC
   --json         one JSON object on stdout
   --version      print the version
 
@@ -140,6 +145,7 @@ const receiptArg = flag("--receipt");
 const entryArg = flag("--entry");
 const agentArg = flag("--agent");
 const registryRpcArg = flag("--registry-rpc");
+const paymentRpcArg = flag("--payment-rpc");
 const recordArg = flag("--record");
 const licenceArg = flag("--licence");
 const papersArg = flag("--papers");
@@ -152,6 +158,7 @@ if (unknown) usage(`Unknown option ${unknown}`);
 const web = (url: string): boolean => URL.canParse(url) && ["http:", "https:"].includes(new URL(url).protocol);
 if (rpcArg !== undefined && !web(rpcArg)) fail("--rpc needs an http or https URL", 2);
 if (registryRpcArg !== undefined && !web(registryRpcArg)) fail("--registry-rpc needs an http or https URL", 2);
+if (paymentRpcArg !== undefined && !web(paymentRpcArg)) fail("--payment-rpc needs an http or https URL", 2);
 if (serviceArg !== undefined && !web(serviceArg)) fail("--service needs an http or https URL", 2);
 
 const [networkArg, idArg, ...extra] = args;
@@ -160,14 +167,17 @@ if (extra.length > 0 || (taskArg !== undefined && idArg !== undefined)) usage("T
 if (taskArg !== undefined && receiptArg !== undefined) usage("A receipt is for one decision: name it, not a task");
 const reputation = entryArg !== undefined || agentArg !== undefined;
 if (reputation && (idArg !== undefined || taskArg !== undefined || receiptArg !== undefined || setArg !== undefined || offline)) {
-  usage("An entry names its own task, decision and receipt, so --entry and --agent take only --rpc, --registry-rpc and --json");
+  usage("An entry names its own task, decision and receipt, so --entry and --agent take only --rpc, --registry-rpc, --payment-rpc and --json");
 }
 const hostedArgs = [recordArg, licenceArg, papersArg, itemArg].filter((arg) => arg !== undefined);
 const hosted = hostedArgs.length > 0;
 if (hostedArgs.length > 1) usage("Name one of --record, --licence, --papers and --item");
 if (hosted && (reputation || idArg !== undefined || taskArg !== undefined || receiptArg !== undefined || setArg !== undefined || offline)) {
-  usage("--record, --licence, --papers and --item read the brain host, so they take only --service, --rpc, --registry-rpc and --json");
+  usage("--record, --licence, --papers and --item read the brain host, so they take only --service, --rpc, --registry-rpc, --payment-rpc and --json");
 }
+// Only a receipt names a payment: decisions, --entry, --agent and --record read them, and offline only the one given.
+if (paymentRpcArg !== undefined && (licenceArg ?? papersArg ?? itemArg) !== undefined) usage("--payment-rpc is for decisions, --receipt, --entry, --agent and --record, which check a receipt's payment");
+if (paymentRpcArg !== undefined && offline && receiptArg === undefined) usage("With --offline, --payment-rpc is read only with --receipt");
 if (!hosted && serviceArg !== undefined) usage("--service is for --record, --licence, --papers and --item");
 if (epoch && recordArg === undefined) usage("--epoch is for --record");
 // The registry says which epoch an id is in now: a licence's state and the papers turn on it, and a record reads it only when asked.
@@ -184,6 +194,10 @@ const foundNetwork = Object.hasOwn(NETWORKS, networkArg)
 if (!foundNetwork) fail(`Unknown network "${networkArg}": use mainnet, testnet, 274663 or 274630`, 2);
 const network = foundNetwork;
 const client = createPublicClient({ transport: rpcTransport("BrainChain", rpcArg ?? network.rpc) });
+// BrainChain settles on the chain its registries are on, so a receipt's own network is that one: Robinhood Chain, or its testnet.
+const { name: paymentChain, chainId: paymentChainId } = SERVICES[network.chainId]!.identity;
+const payment = paymentRpcArg === undefined ? undefined : { client: createPublicClient({ transport: rpcTransport(paymentChain, paymentRpcArg) }), chainId: paymentChainId };
+const balances = paymentRpcArg === undefined ? undefined : balancesFrom({ ...PAYMENT_RPCS, [`eip155:${paymentChainId}`]: paymentRpcArg });
 const TAGS = { ok: "ok", fail: "FAIL", skip: "skip", error: "ERROR" } as const;
 const tally = (checks: Check[], status: Status): number => checks.filter((c) => c.status === status).length;
 // With --task or --agent, one decision or entry the RPC cannot read is an error line of its own, and the rest still run.
@@ -214,7 +228,7 @@ if (!foundSet) {
 }
 const set = foundSet;
 
-const ctx: Context = { client, network, set, briefs: new Map(), offline };
+const ctx: Context = { client, network, set, briefs: new Map(), offline, balances };
 
 function fail(message: string, status = 1): never {
   if (json) console.log(JSON.stringify({ error: clean(message) }, null, 2));
@@ -298,6 +312,8 @@ async function sameChain(registry?: { client: PublicClient; chainId: number }, n
   if (chainId !== network.chainId) fail(`The RPC serves chain ${chainId}, not ${network.name} (${network.chainId})`, 2);
   const registryChain = await registry?.client.getChainId();
   if (registry && registryChain !== registry.chainId) fail(`The registry RPC serves chain ${registryChain}, not ${name} (${registry.chainId})`, 2);
+  const paying = await payment?.client.getChainId();
+  if (payment && paying !== payment.chainId) fail(`The payment RPC serves chain ${paying}, not ${paymentChain} (${payment.chainId})`, 2);
 }
 
 function entryVerdict(r: EntryReport): string {
@@ -375,7 +391,7 @@ async function checkEntries(): Promise<never> {
   const registry: Registry = { ...REPUTATION, client: createPublicClient({ transport: rpcTransport("Robinhood Chain", registryRpcArg ?? REPUTATION.rpc) }) };
   const [current, ...earlier] = registry.writers;
   const where = `in the ERC-8004 reputation registry on Robinhood Chain (${registry.address})`;
-  const ctx: Context = { client, network, set: network.sets[0]!, briefs: new Map() };
+  const ctx: Context = { client, network, set: network.sets[0]!, briefs: new Map(), balances };
   if (entryArg !== undefined) {
     const parts = /^(0|[1-9]\d{0,77}):(?:(0x[0-9a-fA-F]{40}):)?([1-9]\d{0,19})$/.exec(entryArg);
     if (!parts) fail("An entry is <agentId>:<feedbackIndex>, or <agentId>:<writer>:<feedbackIndex> for one BrainChain wrote from an earlier address, with each number written without leading zeros", 2);
@@ -485,7 +501,7 @@ function epochLine(e: EpochCount): string {
 async function checkHosted(): Promise<never> {
   const known = SERVICES[network.chainId]!;
   const url = (serviceArg ?? known.url).replace(/\/+$/, "");
-  const ctx: Context = { client, network, set: network.sets[0]!, briefs: new Map() };
+  const ctx: Context = { client, network, set: network.sets[0]!, briefs: new Map(), balances };
   if (itemArg !== undefined) {
     if (!/^0x[0-9a-fA-F]{64}$/.test(itemArg)) fail("An item id is 0x and 64 hex digits", 2);
     const r = await verifyItem(ctx, { url }, itemArg as Hex).catch((error: unknown) => fail(errorMessage(error)));

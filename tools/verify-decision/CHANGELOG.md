@@ -14,7 +14,8 @@ Changes to `brainchain-verify`, the npm package built from this directory. The f
 - `--item <itemId>` checks a retired exam item: the item without its id, as canonical JSON, hashes to its id.
 - `--service <url>` names another brain host for these four. The defaults are `https://brain.usebrainchain.com` on mainnet and `https://brain.testnet.usebrainchain.com` on testnet.
 - `--entry` and `--agent` read an entry whose `feedbackURI` serves an entry of the agent's record. The new lines are `entry-record`, `entry-signature`, `entry-brain` and `entry-outcome`, then `record-receipt` and `record-settled` when the record entry names a receipt, which is checked with its decision as before. An exam outcome, written under `licence:<class>`, is read the same way. In JSON such an entry carries `record`.
-- `verifyRecord`, `verifyLicences`, `verifyPapers`, `verifyItem`, `currentEpoch`, `epochId`, `entryHash`, `recordUrl` and `SERVICES` are exported, with their types.
+- `--payment-rpc <url>` reads a receipt's payment on Robinhood Chain, or its testnet with `testnet`, from another RPC, such as a fork or your own node. It must serve that chain, as `--rpc` and `--registry-rpc` must serve theirs. Without it, the public RPC is read as before.
+- `verifyRecord`, `verifyLicences`, `verifyPapers`, `verifyItem`, `currentEpoch`, `epochId`, `entryHash`, `recordUrl`, `SERVICES` and `PAYMENT_RPCS` are exported, with their types.
 
 ### Changed
 

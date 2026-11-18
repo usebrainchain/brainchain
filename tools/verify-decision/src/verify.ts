@@ -1818,8 +1818,8 @@ const CHAINS: Record<string, string> = {
   "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": "Solana",
   "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1": "Solana devnet",
 };
-// Public RPCs for the networks the desk takes payment on.
-const PAYMENT_RPCS: Record<string, string> = {
+/** Public RPCs for the networks the desk takes payment on, by CAIP-2 network: what payments are read from unless Context.balances says otherwise. */
+export const PAYMENT_RPCS: Readonly<Record<string, string>> = {
   "eip155:8453": "https://mainnet.base.org",
   "eip155:84532": "https://sepolia.base.org",
   "eip155:4663": ROBINHOOD_RPC,
