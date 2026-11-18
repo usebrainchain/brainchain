@@ -2958,13 +2958,13 @@ export async function verifyRecord(ctx: Context, service: Service, agentId: bigi
   const names = (a: AgentName): string => `agent ${a.id} on registry ${short(a.registry)}, chain ${a.chainId}`;
   const other = (a: AgentName): boolean => a.id !== asked.id || a.chainId !== asked.chainId || !eq(a.registry, asked.registry);
   const others = grouped(entries.filter(({ entry }) => other(entry.agent)).map(({ entry }) => [entry.seq, `for ${names(entry.agent)}`]));
-  if (other(head.head.agent)) others.unshift(`the head: for ${names(head.head.agent)}`);
+  if (other(head.head.agent)) others.unshift(`the head is for ${names(head.head.agent)}`);
   if (others.length === 0) report.agent = asked;
   c.check(
     "record-agent",
     others.length === 0,
     `agent: every entry and the head are for ${names(asked)}${registry ? "" : ". This tool carries no registry for that chain, so the address is the record's own"}`,
-    `agent: asked for ${names(asked)}. ${few(others)}`,
+    `agent: ${few(others)}. The one asked for is ${names(asked)}`,
   );
 
   const breaks = chainFaults(entries, hashes, 1);
@@ -2974,7 +2974,7 @@ export async function verifyRecord(ctx: Context, service: Service, agentId: bigi
   c.check("record-signatures", unsigned.length === 0, `signatures: ${entries.length === 1 ? "the entry is" : `each of the ${entries.length} entries is`} signed by the brain it names`, `signatures: ${few(unsigned)}`);
 
   const ends = await headFaults(head, entries.at(-1), hashes.at(-1));
-  c.check("record-head", ends.length === 0, `head: signed by ${short(head.head.brain)}, the brain it names, it ends at entry ${head.head.seq} with the hash ${short(head.head.hash)}, as the entries do`, `head: ${ends.join("; ")}`);
+  c.check("record-head", ends.length === 0, `head: signed by ${short(head.head.brain)}, the brain it names. It ends at entry ${head.head.seq} with the hash ${short(head.head.hash)}, as the entries do`, `head: ${ends.join("; ")}`);
 
   const stale = staleness(head.head.at, now);
   c.check("record-fresh", stale === undefined, `fresh: the head was signed ${signedAgo(head.head.at, now)}`, `fresh: the head is dated ${utc(BigInt(head.head.at))} UTC, ${stale}`);
