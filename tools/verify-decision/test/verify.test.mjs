@@ -2284,7 +2284,7 @@ describe("an agent's licences", () => {
     assert.equal(check(report, "licence-brain").message, `brain: ${brief(BRAIN.address)} was the brain of DecisionLog 0x2222…2222 (set t) when it signed the licence`);
     assert.equal(check(report, "licence-expiry").message, `expiry: expires ${at(NOW + 59 * DAY)}, in 59 days`);
     assert.equal(check(report, "licence-epoch").message, `epoch: the identity registry gives controller ${brief(HOLDER)} and the build "worker-1" now, the epoch the licence was earned in`);
-    assert.equal(check(report, "licence-state").message, "state: valid, as the service says: it has not expired and the id is in the epoch it was earned in");
+    assert.equal(check(report, "licence-state").message, "state: valid, as the host says: it has not expired and the id is in the epoch it was earned in");
     assert.deepEqual({ ...report, checks: undefined }, { class: "code", claimed: "valid", state: "valid", sitting: SITTING, accepted: 4, of: 5, issuedAt: NOW - DAY, expiresAt: NOW + 59 * DAY, audits: { passed: 1, failed: 0 }, checks: undefined });
 
     const none = await verifyLicences(onChain({ sets: [set] }), brainHost(), 502n);
@@ -2292,43 +2292,43 @@ describe("an agent's licences", () => {
     assert.equal(await held(undefined), undefined);
   });
 
-  it("are expired past their expiry, and fail a service that still calls one valid", async () => {
+  it("are expired past their expiry, and fail a host that still calls one valid", async () => {
     const signed = await licence({ expiresAt: NOW - 3 * 3_600 });
     const report = await held(signed, "expired");
     assert.deepEqual(lines(report), GOOD);
     assert.equal(check(report, "licence-expiry").message, `expiry: expired ${at(NOW - 3 * 3_600)}, 3 hours ago`);
-    assert.equal(check(report, "licence-state").message, "state: expired, as the service says: it is past its expiry");
+    assert.equal(check(report, "licence-state").message, "state: expired, as the host says: it is past its expiry");
     assert.equal(report.state, "expired");
 
     const claimed = await held(signed, "valid");
     assert.deepEqual(failed(claimed), ["licence-state"]);
-    assert.equal(check(claimed, "licence-state").message, "state: the service says valid, and the checks give expired: it is past its expiry");
+    assert.equal(check(claimed, "licence-state").message, "state: the host says valid, and the checks give expired: it is past its expiry");
     assert.equal(claimed.state, "expired");
-    // The service stops reading an expired licence's epoch, so one that lapsed first keeps that name, and one whose id moved on later is still expired.
+    // The host stops reading an expired licence's epoch, so one that lapsed first keeps that name, and one whose id moved on later is still expired.
     assert.deepEqual(failed(await held(signed, "lapsed", { registry: { owner: STRANGER } })), []);
     assert.deepEqual(failed(await held(signed, "expired", { registry: { owner: STRANGER } })), []);
     assert.deepEqual(failed(await held(signed, "lapsed")), ["licence-state"]);
-    // An unexpired licence the service calls expired.
+    // An unexpired licence the host calls expired.
     assert.deepEqual(failed(await held(await licence(), "expired")), ["licence-state"]);
   });
 
-  it("have lapsed once the id is in another epoch, whatever the service says", async () => {
+  it("have lapsed once the id is in another epoch, whatever the host says", async () => {
     const signed = await licence();
     const sold = await held(signed, "lapsed", { registry: { owner: STRANGER } });
     assert.deepEqual(lines(sold), GOOD);
     assert.equal(check(sold, "licence-epoch").message, `epoch: the identity registry gives controller 0x4444…4444 and the build "worker-1" now. The licence was earned under controller ${brief(HOLDER)} and the build "worker-1", so it has lapsed`);
-    assert.equal(check(sold, "licence-state").message, "state: lapsed, as the service says: the agent's id is in another epoch than the one it was earned in");
+    assert.equal(check(sold, "licence-state").message, "state: lapsed, as the host says: the agent's id is in another epoch than the one it was earned in");
 
     const rebuilt = await held(signed, "valid", { registry: { build: "worker-2" } });
     assert.deepEqual(failed(rebuilt), ["licence-state"]);
     assert.equal(
       check(rebuilt, "licence-state").message,
-      "state: the service says valid, and the checks give lapsed: the agent's id is in another epoch than the one it was earned in. The service reads the registry every few minutes, so a change made since its last reading does not show there yet",
+      "state: the host says valid, and the checks give lapsed: the agent's id is in another epoch than the one it was earned in. The host reads the registry every few minutes, so a change made since its last reading does not show there yet",
     );
     assert.equal(rebuilt.state, "lapsed");
     const gone = await held(signed, "lapsed", { registry: { owner: null } });
     assert.equal(check(gone, "licence-epoch").message, `epoch: no single account controls agent 501 on the identity registry now, so the licence, earned under controller ${brief(HOLDER)} and the build "worker-1", has lapsed`);
-    // The id is back in the licence's epoch, and the service has not read it yet.
+    // The id is back in the licence's epoch, and the host has not read it yet.
     assert.deepEqual(failed(await held(signed, "lapsed")), ["licence-state"]);
   });
 
@@ -2345,31 +2345,31 @@ describe("an agent's licences", () => {
     const theirs = await held(await licence({ agent: { ...AGENT, id: "502" } }));
     assert.equal(check(theirs, "licence").message, "licence: names agent 502, not agent 501");
     const relabelled = await held(real, "valid", { listed: { class: "prose" } });
-    assert.equal(check(relabelled, "licence").message, "licence: names the class code, and the service lists it under prose");
+    assert.equal(check(relabelled, "licence").message, "licence: names the class code, and the host lists it under prose");
     const malformed = await held({ licence: { ...real.licence, version: 2 }, signature: real.signature });
     assert.deepEqual(lines(malformed), ["licence fail"]);
     // Issued before the log named the key.
     assert.deepEqual(failed(await held(await licence({ issuedAt: 1_792_000_000 }))), ["licence-brain"]);
   });
 
-  it("report a suspension as the service's word, and say what could not be told without the registry", async () => {
+  it("report a suspension as the host's word, and say what could not be told without the registry", async () => {
     const signed = await licence();
     const suspended = await held(signed, "suspended", { listed: { audits: { passed: 1, failed: 2 } } });
     assert.deepEqual(lines(suspended), GOOD);
-    assert.equal(check(suspended, "licence-state").message, "state: suspended, as the service says. Only the service counts the audits behind a suspension. Without it the licence would be valid: it has not expired and the id is in the epoch it was earned in");
+    assert.equal(check(suspended, "licence-state").message, "state: suspended, as the host says. Only the host counts the audits behind a suspension. Without it the licence would be valid: it has not expired and the id is in the epoch it was earned in");
     assert.equal(suspended.state, "suspended");
     assert.deepEqual(suspended.audits, { passed: 1, failed: 2 });
 
     const unread = await held(signed, "valid", { identity: {} });
     assert.deepEqual(lines(unread), ["licence ok", "licence-signature ok", "licence-brain ok", "licence-expiry ok", "licence-epoch skip", "licence-state ok"]);
-    assert.equal(check(unread, "licence-state").message, "state: valid, as the service says: it has not expired. The registry was not read, so valid and lapsed could not be told apart");
+    assert.equal(check(unread, "licence-state").message, "state: valid, as the host says: it has not expired. The registry was not read, so valid and lapsed could not be told apart");
     assert.deepEqual(failed(await held(signed, "lapsed", { identity: {} })), []);
     assert.deepEqual(failed(await held(signed, "expired", { identity: {} })), ["licence-state"]);
 
     const down = await held(signed, "valid", { registry: { down: true } });
     assert.deepEqual(lines(down), ["licence ok", "licence-signature ok", "licence-brain ok", "licence-expiry ok", "licence-epoch error"]);
     const invented = await held(signed, "golden");
-    assert.equal(check(invented, "licence-state").message, "state: the service says golden, which is not a state a licence has, and the checks give valid: it has not expired and the id is in the epoch it was earned in");
+    assert.equal(check(invented, "licence-state").message, "state: the host says golden, which is not a state a licence has, and the checks give valid: it has not expired and the id is in the epoch it was earned in");
   });
 });
 

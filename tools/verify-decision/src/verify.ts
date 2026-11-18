@@ -2709,7 +2709,11 @@ const entriesNamed = (seqs: number[]): string => `${seqs.length === 1 ? "entry" 
 /** Each fault once, with every entry that has it. */
 function grouped(faults: [number, string][]): string[] {
   const by = new Map<string, number[]>();
-  for (const [seq, fault] of faults) by.set(fault, [...(by.get(fault) ?? []), seq]);
+  for (const [seq, fault] of faults) {
+    const seqs = by.get(fault);
+    if (seqs) seqs.push(seq);
+    else by.set(fault, [seq]);
+  }
   return [...by].map(([fault, seqs]) => `${entriesNamed(seqs)}: ${fault}`);
 }
 const few = (faults: string[]): string => (faults.length <= 3 ? faults.join("; ") : `${faults.slice(0, 3).join("; ")}; and ${faults.length - 3} more`);
@@ -2989,7 +2993,9 @@ export async function verifyRecord(ctx: Context, service: Service, agentId: bigi
         continue;
       }
       const key = `${entry.decisionLog}:${entry.brain}`.toLowerCase();
-      by.set(key, { entry, seqs: [...(by.get(key)?.seqs ?? []), entry.seq] });
+      const signed = by.get(key);
+      if (signed) signed.seqs.push(entry.seq);
+      else by.set(key, { entry, seqs: [entry.seq] });
     }
     const wrong = grouped(faults);
     const fault = await brainFault(ctx, head.head, true);
@@ -3134,16 +3140,16 @@ function isLicence(l: unknown): l is Licence {
 
 export interface LicenceReport {
   class: string;
-  /** The state the service gives. */
+  /** The state the host gives. */
   claimed: string;
-  /** The state the checks give. `suspended` is the service's word, which nothing here can check. */
+  /** The state the checks give. `suspended` is the host's word, which nothing here can check. */
   state?: LicenceState;
   sitting?: Hex;
   accepted?: number;
   of?: number;
   issuedAt?: number;
   expiresAt?: number;
-  /** Audits passed and failed since the licence was issued, as the service counts them. */
+  /** Audits passed and failed since the licence was issued, as the host counts them. */
   audits?: { passed: number; failed: number };
   checks: Check[];
 }
@@ -3200,7 +3206,7 @@ async function checkLicence(ctx: Context, service: Service, agentId: bigint, ite
   const wrong: string[] = [];
   if (l.agent.id !== agentId.toString()) wrong.push(`agent ${l.agent.id}, not agent ${agentId}`);
   if (l.agent.chainId !== identity.chainId || (identity.registry && !eq(l.agent.registry, identity.registry))) wrong.push(`the registry ${short(l.agent.registry)} on chain ${l.agent.chainId}, not ${identity.registry ? `${short(identity.registry)} on ` : ""}chain ${identity.chainId}`);
-  if (l.class !== listed.class) wrong.push(`the class ${l.class}, and the service lists it under ${report.class}`);
+  if (l.class !== listed.class) wrong.push(`the class ${l.class}, and the host lists it under ${report.class}`);
   if (epochId(l.agent, l.controller, l.build) !== l.epoch.toLowerCase()) wrong.push("an epoch that is not the hash of its agent, controller and build");
   c.check("licence", wrong.length === 0, `licence: ${l.class}, for agent ${l.agent.id}, on ${l.accepted} of ${l.of} items accepted in sitting ${short(l.sitting)}, issued ${utc(BigInt(l.issuedAt))} UTC`, `licence: names ${list(wrong)}`);
 
@@ -3249,7 +3255,7 @@ async function checkLicence(ctx: Context, service: Service, agentId: bigint, ite
     }
   }
 
-  // The service puts lapsed before suspended before expired, and stops reading a licence's epoch once it is suspended or expired.
+  // The host puts lapsed before suspended before expired, and stops reading a licence's epoch once it is suspended or expired.
   const computed: LicenceState = moved ? "lapsed" : past ? "expired" : "valid";
   const allowed = new Set<string>([computed]);
   if (past && moved !== false) allowed.add("expired").add("lapsed");
@@ -3257,15 +3263,15 @@ async function checkLicence(ctx: Context, service: Service, agentId: bigint, ite
   const why = moved ? "the agent's id is in another epoch than the one it was earned in" : past ? "it is past its expiry" : moved === undefined ? "it has not expired" : "it has not expired and the id is in the epoch it was earned in";
   if (claimed === "suspended") {
     report.state = "suspended";
-    c.add("licence-state", "ok", `state: suspended, as the service says. Only the service counts the audits behind a suspension. Without it the licence would be ${computed}: ${why}`);
+    c.add("licence-state", "ok", `state: suspended, as the host says. Only the host counts the audits behind a suspension. Without it the licence would be ${computed}: ${why}`);
   } else if (allowed.has(claimed)) {
     report.state = claimed as LicenceState;
-    c.add("licence-state", "ok", `state: ${claimed}, as the service says: ${why}${moved === undefined && !past ? ". The registry was not read, so valid and lapsed could not be told apart" : ""}`);
+    c.add("licence-state", "ok", `state: ${claimed}, as the host says: ${why}${moved === undefined && !past ? ". The registry was not read, so valid and lapsed could not be told apart" : ""}`);
   } else {
     report.state = computed;
     const known = LICENCE_STATES.includes(claimed) ? "" : ", which is not a state a licence has";
-    const lag = claimed === "valid" && computed === "lapsed" ? ". The service reads the registry every few minutes, so a change made since its last reading does not show there yet" : "";
-    c.add("licence-state", "fail", `state: the service says ${claimed}${known}, and the checks give ${computed}: ${why}${lag}`);
+    const lag = claimed === "valid" && computed === "lapsed" ? ". The host reads the registry every few minutes, so a change made since its last reading does not show there yet" : "";
+    c.add("licence-state", "fail", `state: the host says ${claimed}${known}, and the checks give ${computed}: ${why}${lag}`);
   }
   return report;
 }
@@ -3425,7 +3431,7 @@ export interface ItemReport {
   url: string;
   title?: string;
   template?: string;
-  /** How the item's uses went, as the service states it. */
+  /** How the item's uses went, as the host states it. */
   retired?: { uses: number; passed: number; retiredAt: number };
   checks: Check[];
 }
