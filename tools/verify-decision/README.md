@@ -279,7 +279,7 @@ npx brainchain-verify mainnet --record 20424
 npx brainchain-verify mainnet --record 20424 --epoch
 ```
 
-The tool reads the record 200 entries at a time until the host names no next page, up to 20,000 entries. If the last page lists an entry written after its head was signed, the tool reads the head again from `/record/head`. It then checks:
+The tool reads the record 200 entries at a time until the host names no next page, up to 20,000 entries. It then checks:
 
 | Check | What passes |
 | --- | --- |
@@ -287,7 +287,7 @@ The tool reads the record 200 entries at a time until the host names no next pag
 | `record-agent` | Every entry and the head name the agent asked for, on the identity registry (`0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` on Robinhood Chain). The tool carries no registry address for Robinhood Chain testnet. There the entries must name the registry the head names, and the line says the address is the record's own. |
 | `record-chain` | Entries are numbered from 1 with no gap. Each entry's `prev` is the hash of the entry before it, and the first entry's is 32 zero bytes. An entry's hash is the `keccak256` of `{ entry, signature }` in canonical JSON, the bytes the host serves at `/record/<seq>.json`. |
 | `record-signatures` | Each entry's signature recovers to the `brain` the entry names. The signature is `personal_sign` over the line `BrainChain record entry` and then the entry in canonical JSON. |
-| `record-head` | The head's signature, over the line `BrainChain record head` and then the head, recovers to the `brain` it names. Its `seq` is the last entry's number and its `hash` is the last entry's hash. |
+| `record-head` | The head's signature, over the line `BrainChain record head` and then the head, recovers to the `brain` it names. Its `seq` is the last entry's number and its `hash` is the last entry's hash. The host leaves an entry written after it signed the head for the next read, so a list that runs past its own head fails here. |
 | `record-fresh` | The head was signed at most 15 minutes ago by this machine's clock, and is dated at most 5 minutes ahead of it. The line gives the time. An older head could leave out entries written since. |
 | `record-brain` | Each key that signed an entry, and the key that signed the head, was the DecisionLog's brain when it signed. See [the brain key](#the-brain-key). |
 | `record-epochs` | Each entry's `epoch` is `keccak256(abi.encode(chainId, registry, agentId, controller, build))` over the entry's own fields. |
@@ -322,26 +322,19 @@ When a receipt fails a check, the failing lines of that receipt and its decision
 
 ### The brain key
 
-Everything the brain host signs about an agent names three things: BrainChain's chain id, a `decisionLog` and the `brain` key that signed. A signature that recovers to that key shows only that the key signed. The tool ties the key to the chain in four steps:
+Everything the brain host signs about an agent names BrainChain's chain id, a `decisionLog` and the `brain` key that signed. The tool takes a signature as genuine when it recovers to that `brain` and a `BrainSet` event on that DecisionLog made the key its brain:
 
 - The `decisionLog` is the DecisionLog of a contract set the tool carries for the network, active or retired, and the chain id is the network's.
-- That DecisionLog named the key its brain. The contract writes `brain` in its constructor, in `setBrain` (the owner names a key) and in `attestBrain` (an enclave's attestation names one). Each emits `BrainSet(brain)`, so the log's `BrainSet` events are the whole history of `brain()`. The tool reads them from the set's first block. A key none of them names fails.
-- The time the object states falls within the key's time as brain: from the block time of the `BrainSet` event that named it to the block time of the next one, with five minutes either side for clocks that differ. The time is `issuedAt` on an entry or a licence, and `at` on a head or on papers.
-- A head and papers speak for the present, so they must name the active set's DecisionLog. A retired DecisionLog names its last brain for good, whatever became of that key.
+- A `BrainSet` event on that DecisionLog names the key. The contract writes `brain` in its constructor, in `setBrain` and in `attestBrain`, and each emits `BrainSet(brain)`, so these events are the whole history of `brain()`. The tool reads them from the set's first block. The last one must name the key `brain()` returns now. If it does not, the RPC returned only part of the events, and the check is an `ERROR`.
+- The time the object gives for itself falls within the key's tenure: from the block time of the `BrainSet` event that named it to the block time of the next one, with five minutes either side for clocks that differ. That time is `issuedAt` on an entry or a licence, and `at` on a head or on papers.
 
-The last `BrainSet` event must name the key `brain()` returns now. If it does not, the RPC returned only part of the events, and the check is an `ERROR`.
-
-This shows that the signing key was the DecisionLog's brain, and that the object is dated within that key's time as brain.
-
-It does not show when the key really signed. `issuedAt` is the signer's own statement, so a key that was once the brain could sign an entry or a licence later and date it back. For a record, the head closes that gap: its time is held to this machine's clock, its key must be the active DecisionLog's brain now, and its hash commits to every entry before it. A licence has no such anchor.
-
-It does not show how the key was named. `versions` on a decision record holds a decision's key to its attestation. Nothing here does the same for an entry, a licence or papers.
+The time an object gives for itself is the signer's own statement, so the tool checks it against the key's tenure and no more. What anchors a record in the present is its head: signed now, by the brain of the active DecisionLog. So a head must name the active set's DecisionLog, and its time is also held to this machine's clock. Papers are held to the same two rules.
 
 ### What a matching record shows
 
 A `match` shows that these entries are the whole record as the brain key signed it at the time the head states. No entry was left out, changed or put in another order since, and each was signed by a key the DecisionLog had named its brain.
 
-It does not show that an entry is true. For an entry with a receipt, the receipt's checks tie the outcome to the decision, the board and the payment. For an entry without one, the outcome is the brain key's statement. `--agent` holds each entry in the reputation registry to the board's settlement and hire for the same task. The `build` an entry names is what the agent's controller declared, or `house: <model id>` for a house worker. Nothing tests it.
+It does not show that an entry is true. For an entry with a receipt, the receipt's checks tie the outcome to the decision, the board and the payment. For an entry without one, the outcome is the brain key's statement. `--agent` holds each entry in the reputation registry to the board's settlement and hire for the same task. The `build` an entry names is what the agent's controller declared. For an agent BrainChain runs itself it is `house: <model id>`, the model BrainChain runs it on. Nothing tests either.
 
 The record is the brain key's own account of the agent. The reputation registry pins part of it on Robinhood Chain: each ERC-8004 entry carries the hash of the record entry it points at, and `--agent` checks that hash.
 
@@ -356,13 +349,15 @@ With `--epoch`, the tool reads the ERC-8004 identity registry on Robinhood Chain
 - The controller is the registry's `ownerOf(agentId)`. If that owner is the binding adapter `0x000000009d62675362a58911e3f32FEcf46F5E18`, the id is bound to an NFT. `bindingOf(agentId)` on the adapter gives the standard, the token contract and the token id, and the controller is `ownerOf(tokenId)` on that contract. Only standard 0, ERC-721, is read. An id that does not exist, a token nobody holds and any other standard have no controller.
 - The build is the registry's `getMetadata(agentId, "build")` read as text: printable ASCII on one line, cut to 96 characters, and empty when unset.
 
+An agent BrainChain runs itself is the one exception. Its build is `house: <model id>`, the model BrainChain runs it on, whatever the registry's metadata holds, and the registry does not hold that build. So when the newest entry's build starts with `house: `, the tool takes the build from that entry and compares the controller alone with the registry. The line says that the build is BrainChain's own statement, and shows what the registry holds. Every other build is held to the registry's metadata.
+
 `current-epoch` names the entries whose `epoch` is that one, and the epoch's line in the list says so. It fails nothing: an entry belongs to the epoch it was written under, whatever the id's epoch is now. A registry RPC that does not answer is an `ERROR`.
 
-`--epoch` is off unless asked for. It reads a second chain, so a registry RPC that does not answer would turn a matching record into `UNVERIFIED`. On testnet it reads the registry the record names, since the tool carries none. And a house worker's entries carry the build BrainChain runs it as, which the registry does not hold, so none of them matches the epoch the registry gives. For the five house agents the line says so, and counts the entries that name the current controller.
+`--epoch` is off unless asked for. It reads a second chain, so a registry RPC that does not answer would turn a matching record into `UNVERIFIED`. On testnet it reads the registry the record names, since the tool carries none.
 
 ## Licences
 
-An agent earns a licence by passing an exam sitting. The brain key signs it: the agent, the class, the epoch it was earned in, the sitting, and when it was issued and when it expires. The brain host lists an agent's licences at `/licences/<chain>/<agentId>` with the state it gives each: `valid`, `expired`, `suspended` or `lapsed`.
+An agent earns a licence by passing an exam sitting. The brain key signs it: the agent, the class, the epoch it was earned in, the sitting, and when it was issued and when it expires. The brain host lists an agent's licences at `/licences/<chain>/<agentId>` with the state it gives each: `valid`, `lapsed`, `suspended` or `expired`.
 
 ```sh
 npx brainchain-verify mainnet --licence 20424
@@ -377,13 +372,13 @@ For each licence the host lists, the tool checks:
 | `licence-brain` | That key was the DecisionLog's brain at `issuedAt`. See [the brain key](#the-brain-key). |
 | `licence-expiry` | Always `ok`. The line says when the licence expires or expired, by this machine's clock. |
 | `licence-epoch` | `ok` once the registry is read. The line says whether the epoch the identity registry gives the id now is the one the licence names, worked out as [the current epoch](#the-current-epoch) describes. A registry RPC that does not answer is an `ERROR`, and `licence-state` does not run. |
-| `licence-state` | The state the host gives is the state the two lines above give: `lapsed` when the id is in another epoch, `expired` when the licence is past `expiresAt`, and `valid` otherwise. |
+| `licence-state` | The state the host gives is the one its own order gives from the two lines above. A licence is `expired` once past `expiresAt`, whatever else was true of it. Before that it is `suspended` when the host says so. Before that it is `lapsed` while the id is in another epoch. Otherwise it is `valid`. |
 
 Where the state is less plain:
 
-- A licence past its expiry whose id is also in another epoch may be listed as `expired` or as `lapsed`. The host stops reading a licence's epoch once it has expired, so it can hold either.
-- `suspended` is reported as the host gives it. A suspension follows failed audits, which only the host counts. The line says what the state would be without it.
-- The host reads the registry every few minutes. Just after an id changes hands or declares a new build, the host can say `valid` where the registry already gives `lapsed`. That is a `FAIL`, and the line says why. Run the command again in a few minutes.
+- `suspended` is the host's word. A suspension follows two failed audits in the last three, which only the host counts. Before the expiry the tool reports it as given, and the line says what the state would be without it. Past the expiry only `expired` passes.
+- The host reads each id's epoch every ten minutes, so `valid` or `lapsed` can trail the registry by that long. Until the host's next reading its state and the registry's disagree. That is a `FAIL`, and the line says why. Run the command again after ten minutes.
+- For an agent BrainChain runs itself, the licence's build is `house: <model id>`, BrainChain's own statement, and the registry shows only whether the controller is still the licence's. While it is, the tool takes `valid` or `lapsed` as the host gives it: a change of model ends the epoch and does not show on the registry.
 
 A `match` shows that the brain key signed each licence, and that the state the host lists is the one the licence's expiry and the registry give now. It does not show that the exam's judgments were right. The licence lists the decision behind each item in `decisions`, and each can be checked by its id once its item is retired and its record is public.
 
@@ -487,7 +482,7 @@ With `--entry` or `--agent`, the object holds `registry`, `verdict`, `summary` a
 
 With `--record`, `--licence`, `--papers` or `--item`, the object holds `network`, `chainId`, `verdict`, `failed`, `errors`, `skipped`, the brain host as `service`, the address read as `url`, the `checks`, and `notChecked` for that command. `verdict` is `match`, `withheld`, `mismatch` or `unverified`.
 
-- `--record` adds `agentId`, the `agent` the record names once it is the one asked for, the number of `entries`, and the `head` with its `seq`, `hash`, `brain`, `at`, `signedAt` and `ageSeconds`. `epochs` lists each epoch with its `id`, `controller`, `build`, first entry as `from`, that entry's time as `since`, its `entries` and its `counts` under keys such as `task:accepted`. `receipts` holds one object for each entry with a receipt: its `seq`, `path`, the `decision` it names, its own `verdict` and every check on it. With `--epoch`, `current` holds the epoch's `id`, `controller` and `build`, `bound` for an id bound to an NFT, and `entries` as runs of `from` and `to`. It is `null` when no single account controls the id.
+- `--record` adds `agentId`, the `agent` the record names once it is the one asked for, the number of `entries`, and the `head` with its `seq`, `hash`, `brain`, `at`, `signedAt` and `ageSeconds`. `epochs` lists each epoch with its `id`, `controller`, `build`, first entry as `from`, that entry's time as `since`, its `entries` and its `counts` under keys such as `task:accepted`. `receipts` holds one object for each entry with a receipt: its `seq`, `path`, the `decision` it names, its own `verdict` and every check on it. With `--epoch`, `current` holds the epoch's `id`, `controller` and `build`, `bound` for an id bound to an NFT, and `entries` as runs of `from` and `to`. `buildFrom` is `registry`, or `record` when the build is read from the newest entry of an agent BrainChain runs itself, and `registryBuild` is then what the registry holds. `current` is `null` when no single account controls the id.
 - `--licence` adds `agentId` and `licences`. Each licence carries its `class`, the state the host gives as `claimed`, the `state` the checks give, its `sitting`, `accepted`, `of`, `issuedAt` and `expiresAt`, the host's `audits` counts, its own `verdict` and its `checks`. The top-level `checks` hold the fetch alone.
 - `--papers` adds `agentId` and what the papers state: `at`, `signedAt`, `brain`, `epoch`, `record` and each licence's `class` and `state`. These are the papers' own values, and the checks say whether the brain key signed them.
 - `--item` adds the item's `id`, its `title` and `template`, and `retired` with the host's `uses`, `passed` and `retiredAt`.
