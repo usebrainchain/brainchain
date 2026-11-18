@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
 
-import { createPublicClient, isAddress } from "viem";
+import { createPublicClient, isAddress, type Hex, type PublicClient } from "viem";
 
 import { decisionLogAbi, taskBoardAbi } from "./abi.js";
 import { NETWORKS } from "./deployments.js";
@@ -20,15 +20,23 @@ import {
   receiptDecision,
   REPUTATION,
   rpcTransport,
+  SERVICES,
   verifyDecision,
   verifyEntry,
+  verifyItem,
+  verifyLicences,
+  verifyPapers,
+  verifyRecord,
   withheldNotChecked,
   type Check,
   type Context,
   type DecisionReport,
   type EntryOutcome,
   type EntryReport,
+  type EpochCount,
   type Registry,
+  type Service,
+  type Span,
   type Status,
 } from "./verify.js";
 
@@ -38,10 +46,15 @@ const USAGE = `Usage:
   brainchain-verify <mainnet|testnet|chainId> [<decisionId>] --receipt <file|url> [--set <TaskBoard>] [--rpc <url>] [--json]
   brainchain-verify mainnet --entry <agentId>:[<writer>:]<feedbackIndex> [--rpc <url>] [--registry-rpc <url>] [--json]
   brainchain-verify mainnet --agent <agentId> [--rpc <url>] [--registry-rpc <url>] [--json]
+  brainchain-verify <mainnet|testnet|chainId> --record <agentId> [--epoch] [--service <url>] [--rpc <url>] [--registry-rpc <url>] [--json]
+  brainchain-verify <mainnet|testnet|chainId> --licence <agentId> [--service <url>] [--rpc <url>] [--registry-rpc <url>] [--json]
+  brainchain-verify <mainnet|testnet|chainId> --papers <agentId> [--service <url>] [--rpc <url>] [--json]
+  brainchain-verify <mainnet|testnet|chainId> --item <itemId> [--service <url>] [--rpc <url>] [--json]
 
 Checks a BrainChain decision against the chain: reads it from the DecisionLog,
 fetches the published record, recomputes its hashes and confidence, and applies
-the task's thresholds as the contracts do. Needs no keys.
+the task's thresholds as the contracts do. Checks what the brain host signs
+about an agent the same way: its record, licences and papers. Needs no keys.
 
   --task <id>    check every decision about one task
   --receipt <r>  check the receipt for a paid job, from a file or a URL, against
@@ -51,6 +64,20 @@ the task's thresholds as the contracts do. Needs no keys.
                  task, value and worker on the board. The writer is needed only
                  for an entry from an address BrainChain no longer writes from
   --agent <id>   check every entry BrainChain wrote for one agent
+  --record <id>  check an agent's numbered record on the brain host: every entry
+                 from the first, chained by hash to a fresh signed head, each
+                 signed by a key the DecisionLog named its brain, and each
+                 receipt an entry names
+  --epoch        with --record: read the identity registry for the epoch the
+                 agent's id is in now, and say which entries belong to it
+  --licence <id> check an agent's licences: each one's signature and key, its
+                 expiry, and the state the host gives against the registry
+  --papers <id>  check an agent's papers: the signed text, its key, its age and
+                 the record head it names
+  --item <id>    check a retired exam item against the commitment it was known
+                 by while it was in use
+  --service <url>
+                 another brain host for --record, --licence, --papers and --item
   --offline      fetch no receipt from the brain host
   --set <board>  a retired contract set from 3.0.0 on, by TaskBoard address, by
                  its key on the site (v3-1) or by release (3.1.0); without it, the
@@ -58,7 +85,8 @@ the task's thresholds as the contracts do. Needs no keys.
   --rpc <url>    another RPC for the same chain; records and briefs on private
                  addresses are read only when this is on one too
   --registry-rpc <url>
-                 another RPC for Robinhood Chain, where the registries are
+                 another RPC for Robinhood Chain, where the registries are; with
+                 --record it is read only with --epoch
   --json         one JSON object on stdout
   --version      print the version
 
@@ -110,12 +138,19 @@ const receiptArg = flag("--receipt");
 const entryArg = flag("--entry");
 const agentArg = flag("--agent");
 const registryRpcArg = flag("--registry-rpc");
+const recordArg = flag("--record");
+const licenceArg = flag("--licence");
+const papersArg = flag("--papers");
+const itemArg = flag("--item");
+const serviceArg = flag("--service");
+const epoch = toggle("--epoch");
 // -1 is a bad id, not an option; the id check below says so.
 const unknown = args.find((arg) => arg.startsWith("-") && !/^-\d/.test(arg));
 if (unknown) usage(`Unknown option ${unknown}`);
 const web = (url: string): boolean => URL.canParse(url) && ["http:", "https:"].includes(new URL(url).protocol);
 if (rpcArg !== undefined && !web(rpcArg)) fail("--rpc needs an http or https URL", 2);
 if (registryRpcArg !== undefined && !web(registryRpcArg)) fail("--registry-rpc needs an http or https URL", 2);
+if (serviceArg !== undefined && !web(serviceArg)) fail("--service needs an http or https URL", 2);
 
 const [networkArg, idArg, ...extra] = args;
 if (networkArg === undefined) usage("Name a network: mainnet, testnet or a chain id");
@@ -125,9 +160,19 @@ const reputation = entryArg !== undefined || agentArg !== undefined;
 if (reputation && (idArg !== undefined || taskArg !== undefined || receiptArg !== undefined || setArg !== undefined || offline)) {
   usage("An entry names its own task, decision and receipt, so --entry and --agent take only --rpc, --registry-rpc and --json");
 }
-if (!reputation && registryRpcArg !== undefined) usage("--registry-rpc is for --entry and --agent");
+const hostedArgs = [recordArg, licenceArg, papersArg, itemArg].filter((arg) => arg !== undefined);
+const hosted = hostedArgs.length > 0;
+if (hostedArgs.length > 1) usage("Name one of --record, --licence, --papers and --item");
+if (hosted && (reputation || idArg !== undefined || taskArg !== undefined || receiptArg !== undefined || setArg !== undefined || offline)) {
+  usage("--record, --licence, --papers and --item read the brain host, so they take only --service, --rpc, --registry-rpc and --json");
+}
+if (!hosted && serviceArg !== undefined) usage("--service is for --record, --licence, --papers and --item");
+if (epoch && recordArg === undefined) usage("--epoch is for --record");
+// The registry says which epoch an id is in now: a licence's state turns on it, and a record reads it only when asked.
+const readsRegistry = licenceArg !== undefined || (recordArg !== undefined && epoch);
+if (registryRpcArg !== undefined && !reputation && !readsRegistry) usage(recordArg === undefined ? "--registry-rpc is for --entry, --agent, --licence and --record with --epoch" : "With --record, --registry-rpc is read only with --epoch");
 if (entryArg !== undefined && agentArg !== undefined) usage("Name one entry with --entry, or an agent with --agent");
-if (!reputation && taskArg === undefined && idArg === undefined && receiptArg === undefined) usage("Name a decision id, a task with --task, or an entry with --entry");
+if (!reputation && !hosted && taskArg === undefined && idArg === undefined && receiptArg === undefined) usage("Name a decision id, a task with --task, or an entry with --entry");
 const given = taskArg ?? idArg;
 if (given !== undefined && !/^[1-9]\d*$/.test(given)) fail(`${taskArg === undefined ? "A decision" : "A task"} id is a whole number from 1`, 2);
 
@@ -143,6 +188,7 @@ const tally = (checks: Check[], status: Status): number => checks.filter((c) => 
 const unread = (what: string, error: unknown): Check => ({ name: "rpc", status: "error", message: `could not check ${what}: ${errorMessage(error)}` });
 const ENTRY_TAGS: Record<EntryOutcome, string> = { match: "match", "no-receipt": "no receipt", withheld: "withheld", mismatch: "MISMATCH", unverified: "UNVERIFIED" };
 if (reputation) await checkEntries();
+if (hosted) await checkHosted();
 
 const receipt = receiptArg === undefined ? undefined : await readReceipt(client, receiptArg).catch((error: unknown) => fail(errorMessage(error)));
 if (receipt && !isReceipt(receipt.value)) fail(`${receipt.from} is not a receipt as BrainChain or the x402 extension signs one`);
@@ -242,11 +288,11 @@ function report(reports: DecisionReport[], header: string, task?: number): never
   process.exit(failed + errors > 0 ? 1 : 0);
 }
 
-async function sameChain(registry?: Registry): Promise<void> {
+async function sameChain(registry?: { client: PublicClient; chainId: number }, name = "Robinhood Chain"): Promise<void> {
   const chainId = await client.getChainId();
   if (chainId !== network.chainId) fail(`The RPC serves chain ${chainId}, not ${network.name} (${network.chainId})`, 2);
   const registryChain = await registry?.client.getChainId();
-  if (registry && registryChain !== registry.chainId) fail(`The registry RPC serves chain ${registryChain}, not Robinhood Chain (${registry.chainId})`, 2);
+  if (registry && registryChain !== registry.chainId) fail(`The registry RPC serves chain ${registryChain}, not ${name} (${registry.chainId})`, 2);
 }
 
 function entryVerdict(r: EntryReport): string {
@@ -262,14 +308,17 @@ function entryVerdict(r: EntryReport): string {
       return "Verdict: no receipt. No signed receipt backs this entry, and the checks the chain allows without one passed.";
     case "match":
       if (tally(r.checks, "skip") > 0) return "Verdict: match. Every check that could run passed; the skip lines say what could not be checked.";
-      return "Verdict: match. The entry, its receipt, the decision and payment the receipt names, and the task on the board agree with the chain.";
+      if (!r.record) return "Verdict: match. The entry, its receipt, the decision and payment the receipt names, and the task on the board agree with the chain.";
+      return r.record.receipt
+        ? "Verdict: match. The entry, the record entry it points at, that entry's receipt, the decision and payment the receipt names, and the task on the board agree with the chain."
+        : "Verdict: match. The entry agrees with the record entry it points at, which the brain key signed. That entry names no receipt, so no decision or payment was checked.";
   }
 }
 
 /** What an entry is about, on its line in an agent's list. */
 function about(r: EntryReport): string {
   const task = r.task === undefined ? `endpoint ${r.endpoint}` : `task ${r.task}${r.set ? ` in set ${r.set}` : r.board ? ` on board ${r.board}` : ""}`;
-  return `value ${r.value}, ${task}${r.decision ? `, decision ${r.decision.id}` : ""}`;
+  return `value ${r.value}, ${task}${r.record ? `, record entry ${r.record.seq}` : ""}${r.decision ? `, decision ${r.decision.id}` : ""}`;
 }
 
 function reportEntries(reports: EntryReport[], header: string, agentId?: string): never {
@@ -353,6 +402,172 @@ async function checkEntries(): Promise<never> {
     const reports: EntryReport[] = [];
     for (const f of found) reports.push(await verifyEntry(ctx, registry, f).catch((error: unknown) => entryReport(registry, f, [unread(`entry ${entryName(registry, f)}`, error)])));
     reportEntries(reports, `Agent ${agentId} ${where}: ${found.length} entr${found.length === 1 ? "y" : "ies"} BrainChain wrote`, agentId.toString());
+  } catch (error) {
+    fail(errorMessage(error));
+  }
+}
+
+const short = (value: string): string => `${value.slice(0, 6)}…${value.slice(-4)}`;
+const utc = (seconds: number): string => `${new Date(seconds * 1000).toISOString().replace("T", " ").slice(0, 19)} UTC`;
+const line = (c: Check): string => `  ${TAGS[c.status].padEnd(5)} ${c.message}`;
+const runs = (spans: Span[]): string => spans.map(({ from, to }) => (from === to ? `${from}` : `${from} to ${to}`)).join(", ");
+
+interface Hosted {
+  header: string;
+  /** Every check, for the tally and the verdict. */
+  checks: Check[];
+  /** Decisions whose records were served without the work. */
+  withheld?: DecisionReport[];
+  /** The report, as the JSON object carries it. */
+  fields: Record<string, unknown>;
+  /** The text between the header and the verdict. */
+  lines: string[];
+  /** What a match shows, and what no check here can. */
+  match: string;
+  notChecked: string;
+}
+
+function reportHosted({ header, checks, withheld = [], fields, lines, match, notChecked }: Hosted): never {
+  const failed = tally(checks, "fail");
+  const errors = tally(checks, "error");
+  const skipped = tally(checks, "skip");
+  const overall = outcomeOf([{ checks, withheld: withheld.length > 0 }]);
+  const status = failed + errors > 0 ? 1 : 0;
+  if (json) {
+    const out = {
+      network: network.name,
+      chainId: network.chainId,
+      verdict: overall,
+      failed,
+      errors,
+      skipped,
+      ...fields,
+      ...(overall === "withheld" ? { withheldNotChecked: withheldNotChecked(withheld) } : {}),
+      notChecked: `${notChecked[0]!.toUpperCase()}${notChecked.slice(1)}`,
+      trustModel: TRUST_MODEL,
+    };
+    console.log(JSON.stringify(out, null, 2));
+    process.exit(status);
+  }
+  console.log(`${header}\n`);
+  for (const text of lines) console.log(text);
+  const verdict =
+    overall === "mismatch"
+      ? `MISMATCH. ${failed} check${failed === 1 ? "" : "s"} failed; see the FAIL lines.`
+      : overall === "unverified"
+        ? "UNVERIFIED. Some checks could not run; the ERROR lines say what could not be read."
+        : overall === "withheld"
+          ? `withheld, not a full match. ${withheldNotChecked(withheld)}`
+          : skipped > 0
+            ? "match. Every check that could run passed; the skip lines say what could not be checked."
+            : `match. ${match}`;
+  console.log(`\nVerdict: ${verdict}`);
+  console.log(`Not checked: ${notChecked} See ${TRUST_MODEL}`);
+  process.exit(status);
+}
+
+function epochLine(e: EpochCount): string {
+  const kinds = ["task", "exam", "audit"].flatMap((kind) => {
+    const outcomes = ["accepted", "rejected", "undelivered"].flatMap((outcome) => {
+      const n = e.counts[`${kind}:${outcome}` as keyof EpochCount["counts"]];
+      return n ? [`${n} ${outcome}`] : [];
+    });
+    return outcomes.length > 0 ? [`${kind} ${outcomes.join(", ")}`] : [];
+  });
+  return `  epoch ${short(e.id)}, controller ${short(e.controller)}, ${e.build === "" ? "no build" : `build "${e.build}"`}, from entry ${e.from} on ${utc(e.since)}: ${kinds.join("; ")}`;
+}
+
+/** --record, --licence, --papers and --item: what the brain host signs about an agent, held to the DecisionLog's brain keys and the identity registry. */
+async function checkHosted(): Promise<never> {
+  const known = SERVICES[network.chainId]!;
+  const url = (serviceArg ?? known.url).replace(/\/+$/, "");
+  const ctx: Context = { client, network, set: network.sets[0]!, briefs: new Map() };
+  if (itemArg !== undefined) {
+    if (!/^0x[0-9a-fA-F]{64}$/.test(itemArg)) fail("An item id is 0x and 64 hex digits", 2);
+    const r = await verifyItem(ctx, { url }, itemArg as Hex).catch((error: unknown) => fail(errorMessage(error)));
+    const { checks, ...fields } = r;
+    reportHosted({
+      header: `Exam item ${r.id} on ${network.name}, read from ${r.url}${r.title ? `\n${r.title}${r.template ? ` (template ${r.template})` : ""}` : ""}`,
+      checks,
+      fields: { service: url, ...fields, checks },
+      lines: checks.map(line),
+      match: "The published item is the one its id committed to.",
+      notChecked: "that the commitment was published before the item was used, or which sittings drew it.",
+    });
+  }
+
+  const asked = (recordArg ?? licenceArg ?? papersArg)!;
+  if (!/^(0|[1-9]\d{0,77})$/.test(asked)) fail("An agent id is a whole number", 2);
+  const agentId = BigInt(asked);
+  const { name, rpc, ...identity } = known.identity;
+  const registry = readsRegistry ? { client: createPublicClient({ transport: rpcTransport(name, registryRpcArg ?? rpc) }), chainId: identity.chainId } : undefined;
+  const service: Service = { url, identity: { ...identity, ...(registry ? { client: registry.client } : {}) } };
+  const on = `on ${network.name}, read from`;
+  try {
+    await sameChain(registry, name);
+    if (recordArg !== undefined) {
+      const r = await verifyRecord(ctx, service, agentId, { epoch });
+      const { checks, receipts, ...fields } = r;
+      const lines = checks.map(line);
+      for (const receipt of receipts) {
+        const wrong = receipt.checks.filter((c) => c.status === "fail" || c.status === "error");
+        if (wrong.length === 0) continue;
+        lines.push("", `Entry ${receipt.seq}'s receipt, ${receipt.path}${receipt.decision ? `, with decision ${receipt.decision.id} in set ${receipt.decision.set}` : ""}`, ...wrong.map(line));
+      }
+      if (r.epochs.length > 0) lines.push("", "Epochs in the record", ...r.epochs.map((e) => `${epochLine(e)}${r.current?.id === e.id.toLowerCase() ? ". The identity registry gives this epoch now" : ""}`));
+      reportHosted({
+        header: `Agent ${agentId}'s record ${on} ${r.url}`,
+        checks,
+        withheld: receipts.flatMap((receipt) => (receipt.withheld && receipt.decision ? [receipt.decision] : [])),
+        fields: {
+          service: url,
+          ...fields,
+          receipts: receipts.map(({ decision, checks: own, ...receipt }) => ({
+            ...receipt,
+            ...(decision ? { decision: { id: decision.id, set: decision.set, kind: decision.kind, ...(decision.task === undefined ? {} : { task: decision.task }) } } : {}),
+            verdict: outcomeOf([{ checks: own, withheld: receipt.withheld }]),
+            checks: own,
+          })),
+          checks,
+        },
+        lines,
+        match: `The record is whole: ${r.entries} entr${r.entries === 1 ? "y" : "ies"}, chained from the first to a head the brain key signed at ${r.head?.signedAt}, each signed by a key its DecisionLog named its brain.`,
+        notChecked: "that an entry without a receipt states what the board did, or that the agent runs the build its entries name.",
+      });
+    }
+    if (licenceArg !== undefined) {
+      const r = await verifyLicences(ctx, service, agentId);
+      if (r.licences.length === 0 && r.checks.every((c) => c.status === "ok")) fail(`The brain host lists no licence for agent ${agentId} at ${r.url}`);
+      const lines = r.checks.map(line);
+      for (const l of r.licences) lines.push("", `  ${l.class}: ${l.state ?? "not a licence"}`, ...l.checks.map(line));
+      reportHosted({
+        header: `Agent ${agentId}'s licences ${on} ${r.url}`,
+        checks: [...r.checks, ...r.licences.flatMap((l) => l.checks)],
+        fields: { service: url, ...r, licences: r.licences.map((l) => ({ ...l, verdict: outcomeOf([l]) })) },
+        lines,
+        match: "Each licence is signed by a key its DecisionLog named its brain, and the state the host gives is the one its expiry and the identity registry give.",
+        notChecked: "that the exam's judgments were right, or the audits behind a suspension.",
+      });
+    }
+    const r = await verifyPapers(ctx, service, agentId);
+    const lines = r.checks.map(line);
+    if (r.epoch) {
+      lines.push(
+        "",
+        `The papers state, signed ${r.signedAt}:`,
+        `  epoch ${r.epoch.number} (${short(r.epoch.id)}): controller ${short(r.epoch.controller)}, ${r.epoch.build === "" ? "no build" : `build "${r.epoch.build}"`}`,
+        `  record: ${r.record ? `${r.record.entries} entr${r.record.entries === 1 ? "y" : "ies"}, head ${short(r.record.head)}` : "none"}`,
+        `  licences: ${r.licences?.length ? r.licences.map((l) => `${l.class} ${l.state}`).join(", ") : "none"}`,
+      );
+    }
+    reportHosted({
+      header: `Agent ${agentId}'s papers ${on} ${r.url}`,
+      checks: r.checks,
+      fields: { service: url, ...r },
+      lines,
+      match: "The brain key of the active DecisionLog signed these papers, and the record head they name is the record's.",
+      notChecked: "the licences, counts and ceiling the papers list, which --licence and --record check at their source, or the file's fields outside brainchain, which nothing signs.",
+    });
   } catch (error) {
     fail(errorMessage(error));
   }
