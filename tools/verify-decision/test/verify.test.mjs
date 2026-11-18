@@ -2152,7 +2152,7 @@ describe("an agent's record", () => {
     );
   });
 
-  it("reads a long record a page at a time, and the head again when an entry was written after it was signed", async () => {
+  it("reads a long record a page at a time, and fails a list that runs past its own head", async () => {
     const entries = await recordOf([{}, {}, {}]);
     const head = await recordHead(entries.at(-1));
     const ctx = () => onChain({ sets: [set] });
@@ -2168,12 +2168,11 @@ describe("an agent's record", () => {
     assert.deepEqual(lines(looped), ["record-fetch fail"]);
     assert.match(check(looped, "record-fetch").message, /names a next page that does not move on from entry 1$/);
 
-    // The host signs the head and then reads the entries, so an entry written between the two runs past it.
+    // The host leaves an entry written after its head was signed for the next read, so a list never runs past its own head.
     listRecord(entries, await recordHead(entries[1]));
-    pages.set("/agents/4663/501/record/head", { body: JSON.stringify(head) });
-    assert.deepEqual(lines(await verifyRecord(ctx(), brainHost(), 501n)), WHOLE);
-    pages.set("/agents/4663/501/record/head", { body: JSON.stringify(await recordHead(entries[1])) });
-    assert.deepEqual(failed(await verifyRecord(ctx(), brainHost(), 501n)), ["record-head"]);
+    const past = await verifyRecord(ctx(), brainHost(), 501n);
+    assert.deepEqual(failed(past), ["record-head"]);
+    assert.equal(check(past, "record-head").message, "head: it ends at entry 2, and the entries listed end at entry 3");
   });
 
   it("is an error when the host serves no record, and a mismatch when what it serves is not one", async () => {

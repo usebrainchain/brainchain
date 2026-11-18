@@ -495,7 +495,7 @@ interface Fetched {
 
 /** What is being fetched: names it in messages, and caps it. */
 interface Wanted {
-  what: "record" | "brief" | "receipt" | "network manifest" | "agent record" | "record entry" | "record head" | "licence list" | "papers file" | "exam item";
+  what: "record" | "brief" | "receipt" | "network manifest" | "agent record" | "record entry" | "licence list" | "papers file" | "exam item";
   limit: number;
   /** The caller's RPC is on a private address, so what it names may be too. */
   allowPrivate: boolean;
@@ -2478,7 +2478,6 @@ const RECORD_PAGE = 200;
 const MAX_RECORD_PAGES = 100;
 // 200 entries of about 1.2 KB each, and the head.
 const MAX_PAGE_BYTES = 1024 * 1024;
-const MAX_HEAD_BYTES = 16 * 1024;
 const MAX_LICENCES_BYTES = 256 * 1024;
 const MAX_PAPERS_BYTES = 256 * 1024;
 const MAX_ITEM_BYTES = 1024 * 1024;
@@ -2751,29 +2750,18 @@ async function readRecord(ctx: Pick<Context, "client">, service: Service, agentI
     const uri = `${url}?from=${asked}&limit=${RECORD_PAGE}`;
     const body = await fetchJson(ctx, uri, "agent record", MAX_PAGE_BYTES);
     const listed = isObject(body) && Array.isArray(body.entries) ? body.entries.map(signedEntry) : undefined;
-    let head = isObject(body) ? signedHead(body.head) : undefined;
+    const head = isObject(body) ? signedHead(body.head) : undefined;
     if (!listed || !head) throw new Mismatch(`${display(uri)} is not an agent's record: a signed head and a list of entries`);
     const bad = listed.indexOf(undefined);
     if (bad >= 0) throw new Mismatch(`${display(uri)} lists, in place ${bad + 1}, something other than a record entry as BrainChain signs one`);
     entries.push(...(listed as SignedEntry[]));
     const { next } = body as { next?: unknown };
-    if (next === undefined) {
-      // The brain signs the head before it reads the entries, so an entry written between the two runs past it.
-      if ((entries.at(-1)?.entry.seq ?? 0) > head.head.seq) head = await readHead(ctx, service, agentId);
-      return { entries, head, pages };
-    }
+    if (next === undefined) return { entries, head, pages };
     const following = typeof next === "string" ? Number(/[?&]from=([1-9]\d{0,15})(?:&|$)/.exec(next)?.[1]) : NaN;
     if (!(following > asked)) throw new Mismatch(`${display(uri)} names a next page that does not move on from entry ${asked}`);
     if (pages === MAX_RECORD_PAGES) throw new TooLarge(`the record goes on past entry ${following - 1}, and this tool reads ${MAX_RECORD_PAGES * RECORD_PAGE} entries at most`);
     asked = following;
   }
-}
-
-async function readHead(ctx: Pick<Context, "client">, service: Service, agentId: bigint): Promise<SignedHead> {
-  const uri = `${recordUrl(service, agentId)}/head`;
-  const head = signedHead(await fetchJson(ctx, uri, "record head", MAX_HEAD_BYTES));
-  if (!head) throw new Mismatch(`${display(uri)} is not a record's head as BrainChain signs one`);
-  return head;
 }
 
 /** Where entries from `from` on stop being one unbroken run: each numbered after the one before and naming its hash, the first naming none. */
