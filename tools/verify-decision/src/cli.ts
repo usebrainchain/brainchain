@@ -36,7 +36,6 @@ import {
   type EpochCount,
   type Registry,
   type Service,
-  type Span,
   type Status,
 } from "./verify.js";
 
@@ -187,6 +186,9 @@ const tally = (checks: Check[], status: Status): number => checks.filter((c) => 
 // With --task or --agent, one decision or entry the RPC cannot read is an error line of its own, and the rest still run.
 const unread = (what: string, error: unknown): Check => ({ name: "rpc", status: "error", message: `could not check ${what}: ${errorMessage(error)}` });
 const ENTRY_TAGS: Record<EntryOutcome, string> = { match: "match", "no-receipt": "no receipt", withheld: "withheld", mismatch: "MISMATCH", unverified: "UNVERIFIED" };
+const line = (c: Check): string => `  ${TAGS[c.status].padEnd(5)} ${c.message}`;
+const short = (value: string): string => `${value.slice(0, 6)}…${value.slice(-4)}`;
+const utc = (seconds: number): string => `${new Date(seconds * 1000).toISOString().replace("T", " ").slice(0, 19)} UTC`;
 if (reputation) await checkEntries();
 if (hosted) await checkHosted();
 
@@ -407,11 +409,6 @@ async function checkEntries(): Promise<never> {
   }
 }
 
-const short = (value: string): string => `${value.slice(0, 6)}…${value.slice(-4)}`;
-const utc = (seconds: number): string => `${new Date(seconds * 1000).toISOString().replace("T", " ").slice(0, 19)} UTC`;
-const line = (c: Check): string => `  ${TAGS[c.status].padEnd(5)} ${c.message}`;
-const runs = (spans: Span[]): string => spans.map(({ from, to }) => (from === to ? `${from}` : `${from} to ${to}`)).join(", ");
-
 interface Hosted {
   header: string;
   /** Every check, for the tally and the verdict. */
@@ -474,7 +471,7 @@ function epochLine(e: EpochCount): string {
     });
     return outcomes.length > 0 ? [`${kind} ${outcomes.join(", ")}`] : [];
   });
-  return `  epoch ${short(e.id)}, controller ${short(e.controller)}, ${e.build === "" ? "no build" : `build "${e.build}"`}, from entry ${e.from} on ${utc(e.since)}: ${kinds.join("; ")}`;
+  return `  epoch ${short(e.id)}, controller ${short(e.controller)}, ${e.build === "" ? "no build" : `build "${e.build}"`}, since entry ${e.from} (${utc(e.since)}): ${kinds.join("; ")}`;
 }
 
 /** --record, --licence, --papers and --item: what the brain host signs about an agent, held to the DecisionLog's brain keys and the identity registry. */
