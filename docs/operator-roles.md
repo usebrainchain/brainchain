@@ -45,6 +45,32 @@ Every send emits `Sent` with the recipient, the amount, the day's total and the 
 
 A disabled module can send nothing, whatever its settings.
 
+## Passing the liquidity share to the lock
+
+70% of the 1% trading fee on $BRAIN's market goes into locked liquidity. The market locks part of that itself. The rest is paid out to BrainChain's income contract and forwarded to the treasury Safe on Robinhood Chain, and both Safe owners have signed each time it was passed on to $BRAIN's pair-and-lock contract, `0x870b0bfb24af2c06180fbee266117305e0b0e00f`.
+
+[`FeeShareModule`](../src/safe/FeeShareModule.sol) is a Safe module for that one payment. It is not deployed yet.
+
+The operator can call `passAndPair(minPrice, maxPrice)`. The Safe sends the share that is due, in ETH, to the lock and calls the lock's `pair` with the operator's price bounds, in one transaction. The lock pairs the ETH with $BRAIN it already holds, in a position owned by the burn address. If the lock refuses to pair, the whole call reverts and the share stays in the Safe.
+
+What is due is counted on chain: a fixed fraction of everything the market's fee hook has paid out to the income contract (`claimed`), less what has been passed on already. For $BRAIN the fraction is one sixth.
+
+The operator cannot:
+
+- pass on more than the share, or pass the same share twice;
+- send it to any address other than the lock;
+- send another token;
+- change the fraction, the lock or the ledger, which are fixed when the module is deployed;
+- make the Safe call anything else, or delegatecall.
+
+The operator chooses the price bounds. The lock's own limits hold whatever the bounds are: it pairs only within a factor of two of its reference price, which only the Safe moves, and only while its pool is within about 8% of the market.
+
+Every call emits `Passed` with the amount, the total passed so far and the position.
+
+| To | Safe transaction | Takes effect |
+| --- | --- | --- |
+| Remove the power | `disableModule(prevModule, module)` on the Safe | At once |
+
 ## Executing ready timelock operations
 
 The AdminTimelock on BrainChain, `0xB23F49390061B1E7Faf0F99B146E491Ee1574B1e`, holds the admin powers over the decision logs, the executors and the boards. It is OpenZeppelin's `TimelockController` with a 48-hour delay. The admin Safe is its only proposer, its only canceller and its only executor. The timelock alone holds the admin role over its own roles.
