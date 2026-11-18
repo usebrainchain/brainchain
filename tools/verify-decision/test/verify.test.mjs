@@ -2264,10 +2264,16 @@ describe("an agent's record", () => {
     const sold = await house({ owner: STRANGER, build: "" });
     assert.match(check(sold, "current-epoch").message, /which gives epoch 0x\w{4}…\w{4}\. None of the 3 entries belongs to it$/);
     assert.deepEqual(sold.current.entries, []);
-    // A registry that holds the very build is read as any other.
-    const held = await house({ build: MODEL });
-    assert.equal(check(held, "current-epoch").message, `current epoch: the identity registry gives controller ${brief(HOLDER)} and the build "${MODEL}", which is epoch ${brief(own)}. 2 of 3 entries belong to it: entries 2 to 3`);
-    assert.equal(held.current.buildFrom, "registry");
+    // The prefix is BrainChain's own: written into the registry's metadata it is cut, so the registry never gives such a build.
+    const written = await house({ build: MODEL });
+    assert.match(check(written, "current-epoch").message, /^current epoch: the identity registry gives controller 0x\w{4}…\w{4} and the build "anthropic\/claude-sonnet-5\.5"\. The newest entry's build, "house: anthropic\/claude-sonnet-5\.5", is BrainChain's own statement /);
+    assert.deepEqual([written.current.buildFrom, written.current.registryBuild, written.current.id], ["record", "anthropic/claude-sonnet-5.5", own]);
+    // A controller that declares it, in any letter case and however often, declares what follows it.
+    for (const [text, build] of [["House: house:  x", "x"], ["HOUSE:house:", ""], ["house:x house: y", "x house: y"], [" house: x", "x"], ["warehouse: x", "warehouse: x"]]) {
+      assert.deepEqual(await currentEpoch(identityChain({ build: text }), { ...AGENT, adapters: [] }, 501n), { id: epochOf(AGENT, HOLDER, build), controller: HOLDER, build }, text);
+    }
+    const posing = await asked({ build: "house: worker-2" });
+    assert.equal(check(posing, "current-epoch").message, `current epoch: the identity registry gives controller ${brief(HOLDER)} and the build "worker-2", which is epoch ${brief(id)}. 2 of 3 entries belong to it: entries 2 to 3`);
 
     assert.deepEqual(await currentEpoch(identityChain({ build: `${"b".repeat(100)}é` }), { ...AGENT, adapters: [] }, 501n), { id: epochOf(AGENT, HOLDER, "b".repeat(96)), controller: HOLDER, build: "b".repeat(96) });
   });

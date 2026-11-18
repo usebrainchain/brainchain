@@ -2833,8 +2833,19 @@ export interface CurrentEpoch {
 // The adapter's code for ERC-721, the one standard whose token has a single holder.
 const ERC721 = 0;
 // The build of an agent BrainChain runs itself is `house: <model id>`, the model it runs it on, whatever the registry's
-// metadata holds (createEpochs in epoch.ts). The registry does not hold it, so only such an epoch's controller can be held to the registry.
-const isHouseBuild = (build: string): boolean => build.startsWith("house: ");
+// metadata holds (createEpochs in epoch.ts). The prefix is kept for those agents: the brain removes it from a build a
+// controller declares, so a signed build that starts with it came from the brain's own list. The registry does not
+// hold such a build, so only its epoch's controller can be held to the registry.
+const HOUSE_BUILD = "house:";
+const isHouseBuild = (build: string): boolean => build.startsWith(HOUSE_BUILD);
+const built = (build: string): string => (build === "" ? "no build" : `the build "${build}"`);
+
+/** A build as a controller can declare it (declared in epoch.ts): without the prefix kept for BrainChain's own agents, in any letter case and however often it is repeated, and without the spaces after it. */
+function declared(label: string): string {
+  let build = label;
+  while (build.toLowerCase().startsWith(HOUSE_BUILD)) build = build.slice(HOUSE_BUILD.length).trimStart();
+  return build;
+}
 const MAX_BUILD = 96;
 const reverted = (error: unknown): boolean => error instanceof BaseError && error.walk((e) => e instanceof ContractFunctionRevertedError) !== null;
 
@@ -2852,7 +2863,8 @@ function buildLabel(raw: Hex): string {
  * The epoch the registry gives an agent's id now, as the brain works it out
  * (controlOf and declaredBuild in epoch.ts): its owner on the registry, or the
  * holder of the ERC-721 token a binding adapter binds it to, and the text
- * under its "build" metadata key. Null when the id does not exist or no single
+ * under its "build" metadata key, without the prefix kept for the agents
+ * BrainChain runs itself. Null when the id does not exist or no single
  * account holds it. A registry that cannot be read throws.
  */
 export async function currentEpoch(client: PublicClient, identity: { chainId: number; registry: Address; adapters: readonly Address[] }, agentId: bigint): Promise<CurrentEpoch | null> {
@@ -2876,7 +2888,7 @@ export async function currentEpoch(client: PublicClient, identity: { chainId: nu
   }
   // A registry without the metadata read declares no build.
   const raw = await client.readContract({ address: registry, abi: identityAbi, functionName: "getMetadata", args: [agentId, "build"] }).catch(orNull<Hex>);
-  const build = raw ? buildLabel(raw) : "";
+  const build = raw ? declared(buildLabel(raw)) : "";
   return { id: epochId({ chainId: identity.chainId, registry, id: agentId.toString() }, controller, build), controller: getAddress(controller.toLowerCase()), build, ...(bound ? { bound } : {}) };
 }
 
@@ -3076,7 +3088,7 @@ async function checkCurrent(service: Service, c: Checks, report: RecordReport, e
   }
   const { controller, bound } = registry;
   const newest = entries.at(-1)?.entry;
-  const stated = newest && isHouseBuild(newest.build) && newest.build !== registry.build ? newest.build : undefined;
+  const stated = newest && isHouseBuild(newest.build) ? newest.build : undefined;
   const id = stated === undefined ? registry.id : epochId(agent, controller, stated);
   const mine = entries.filter(({ entry }) => eq(entry.epoch, id)).map(({ entry }) => entry.seq);
   report.current = {
@@ -3089,7 +3101,7 @@ async function checkCurrent(service: Service, c: Checks, report: RecordReport, e
     entries: spansOf(mine),
   };
   const who = bound ? `${short(controller)}, who holds token ${bound.tokenId} of ${short(bound.token)}, which the id is bound to,` : short(controller);
-  const gives = `current epoch: the identity registry gives controller ${who} and ${registry.build === "" ? "no build" : `the build "${registry.build}"`}`;
+  const gives = `current epoch: the identity registry gives controller ${who} and ${built(registry.build)}`;
   const belong = mine.length === 0 ? `None of the ${plural(entries.length, "entry", "entries")} belongs to it` : `${mine.length} of ${plural(entries.length, "entry", "entries")} belong${mine.length === 1 ? "s" : ""} to it: ${entriesNamed(mine)}`;
   if (stated === undefined) return c.add("current-epoch", "ok", `${gives}, which is epoch ${short(id)}. ${belong}`);
   c.add(
@@ -3246,9 +3258,8 @@ async function checkLicence(ctx: Context, service: Service, agentId: bigint, ite
     if (!reading) epochs.set(registry, (reading = currentEpoch(identity.client, { chainId: identity.chainId, registry, adapters: identity.adapters }, agentId)));
     try {
       const current = await reading;
-      const built = (build: string): string => (build === "" ? "no build" : `the build "${build}"`);
       const earned = `controller ${short(l.controller)} and ${built(l.build)}`;
-      house = current !== null && isHouseBuild(l.build) && current.build !== l.build && eq(current.controller, l.controller);
+      house = current !== null && isHouseBuild(l.build) && eq(current.controller, l.controller);
       moved = house ? undefined : current?.id !== l.epoch.toLowerCase();
       c.add(
         "licence-epoch",
