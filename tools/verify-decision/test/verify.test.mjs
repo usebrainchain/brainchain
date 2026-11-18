@@ -912,6 +912,14 @@ describe("evidence and receipts", () => {
     const signature = await key.signTypedData({ domain: { name: "BrainChain receipt", version: "1", chainId: payload.chainId, verifyingContract: payload.decisionLog }, types: RECEIPT_TYPES, primaryType: "Receipt", message });
     return { format: "eip712", payload, signature };
   }
+  /** A version 2 receipt, which also signs the decision's subject. */
+  async function issuedV2(record, fields = {}, key = BRAIN) {
+    const payload = { version: 2, chainId: network.chainId, decisionLog: set.log, decision: "1", subject: taskSubject(7n), brain: key.address, evidence: record.evidence, job: "task", outcome: "accepted", ...PAYMENT, issuedAt: 1_763_164_800, ...fields };
+    const types = { Receipt: [...RECEIPT_TYPES.Receipt.slice(0, 4), { name: "subject", type: "bytes32" }, ...RECEIPT_TYPES.Receipt.slice(4)] };
+    const message = { ...payload, version: 2n, chainId: BigInt(payload.chainId), decision: BigInt(payload.decision), issuedAt: BigInt(payload.issuedAt) };
+    const signature = await key.signTypedData({ domain: { name: "BrainChain receipt", version: "2", chainId: payload.chainId, verifyingContract: payload.decisionLog }, types, primaryType: "Receipt", message });
+    return { format: "eip712", payload, signature };
+  }
   /** The extension's receipt in PAYMENT-RESPONSE, signed with the brain key. */
   async function extension(fields = {}, key = BRAIN) {
     const payload = { version: 1, network: PAYMENT.network, resourceUrl: "https://brain.usebrainchain.com/x402/grades", payer: PAYER, issuedAt: 1_763_164_800, transaction: PAYMENT.transaction, ...fields };
@@ -1068,6 +1076,22 @@ describe("evidence and receipts", () => {
     assert.equal(status(ownerNamed, "versions"), "ok");
     assert.match(check(ownerNamed, "versions").message, /The log had not attested it, so the owner named it and the record names no image or app$/);
     assert.deepEqual(failed(await verify({ ...recorded(sealed(accepted())), offline: true, attested: [] })), ["versions"]);
+  });
+
+  it("checks a version 2 receipt's subject against the decision's subject on the log", async () => {
+    const record = sealed(accepted());
+    const good = await paid(record, { receipt: given(await issuedV2(record)) });
+    assert.deepEqual(failed(good), []);
+    assert.match(check(good, "receipt-decision").message, /^receipt: names decision 1 and its subject 0x\w{4}…\w{4} on DecisionLog/);
+    const other = await paid(record, { receipt: given(await issuedV2(record, { subject: taskSubject(8n) })) });
+    assert.deepEqual(failed(other), ["receipt-decision"]);
+    assert.match(check(other, "receipt-decision").message, /subject 0x\w{4}…\w{4}, not 0x\w{4}…\w{4}, the decision's subject on the log/);
+    // A version 2 receipt without its subject, or a version 1 receipt with one, is not a receipt BrainChain signs.
+    const { subject: _s, ...unnamed } = (await issuedV2(record)).payload;
+    const v1 = await issued(record);
+    for (const value of [{ ...(await issuedV2(record)), payload: unnamed }, { ...v1, payload: { ...v1.payload, subject: taskSubject(7n) } }]) {
+      assert.match(check(await paid(record, { receipt: given(value) }), "receipt").message, /is not a receipt as BrainChain or the x402 extension signs one/);
+    }
   });
 
   it("checks a good receipt the brain host serves, and the same receipt kept from the reply", async () => {

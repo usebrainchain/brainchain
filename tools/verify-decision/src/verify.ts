@@ -1466,6 +1466,8 @@ interface ReceiptPayload extends Payment {
   chainId: number;
   decisionLog: Address;
   decision: string;
+  /** The decision's subject on the log, since version 2. */
+  subject?: Hex;
   brain: Address;
   evidence: Hex;
   job: string;
@@ -1504,6 +1506,8 @@ const RECEIPT_TYPES = {
     { name: "issuedAt", type: "uint256" },
   ],
 } as const;
+// RECEIPT_TYPES_V2: version 2 signs the decision's subject after the decision, under domain version "2".
+const RECEIPT_TYPES_V2 = { Receipt: [...RECEIPT_TYPES.Receipt.slice(0, 4), { name: "subject", type: "bytes32" }, ...RECEIPT_TYPES.Receipt.slice(4)] } as const;
 
 // x402 specs/extensions/extension-offer-and-receipt.md, version 0.6: a fixed domain and type.
 const X402_RECEIPT_TYPES = {
@@ -1535,6 +1539,7 @@ function parseReceipt(value: unknown): Receipt | undefined {
     AMOUNT.test(String(p.decision)) &&
     BYTES32.test(String(p.evidence)) &&
     AMOUNT.test(String(p.amount)) &&
+    (p.version === 2 ? BYTES32.test(String(p.subject)) : p.subject === undefined) &&
     ["job", "outcome", "asset"].every((k) => typeof p[k] === "string");
   return ours ? { x402: false, payload: p as unknown as ReceiptPayload, signature } : undefined;
 }
@@ -1550,14 +1555,14 @@ function signerOf(receipt: Receipt): Promise<Address> {
       signature: receipt.signature,
     });
   }
-  const p = receipt.payload;
+  const { subject, ...p } = receipt.payload;
   return recoverTypedDataAddress({
-    domain: { name: "BrainChain receipt", version: "1", chainId: p.chainId, verifyingContract: p.decisionLog },
-    types: RECEIPT_TYPES,
+    domain: { name: "BrainChain receipt", version: String(p.version), chainId: p.chainId, verifyingContract: p.decisionLog },
+    types: p.version === 2 ? RECEIPT_TYPES_V2 : RECEIPT_TYPES,
     primaryType: "Receipt",
-    message: { ...p, version: BigInt(p.version), chainId: BigInt(p.chainId), decision: BigInt(p.decision), issuedAt: BigInt(p.issuedAt) },
+    message: { ...p, ...(subject !== undefined ? { subject } : {}), version: BigInt(p.version), chainId: BigInt(p.chainId), decision: BigInt(p.decision), issuedAt: BigInt(p.issuedAt) },
     signature: receipt.signature,
-  });
+  } as Parameters<typeof recoverTypedDataAddress>[0]);
 }
 
 /** A file, read no further than one byte past `limit`. A device or a pipe can go on for ever, so only a regular file is read. */
@@ -1649,7 +1654,8 @@ async function checkReceipt(ctx: Context, c: Checks, d: Decided, given: GivenRec
   const evidence = anchor ?? (typeof d.record.evidence === "string" ? d.record.evidence : undefined);
   const whose = anchor ? "the hash on chain" : "the record's";
   const wrong: string[] = [];
-  if (p.version !== 1) wrong.push(`version ${p.version}, where BrainChain signs version 1`);
+  if (p.version !== 1 && p.version !== 2) wrong.push(`version ${p.version}, where BrainChain signs version 2, or 1 before receipts named their subject`);
+  if (p.version === 2 && !eq(p.subject ?? "", d.decision.subject)) wrong.push(`subject ${short(String(p.subject))}, not ${short(d.decision.subject)}, the decision's subject on the log`);
   if (p.chainId !== network.chainId) wrong.push(`chain ${p.chainId}, not ${network.chainId}`);
   if (!eq(p.decisionLog, set.log)) wrong.push(`DecisionLog ${short(p.decisionLog)}, not ${short(set.log)}`);
   if (p.decision !== d.id.toString()) wrong.push(`decision ${p.decision}, not ${d.id}`);
@@ -1658,7 +1664,7 @@ async function checkReceipt(ctx: Context, c: Checks, d: Decided, given: GivenRec
   c.check(
     "receipt-decision",
     wrong.length === 0,
-    `receipt: names decision ${d.id} on DecisionLog ${short(set.log)}, chain ${network.chainId}, and the evidence hash ${short(p.evidence)}, ${anchor ? "as its Recorded event carries it" : "as the record holds it"}`,
+    `receipt: names decision ${d.id}${p.version === 2 ? ` and its subject ${short(d.decision.subject)}` : ""} on DecisionLog ${short(set.log)}, chain ${network.chainId}, and the evidence hash ${short(p.evidence)}, ${anchor ? "as its Recorded event carries it" : "as the record holds it"}`,
     `receipt: names ${list(wrong)}`,
   );
   await checkOutcome(ctx, c, d, p);

@@ -117,7 +117,7 @@ The verdict is `match`, `withheld`, `UNVERIFIED` or `MISMATCH`. `withheld` means
 | `evidence` | The record's evidence hash recomputes from the chain's `inputHash` and the record's judges, payments and versions, and equals the hash its `Recorded` event carries in `payloadURI`. Since evidence version 2 the hash also covers the panel's rule, a degraded panel's bar and the grade's pass level, so a copy served without the work cannot name another rule. The tool recomputes both versions and takes the one the chain holds; the line says when a record is version 1. |
 | `versions` | The key the record names sent the decision's `Recorded` transaction, and the image and app it names are the ones the DecisionLog attested that key for. |
 | `receipt` | The receipt's EIP-712 signature recovers to the key that sent the decision's `Recorded` transaction. |
-| `receipt-decision` | The receipt names this decision, its DecisionLog, its chain and the record's evidence hash. |
+| `receipt-decision` | The receipt names this decision, its DecisionLog, its chain and the record's evidence hash. A version 2 receipt also names the decision's subject, the task or the paid grade, which must be the subject on the log. Version 1 receipts, signed before receipts named their subject, check as before. |
 | `receipt-outcome` | The receipt's outcome is the board's for a task, or the grade bar's for a paid grade. |
 | `receipt-payment` | The receipt's payment is one the record names, and the payment transaction moved its amount from the payer to the desk. |
 
