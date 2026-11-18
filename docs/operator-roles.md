@@ -1,10 +1,10 @@
 # Operator roles
 
-BrainChain's operator key, `0x70C665780E43BA1496a4E691e408F24844dB58eC`, runs routine jobs around the clock. Two of those jobs wait for both Safe owners to sign: topping up the desk's USDG, and executing a timelock operation once its delay has passed. This page describes a narrow power for each. Neither is in place for these jobs yet: the desk's copies of `CappedTransferModule` are not deployed, and the operator does not hold the timelock's executor role. One copy of the module is live for another recipient, described below. With both in place, the owners keep every other power and can take either one back with a Safe transaction. A third narrow power is in place: passing the treasury Safe's liquidity share to $BRAIN's lock, described below.
+BrainChain's operator key, `0x70C665780E43BA1496a4E691e408F24844dB58eC`, runs routine jobs around the clock. Two of those jobs wait for both Safe owners to sign: topping up the desk's USDG, and executing a timelock operation once its delay has passed. This page describes a narrow power for each. Neither is in place for these jobs yet: the desk's copies of `CappedTransferModule` are not deployed, and the operator does not hold the timelock's executor role. One copy of the module is live for another recipient, described below. With both in place, the owners keep every other power and can take either one back with a Safe transaction. A third narrow power is in place: passing the treasury Safe's liquidity share to $BRAIN's lock, described below. The Safe can take that one back at any time as well.
 
 ## Keys
 
-Every key that holds a role in the deployed contracts, read from the contracts on 16 November 2026. The admin Safe on BrainChain and the treasury Safe on Robinhood Chain each need both of their owners to sign, and each can replace the keys below on the contracts it owns.
+Every key that holds a role in the deployed contracts, read from the contracts on 16 November 2026; the fee share operator's row was added on 18 November. The admin Safe on BrainChain and the treasury Safe on Robinhood Chain each need both of their owners to sign, and each can replace the keys below on the contracts it owns.
 
 | Key | Address | Chain | What it can do |
 | --- | --- | --- | --- |
