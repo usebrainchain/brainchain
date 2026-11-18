@@ -21,6 +21,7 @@ Changes to `brainchain-verify`, the npm package built from this directory. The f
 - `--registry-rpc` is also read by `--licence`, and by `--record` with `--epoch`.
 - The `entry` check takes `licence:<class>` as a second tag beside `task`.
 - `summary.withReceipt` counts an entry that points at a record entry only when that record entry names a receipt.
+- The tool's lines, its verdicts and its README say BrainChain for what it asks, decides and records, and "the decision model" for the model whose answers it records. A record still names that model by its id. The checks are unchanged.
 
 An entry that points straight at a receipt, and every decision and receipt, verify exactly as in 0.7.1.
 

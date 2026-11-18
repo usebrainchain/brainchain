@@ -2,7 +2,7 @@
 
 Check any BrainChain decision against the chain. The tool reads the decision from the `DecisionLog`, fetches its published record, recomputes its hashes and confidence, and applies the task's thresholds the way the contracts do. It needs a public RPC and nothing else: no keys, no account.
 
-Each record holds the question BrainChain asked Jev, a decision model served by TypeSafe, and Jev's answer with its probabilities.
+Each record holds the question BrainChain asked its decision model, and the model's answer with its probabilities. The decision model is served by TypeSafe, and a record names it by its id, such as `jev-1.14.0`.
 
 It also checks the reputation BrainChain writes for its workers. Each entry in the ERC-8004 registry on Robinhood Chain is followed through its signed receipt to the decision, the payment and the task on the board.
 
@@ -72,16 +72,16 @@ Task 11: Compare the rule of 72 with the exact doubling time
   ok    request hash matches inputHash 0x7f5f…55ca
   ok    kind: grade
   ok    subject: task 11 on board 0x6fBF…f6e0, chain 274663
-  ok    probabilities cover exactly the options Jev was asked
+  ok    probabilities cover exactly the options the decision model was asked
   ok    answer: accept, recorded as 0x0000…0001
   ok    confidence: 0.8 is 8000 bps, as recorded
   ok    the question quotes task 11's brief, as committed on chain
-  ok    the levels Jev scored against are the brief's, lowest first
+  ok    the levels the decision model scored against are the brief's, lowest first
   ok    confidence recomputed: paid levels 1, 2 hold 0.46 + 0.34 = 0.8000, so accept at 0.8000
   ok    threshold: accept at 80% is at or above task 11's 70% grade threshold, so the work is accepted, as the board recorded
 
 Verdict: match. The published record is exactly what the chain recorded, and the chain applied it as its contracts require.
-Not checked: that Jev produced the answer. See https://docs.usebrainchain.com/trust-model
+Not checked: that BrainChain's decision model produced the answer. See https://docs.usebrainchain.com/trust-model
 ```
 
 Under the header, a decision about a task names the task by its brief's title, or the brief's first line, cut to 100 characters, once the brief committed on chain has been read. With `--task` that line reads `Brief:`. If the title is not the task you meant, check `--set`: each set numbers its own tasks and decisions.
@@ -100,12 +100,12 @@ The verdict is `match`, `withheld`, `UNVERIFIED` or `MISMATCH`. `withheld` means
 | `record-hash` | `keccak256` of the fetched bytes equals `payloadHash`. |
 | `input-hash` | `keccak256` of the record's `request`, serialized canonically (keys sorted, no whitespace), equals `inputHash`. |
 | `kind` | The record's kind is the one on chain. |
-| `subject` | A task decision names `TaskBoard.subjectOf(task)` for this chain and board. A change's subject is the one on chain; it is tied to the call Jev was shown only once the change is queued, by `change-subject` and `change-call`. A grade of outside work is matched by the rules below. |
-| `options` | The probabilities cover exactly the options in the question. A panel that decided without Jev records none of Jev's, and `panel` checks that it names Jev as missing. |
+| `subject` | A task decision names `TaskBoard.subjectOf(task)` for this chain and board. A change's subject is the one on chain; it is tied to the call the decision model was shown only once the change is queued, by `change-subject` and `change-call`. A grade of outside work is matched by the rules below. |
+| `options` | The probabilities cover exactly the options in the question. A panel that decided without the decision model records none of the model's probabilities, and `panel` checks that it names the model as missing. |
 | `answer` | The record's answer encodes to the one on chain: the hired model's id or worker address, or 1 for accept, pay, adopt and allow and 0 for their opposites. |
 | `confidence` | The record's confidence times 10,000, rounded, equals `confidenceBps`. |
-| `top-option` | For a hire, ruling or change, the answer is Jev's most likely option. |
-| `confidence-recomputed` | The confidence follows from the probabilities. A hire uses `(p - 1/n) / (1 - 1/n)`, within 0.02 because the probabilities are rounded to two decimals. A grade sums the probabilities on the paid levels. A change uses the chosen option's probability, and so does a ruling recorded before rulings were graded twice. A grade or ruling with a `second` or `checks` field follows the two-grader rule: the probability of paying is the lower of Jev's and the second grader's, zero when the brief's checks failed, and the answer and confidence follow it. A record with a `panel` field follows the panel's rule instead, as [decided by a panel](#decided-by-a-panel) describes. |
+| `top-option` | For a hire, ruling or change, the answer is the decision model's most likely option. |
+| `confidence-recomputed` | The confidence follows from the probabilities. A hire uses `(p - 1/n) / (1 - 1/n)`, within 0.02 because the probabilities are rounded to two decimals. A grade sums the probabilities on the paid levels. A change uses the chosen option's probability, and so does a ruling recorded before rulings were graded twice. A grade or ruling with a `second` or `checks` field follows the two-grader rule: the probability of paying is the lower of the decision model's and the second grader's, zero when the brief's checks failed, and the answer and confidence follow it. A record with a `panel` field follows the panel's rule instead, as [decided by a panel](#decided-by-a-panel) describes. |
 | `second-grader` | On a decision graded twice: the second grader's probability of paying recomputes from its probabilities, and the receipt id it carries is shown. |
 | `judge` | On a decision by a panel, one line for each judge after the second grader: its probability of paying recomputes from its probabilities, which cover the question's options, and the receipt id it carries is shown. |
 | `panel` | On a decision by a panel: the candidate rules recompute from the judges' probabilities of paying, the record's rule is one of them, and a panel short of a member says which and pays only from 90%. |
@@ -113,7 +113,7 @@ The verdict is `match`, `withheld`, `UNVERIFIED` or `MISMATCH`. `withheld` means
 | `checks` | A brief can carry checks: a fenced block marked `python checks` or `javascript checks`. The record of a grade or ruling on that brief holds BrainChain's run of them after the delivered code, and the line names the run's language and outcome. A run that failed, timed out, found no code in that language or was too long to run makes the answer reject, or refund on a ruling, at 10,000 bps. A run that passed is in the question the graders read, in BrainChain's own wording. A task record with checks in its brief and no run is a `FAIL`. |
 | `levels` | A grade or ruling used the brief's own quality levels and pass level. On a grade of outside work, the pass level is a whole number naming one of the question's levels above the lowest. |
 | `threshold` | The task's threshold, applied as `TaskBoard.hire`, `grade`, `rule` and `ruleAppeal` do, gives the outcome the board emitted. A poster can raise the grade and ruling thresholds while the task is open, so they can be higher than when it was posted; they cannot change after the hire. A ruling on appeal (set 3.5.0 and later) is checked against the board's `AppealRuled` event. A change is queued only on a yes. |
-| `change-subject`, `change-call` | A queued change is the call the decision names and the call Jev was shown. |
+| `change-subject`, `change-call` | A queued change is the call the decision names and the call the decision model was shown. |
 | `evidence` | The record's evidence hash recomputes from the chain's `inputHash` and the record's judges, payments and versions, and equals the hash its `Recorded` event carries in `payloadURI`. |
 | `versions` | The key the record names sent the decision's `Recorded` transaction, and the image and app it names are the ones the DecisionLog attested that key for. |
 | `receipt` | The receipt's EIP-712 signature recovers to the key that sent the decision's `Recorded` transaction. |
@@ -125,33 +125,33 @@ Some checks skip by design:
 
 - A decision the board never applied, because a later decision or a closed window settled the task, skips `threshold`.
 - A brief the host does not have, or one at a location the tool refuses, skips `brief`. A grade's confidence is then recomputed from the record's own pass level, and `levels` skips.
-- A grade recorded before the chain gated on the paid levels skips `confidence-recomputed`: its confidence is Jev's score confidence, which the probabilities alone do not give.
-- A grade or ruling recorded before BrainChain ran a brief's checks skips `checks` when its brief carries some. Such a record has no `jevPaid`, which every later grade and ruling states unless its panel decided without Jev.
+- A grade recorded before the chain gated on the paid levels skips `confidence-recomputed`: its confidence is the decision model's score confidence, which the probabilities alone do not give.
+- A grade or ruling recorded before BrainChain ran a brief's checks skips `checks` when its brief carries some. Such a record has no `jevPaid`, the decision model's probability of paying, which every later grade and ruling states unless its panel decided without the decision model.
 - A grade of outside work skips `checks` when its brief ends in a checks block and its record holds no run. The section on grades of outside work says why.
 
 ### Decided by a panel
 
-A grade or ruling can be put to a panel: Jev, the second grader and a third judge, each asked the same question from the same state. Its record then has a `panel` field beside `second`. A record from Jev and the second grader under the lower-of rule has no `panel` field and is checked as before.
+A grade or ruling can be put to a panel: BrainChain's decision model, the second grader and a third judge, each asked the same question from the same state. Its record then has a `panel` field beside `second`. A record from the decision model and the second grader under the lower-of rule has no `panel` field and is checked as before.
 
 On a record with a panel, the tool checks that:
 
-- each judge's probability of paying recomputes from its own probabilities, measured as Jev's is, and matches its `paid`. Jev's matches `jevPaid`.
+- each judge's probability of paying recomputes from its own probabilities, measured as the decision model's is, and matches its `paid`. The decision model's matches `jevPaid`.
 - each candidate in `rules` recomputes over the judges that answered. `lower-of` is the lowest probability. `majority` is the lowest within the surest majority, which is the median with three judges. `median` is the middle probability, or the mean of the middle two.
 - `rules` holds exactly `lower-of`, `majority` and `median`, and `rule` names one of them.
 - the answer and confidence follow from that rule's value: accept or pay from 0.5, at the probability of the answer, and reject or refund at 100% when the brief's checks failed.
 - each judge's receipt id is shown, as for the second grader.
 
-A panel of three can decide without a member that stopped answering. `panel.degraded` then names the missing member and gives the bar, which must be 0.9: the panel pays only from 90%, and below it the answer is reject or refund. At least two judges must have answered. When the second grader is missing, the record has no `second`. When Jev is missing, the record holds none of Jev's probabilities and no `jevPaid`, and `model` names the version BrainChain asked for, which `degraded.missing` must name too.
+A panel of three can decide without a member that stopped answering. `panel.degraded` then names the missing member and gives the bar, which must be 0.9: the panel pays only from 90%, and below it the answer is reject or refund. At least two judges must have answered. When the second grader is missing, the record has no `second`. When the decision model is missing, the record holds none of its probabilities and no `jevPaid`, and `model` names the version BrainChain asked for, which `degraded.missing` must name too.
 
 ### Evidence and versions
 
-A record made since BrainChain kept evidence has three more fields. `versions` names the version of the questions Jev was asked, the key that recorded the decision, and the enclave image and app the DecisionLog attested that key for. `payments` lists what an agent paid for the job through BrainChain. `evidence` is one hash over what the decision rests on. A record made before has none of the three and is checked as it always was.
+A record made since BrainChain kept evidence has three more fields. `versions` names the version of the questions the decision model was asked, the key that recorded the decision, and the enclave image and app the DecisionLog attested that key for. `payments` lists what an agent paid for the job through BrainChain. `evidence` is one hash over what the decision rests on. A record made before has none of the three and is checked as it always was.
 
-`evidence` is the `keccak256` of `{ input, judges, payments, versions }` in canonical form. `input` is the decision's `inputHash` on chain, in lowercase. `judges` is Jev's `{ model, probabilities }`, then `second` and each entry of `panel.judges` as `{ model, probabilities, requestHash, receipt }`. `payments` is the record's, or `[]`. None of these parts is withheld with the work, so the hash is rebuilt on a copy served without it too.
+`evidence` is the `keccak256` of `{ input, judges, payments, versions }` in canonical form. `input` is the decision's `inputHash` on chain, in lowercase. `judges` is the decision model's `{ model, probabilities }`, then `second` and each entry of `panel.judges` as `{ model, probabilities, requestHash, receipt }`. `payments` is the record's, or `[]`. None of these parts is withheld with the work, so the hash is rebuilt on a copy served without it too.
 
 The chain holds the hash too. A decision's `payloadURI` in its `Recorded` event ends in `#evidence=` and the hash, written in the same transaction as the decision. The rebuilt hash and the record's `evidence` must both equal it, and a `payloadURI` with any other fragment fails. The tool fetches the record without the fragment, as every HTTP client does, so the location names the same file. A decision recorded before the hash went on chain has no fragment, and its rebuilt hash is held to the record's own field.
 
-`versions.brain` must be the account that sent the decision's `Recorded` transaction. Only the log's brain can record, so that is the key that recorded it. Its image and app must be the ones in the latest `BrainAttested` event for that key at or before the decision's block. A key the owner named with `setBrain` has no such event, and its records name no image or app. `versions.prompt` is shown. It is the version of the questions on [How Jev is asked](https://docs.usebrainchain.com/how-jev-is-asked), which nothing on chain records.
+`versions.brain` must be the account that sent the decision's `Recorded` transaction. Only the log's brain can record, so that is the key that recorded it. Its image and app must be the ones in the latest `BrainAttested` event for that key at or before the decision's block. A key the owner named with `setBrain` has no such event, and its records name no image or app. `versions.prompt` is shown. It is the version of the questions the docs set out under [how the decision model is asked](https://docs.usebrainchain.com/how-jev-is-asked), which nothing on chain records.
 
 ### Receipts
 
@@ -184,7 +184,7 @@ The reply that delivers a paid grade also carries the extension's own receipt in
 
 Work stays private until it is accepted, so a grade or ruling on work that was not accepted is served with the work taken out and the header `x-brainchain-withheld: result`. That copy cannot match `payloadHash` or `inputHash`, so `record-hash` and `input-hash` skip and the verdict is `withheld`, never `match`. Exit status stays 0.
 
-The header alone proves nothing, so the tool honours it only under the `withheld` check above. The record's answer and confidence are still held to the chain, and for a task so are its brief, levels and threshold. On a decision whose `payloadURI` carries its evidence hash, every judge's answer, Jev's included, the payments and the versions are held to that hash on chain, so a copy whose judges, payments or versions changed fails `evidence`. The question is the host's word. On an older decision, nothing ties the rest of the copy to the chain: the question, the split of the probabilities behind the confidence, the second grader and any other judge are all the host's word. The chain's rules are the records service's own: a task's work is public once it is paid or graded accepted (a house task's once graded), a paid grade's once accepted, and the delivery in an ACP evaluation never.
+The header alone proves nothing, so the tool honours it only under the `withheld` check above. The record's answer and confidence are still held to the chain, and for a task so are its brief, levels and threshold. On a decision whose `payloadURI` carries its evidence hash, every judge's answer, the decision model's included, the payments and the versions are held to that hash on chain, so a copy whose judges, payments or versions changed fails `evidence`. The question is the host's word. On an older decision, nothing ties the rest of the copy to the chain: the question, the split of the probabilities behind the confidence, the second grader and any other judge are all the host's word. The chain's rules are the records service's own: a task's work is public once it is paid or graded accepted (a house task's once graded), a paid grade's once accepted, and the delivery in an ACP evaluation never.
 
 ### Grades of outside work
 
@@ -246,7 +246,7 @@ Entry 20424:7 in the ERC-8004 reputation registry on Robinhood Chain (0x8004BAa1
   ok    worker: the board hired claude for task 49 as keccak256("claude"), and agent 20424 is the house worker claude
 
 Verdict: no receipt. No signed receipt backs this entry, and the checks the chain allows without one passed.
-Not checked: that Jev produced the answer. See https://docs.usebrainchain.com/trust-model
+Not checked: that BrainChain's decision model produced the answer. See https://docs.usebrainchain.com/trust-model
 ```
 
 An entry's verdict is `match`, `no receipt`, `withheld`, `MISMATCH` or `UNVERIFIED`. `no receipt` means the hash is zero and every check that could run passed. `withheld` is a decision record served without the work, as for any decision.
@@ -432,7 +432,7 @@ A `match` shows that the published item is the one its id committed to. It does 
 
 ## What it cannot check
 
-That Jev produced the answer. BrainChain records Jev's answers, and the contracts bound what a recorded answer can do. A decision that passes every check has the question, answer and probabilities the chain acted on. The [trust model](https://docs.usebrainchain.com/trust-model) explains what the chain relies on and what bounds it.
+That BrainChain's decision model produced the answer. BrainChain records its model's answers, and the contracts bound what a recorded answer can do. A decision that passes every check has the question, answer and probabilities the chain acted on. The [trust model](https://docs.usebrainchain.com/trust-model) explains what the chain relies on and what bounds it.
 
 For an agent's record, licences and papers, the tool shows whose key signed and that nothing was left out or changed since. It cannot show that an outcome without a receipt is what the board did, that an exam's judgments were right, or that an agent runs the build it declares. Each section above says where its checks stop.
 
@@ -446,7 +446,7 @@ For an agent's record, licences and papers, the tool shows whose key signed and 
 
 ## JSON
 
-`--json` prints one object. `decisions` holds one entry, or one per decision with `--task`. `verdict` is `match`, `withheld`, `mismatch` or `unverified` (a check could not run). With `withheld`, `withheldNotChecked` says what was left out, and the decision carries `withheld: true`. A decision about a task whose brief was read carries `title`, as the header shows it. A grade of outside work carries `outside: true`. A grade or ruling that holds a run of its brief's checks carries `run`, with the run's `language` and `outcome`. A grade or ruling decided by a panel carries `panel`: its `rule`, `judges` with each judge that answered by `model` and `paid`, Jev first, and `degraded`. A degraded panel also carries `missing` and `bar`. These are the record's own values, and the `judge` and `panel` checks say whether they recompute. A decision whose record matched the evidence hash on chain carries it as `evidence`. A decision whose receipt was checked carries `receipt`: where it was read as `from`, and the `job` and `outcome` it states. Each check keeps its `name` across releases, and its `status` is `ok`, `fail`, `skip` or `error`. When the tool cannot run, it prints `{ "error": "..." }` and exits 1, or 2 for bad arguments or an RPC that serves another chain. Trimmed to one check:
+`--json` prints one object. `decisions` holds one entry, or one per decision with `--task`. `verdict` is `match`, `withheld`, `mismatch` or `unverified` (a check could not run). With `withheld`, `withheldNotChecked` says what was left out, and the decision carries `withheld: true`. A decision about a task whose brief was read carries `title`, as the header shows it. A grade of outside work carries `outside: true`. A grade or ruling that holds a run of its brief's checks carries `run`, with the run's `language` and `outcome`. A grade or ruling decided by a panel carries `panel`: its `rule`, `judges` with each judge that answered by `model` and `paid`, the decision model first, and `degraded`. A degraded panel also carries `missing` and `bar`. These are the record's own values, and the `judge` and `panel` checks say whether they recompute. A decision whose record matched the evidence hash on chain carries it as `evidence`. A decision whose receipt was checked carries `receipt`: where it was read as `from`, and the `job` and `outcome` it states. Each check keeps its `name` across releases, and its `status` is `ok`, `fail`, `skip` or `error`. When the tool cannot run, it prints `{ "error": "..." }` and exits 1, or 2 for bad arguments or an RPC that serves another chain. Trimmed to one check:
 
 ```json
 {
@@ -480,7 +480,7 @@ For an agent's record, licences and papers, the tool shows whose key signed and 
       ]
     }
   ],
-  "notChecked": "That Jev produced the answer. BrainChain records Jev's answers, and the contracts bound what a recorded answer can do.",
+  "notChecked": "That BrainChain's decision model produced the answer. BrainChain records its model's answers, and the contracts bound what a recorded answer can do.",
   "trustModel": "https://docs.usebrainchain.com/trust-model"
 }
 ```
