@@ -93,7 +93,7 @@ Exit status: 0 when every check that could run matches, 1 on a mismatch or when
 a decision or its record cannot be read, 2 on bad arguments.`;
 
 const TRUST_MODEL = "https://docs.usebrainchain.com/trust-model";
-const NOT_CHECKED = "That Jev produced the answer. BrainChain records Jev's answers, and the contracts bound what a recorded answer can do.";
+const NOT_CHECKED = "That BrainChain's decision model produced the answer. BrainChain records its model's answers, and the contracts bound what a recorded answer can do.";
 // Sets before 3.0.0 named tasks by id alone, which the subject check does not model, so the package carries none.
 const BEFORE_3 = /^(v2(-|$)|2\.|0x83b31d99fa31a9e5257955a737ef34c40f1c57bf$)/i;
 
@@ -286,7 +286,7 @@ function report(reports: DecisionReport[], header: string, task?: number): never
     for (const c of r.checks) console.log(`  ${TAGS[c.status].padEnd(5)} ${c.message}`);
   }
   console.log(`\n${verdict(reports)}`);
-  console.log(`Not checked: that Jev produced the answer. See ${TRUST_MODEL}`);
+  console.log(`Not checked: that BrainChain's decision model produced the answer. See ${TRUST_MODEL}`);
   process.exit(failed + errors > 0 ? 1 : 0);
 }
 
@@ -362,7 +362,7 @@ function reportEntries(reports: EntryReport[], header: string, agentId?: string)
     const { entries, withReceipt, verified, withheld, failed, unverified } = summary;
     console.log(`\n${entries} entr${entries === 1 ? "y" : "ies"}, ${withReceipt} with a receipt, ${verified} verified${withheld > 0 ? `, ${withheld} withheld` : ""}, ${failed} failed${unverified > 0 ? `, ${unverified} could not be checked` : ""}.`);
   }
-  console.log(`Not checked: that Jev produced the answer. See ${TRUST_MODEL}`);
+  console.log(`Not checked: that BrainChain's decision model produced the answer. See ${TRUST_MODEL}`);
   process.exit(status);
 }
 
