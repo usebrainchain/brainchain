@@ -10,10 +10,14 @@ Changes to `brainchain-verify`, the npm package built from this directory. The f
 - `panel` fails a record that decides by `weighted` without weights, values `weighted` in `rules` without weights, or carries weights that are not one per member, lie outside 0 to 1 or do not sum to 1. Each failure names its reason.
 - `evidence` rebuilds evidence version 2 with `panel.weights` beside the rule when the rule is `weighted`. Records under any other rule hash as before.
 - `--json` carries `weights` in `panel` when the record has them.
+- `shape` checks a grade or ruling on a brief that fences a JSON schema (a block marked `json schema`). The tool checks the record's result against the schema exactly as BrainChain does before any grader is asked. The outcome and the problems must be the ones in the request, the record's `shape` field must agree, and the question must show the graders the check in BrainChain's own wording. A result that does not match must be a reject, or a refund on a ruling, at 10,000 bps. Records decided under prompt version 2 or later owe the check. Older ones skip it.
+- `--json` carries `shape` on a decision whose brief has a schema.
 
 ### Changed
 
 - A rule the tool does not know now fails `panel` with `weighted` among the rules it lists.
+- `confidence-recomputed` puts the probability of paying at 0 when the result does not match the brief's schema, as it does when the brief's checks failed.
+- `checks` accepts a question that shows the graders the shape after the run of the checks.
 
 0.11.0 and earlier do not know the weighted rule. On a weighted record they fail `panel`, naming `weighted` as no candidate rule, skip `confidence-recomputed` and fail `evidence`, so the verdict is `MISMATCH` until you upgrade. Records under the other rules verify exactly as in 0.11.0.
 
