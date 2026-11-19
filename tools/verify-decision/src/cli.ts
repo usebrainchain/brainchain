@@ -181,7 +181,9 @@ if (!hosted && serviceArg !== undefined) usage("--service is for --record, --lic
 if (epoch && recordArg === undefined) usage("--epoch is for --record");
 // The registry says which epoch an id is in now: a licence's state and the papers turn on it, and a record reads it only when asked.
 const readsRegistry = licenceArg !== undefined || papersArg !== undefined || (recordArg !== undefined && epoch);
-if (registryRpcArg !== undefined && !reputation && !readsRegistry) usage(recordArg === undefined ? "--registry-rpc is for --entry, --agent, --licence, --papers and --record with --epoch" : "With --record, --registry-rpc is read only with --epoch");
+// The usage lists --registry-rpc for --record, so leaving out --epoch is not a command line of the wrong shape.
+if (registryRpcArg !== undefined && recordArg !== undefined && !epoch) fail("With --record, --registry-rpc is read only with --epoch", 2);
+if (registryRpcArg !== undefined && !reputation && !readsRegistry) usage("--registry-rpc is for --entry, --agent, --licence, --papers and --record with --epoch");
 if (entryArg !== undefined && agentArg !== undefined) usage("Name one entry with --entry, or an agent with --agent");
 if (!reputation && !hosted && taskArg === undefined && idArg === undefined && receiptArg === undefined) usage("Name a decision id, a task with --task, or an entry with --entry");
 const given = taskArg ?? idArg;

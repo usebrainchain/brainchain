@@ -3225,10 +3225,10 @@ describe("the command line", () => {
     const shape = [
       ["mainnet", "--record"], ["mainnet", "--record", "1", "--licence", "1"], ["mainnet", "--papers", "1", "--item", ITEM], ["mainnet", "1", "--record", "1"], ["mainnet", "--record", "1", "--set", "v4"],
       ["mainnet", "--licence", "1", "--offline"], ["mainnet", "--record", "1", "--agent", "1"], ["mainnet", "--papers", "1", "--task", "1"], ["mainnet", "1", "--service", "https://x.invalid"], ["mainnet", "--agent", "1", "--service", "https://x.invalid"],
-      ["mainnet", "--papers", "1", "--epoch"], ["mainnet", "1", "--epoch"], ["mainnet", "--item", ITEM, "--registry-rpc", "https://x.invalid"], ["mainnet", "--record", "1", "--registry-rpc", "https://x.invalid"],
+      ["mainnet", "--papers", "1", "--epoch"], ["mainnet", "1", "--epoch"], ["mainnet", "--item", ITEM, "--registry-rpc", "https://x.invalid"],
       ["mainnet", "--licence", "1", "--payment-rpc", "https://x.invalid"], ["mainnet", "--papers", "1", "--payment-rpc", "https://x.invalid"], ["mainnet", "--item", ITEM, "--payment-rpc", "https://x.invalid"],
     ];
-    const values = [["mainnet", "--record", "x"], ["testnet", "--licence", "1.5"], ["mainnet", "--papers", "-1"], ["mainnet", "--item", "0x12"], ["mainnet", "--item", "12"], ["mainnet", "--record", "1", "--service", "ftp://x"]];
+    const values = [["mainnet", "--record", "x"], ["testnet", "--licence", "1.5"], ["mainnet", "--papers", "-1"], ["mainnet", "--item", "0x12"], ["mainnet", "--item", "12"], ["mainnet", "--record", "1", "--service", "ftp://x"], ["mainnet", "--record", "1", "--registry-rpc", "https://x.invalid"]];
     for (const args of [...shape, ...values]) {
       const asJson = run(...args, "--json");
       assert.equal(asJson.status, 2, args.join(" "));
@@ -3245,7 +3245,7 @@ describe("the command line", () => {
     assert.match(run("mainnet", "--entry", "0501:1").stderr, /, with each number written without leading zeros\n$/);
     assert.equal(run("mainnet", "01").stderr, "A decision id is a whole number from 1, written without leading zeros\n");
     assert.equal(run("mainnet", "--item", "0x12").stderr, "An item id is 0x and 64 hex digits\n");
-    assert.match(run("mainnet", "--record", "1", "--registry-rpc", "https://x.invalid").stderr, /^With --record, --registry-rpc is read only with --epoch\n/);
+    assert.equal(run("mainnet", "--record", "1", "--registry-rpc", "https://x.invalid").stderr, "With --record, --registry-rpc is read only with --epoch\n");
     assert.match(run("mainnet", "--item", ITEM, "--registry-rpc", "https://x.invalid").stderr, /^--registry-rpc is for --entry, --agent, --licence, --papers and --record with --epoch\n/);
     assert.match(run("--help").stdout, /brainchain-verify <mainnet\|testnet\|chainId> --record <agentId> \[--epoch\] \[--service <url>\] \[--rpc <url>\] \[--registry-rpc <url>\] \[--payment-rpc <url>\] \[--json\]\n/);
     assert.match(run("mainnet", "--licence", "1", "--payment-rpc", "https://x.invalid").stderr, /^--payment-rpc is for decisions, --receipt, --entry, --agent and --record, which check a receipt's payment\n/);
