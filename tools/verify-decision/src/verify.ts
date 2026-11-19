@@ -1527,7 +1527,7 @@ const RECEIPT_TYPES = {
     { name: "issuedAt", type: "uint256" },
   ],
 } as const;
-// RECEIPT_TYPES_V2: version 2 signs the decision's subject after the decision, under domain version "2".
+// Version 2 signs the decision's subject after the decision, under domain version "2".
 const RECEIPT_TYPES_V2 = { Receipt: [...RECEIPT_TYPES.Receipt.slice(0, 4), { name: "subject", type: "bytes32" }, ...RECEIPT_TYPES.Receipt.slice(4)] } as const;
 
 // x402 specs/extensions/extension-offer-and-receipt.md, version 0.6: a fixed domain and type.

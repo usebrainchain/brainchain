@@ -175,7 +175,6 @@ if (hostedArgs.length > 1) usage("Name one of --record, --licence, --papers and 
 if (hosted && (reputation || idArg !== undefined || taskArg !== undefined || receiptArg !== undefined || setArg !== undefined || offline)) {
   usage("--record, --licence, --papers and --item read the brain host, so they take only --service, --rpc, --registry-rpc, --payment-rpc and --json");
 }
-// Only a receipt names a payment: decisions, --entry, --agent and --record read them, and offline only the one given.
 if (paymentRpcArg !== undefined && (licenceArg ?? papersArg ?? itemArg) !== undefined) usage("--payment-rpc is for decisions, --receipt, --entry, --agent and --record, which check a receipt's payment");
 if (paymentRpcArg !== undefined && offline && receiptArg === undefined) usage("With --offline, --payment-rpc is read only with --receipt");
 if (!hosted && serviceArg !== undefined) usage("--service is for --record, --licence, --papers and --item");
