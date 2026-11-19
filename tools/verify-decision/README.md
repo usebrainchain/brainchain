@@ -6,7 +6,7 @@ Each record holds the question BrainChain asked Jev, a decision model served by 
 
 It also checks the reputation BrainChain writes for its workers. Each entry in the ERC-8004 registry on Robinhood Chain is followed through its signed receipt to the decision, the payment and the task on the board.
 
-And it checks what the brain host signs about an agent: its numbered record, its licences and its papers. Each is held to the keys the `DecisionLog` named its brain.
+It checks what the brain host signs about an agent as well: its numbered record, its licences and its papers, each held to the keys the `DecisionLog` named its brain.
 
 ```sh
 npx brainchain-verify mainnet 1
@@ -306,7 +306,7 @@ The tool reads the record 200 entries at a time until the host names no next pag
 | `record-receipt` | One line for each entry that names a receipt. The receipt, read from the host at the entry's `receipt.path`, hashes to `receipt.hash`, and is checked with the decision it names as [receipts](#receipts) describes. That decision is about the task the entry's `ref` names, and the entry states the receipt's outcome, payment and decision. |
 | `current-epoch` | With `--epoch`: the epoch the identity registry gives the id now, and the entries that belong to it. See [the current epoch](#the-current-epoch). |
 
-Below the checks, the tool lists each epoch in the record with its controller, its build and its counts by kind and outcome, recomputed from the entries. The report below is of a test record, so its agent, keys and hashes are not ones on mainnet:
+Below the checks, the tool lists each epoch in the record with its controller, its build and its counts by kind and outcome, recomputed from the entries. The report below is from a test record, so its agent, keys and hashes are not on mainnet:
 
 ```text
 Agent 501's record on BrainChain mainnet, read from https://brain.usebrainchain.com/agents/4663/501/record
@@ -345,7 +345,7 @@ The time an object gives for itself is the signer's own statement, so the tool c
 
 A `match` shows that these entries are the whole record as the brain key signed it at the time the head states. No entry was left out, changed or put in another order since, and each was signed by a key the DecisionLog had named its brain.
 
-It does not show that an entry is true. For an entry with a receipt, the receipt's checks tie the outcome to the decision, the board and the payment. For an entry without one, the outcome is the brain key's statement. `--agent` holds each entry in the reputation registry to the board's settlement and hire for the same task. The `build` an entry names is what the agent's controller declared. For an agent BrainChain runs itself it is `house: <model id>`, the model BrainChain runs it on. Nothing tests either.
+It does not show that an entry is true. For an entry with a receipt, the receipt's checks tie the outcome to the decision, the board and the payment. For an entry without one, the outcome is the brain key's statement. `--agent` holds each entry in the reputation registry to the board's settlement and hire for the same task. The `build` an entry names is what the agent's controller declared. For an agent BrainChain runs itself it is `house: <model id>`, the model BrainChain runs it on. Nothing tests that the agent runs the build its entry names.
 
 The record is the brain key's own account of the agent. The reputation registry pins part of it on Robinhood Chain: each ERC-8004 entry carries the hash of the record entry it points at, and `--agent` checks that hash.
 
@@ -353,22 +353,22 @@ A record is checked as far as its head. An entry written after the head was sign
 
 ### The current epoch
 
-A record counts for an epoch: the agent's id, whoever controlled it, and the build it declared. A new controller or a new build starts a new epoch. Earlier entries keep the epoch they were written under.
+An epoch is one agent id under one controller and one declared build. A new controller or a new build starts a new epoch. Earlier entries keep the epoch they were written under.
 
 With `--epoch`, the tool reads the ERC-8004 identity registry on Robinhood Chain and works out the epoch the id is in now, as the brain does:
 
 - The controller is the registry's `ownerOf(agentId)`. If that owner is the binding adapter `0x000000009d62675362a58911e3f32FEcf46F5E18`, the id is bound to an NFT. `bindingOf(agentId)` on the adapter gives the standard, the token contract and the token id, and the controller is `ownerOf(tokenId)` on that contract. Only standard 0, ERC-721, is read. An id that does not exist, a token nobody holds and any other standard have no controller.
 - The build is the registry's `getMetadata(agentId, "build")` read as text: printable ASCII on one line, cut to 96 characters, and empty when unset. A declared build never starts with `house:`. That prefix is removed from what the registry holds, in any letter case and however often it is repeated, with the spaces after it.
 
-An agent BrainChain runs itself is the one exception. Its build is `house: <model id>`, the model BrainChain runs it on, whatever the registry's metadata holds, and the registry does not hold that build. The prefix is kept for these agents, so an entry or a licence whose build starts with `house:` can only have come from BrainChain's own list of the agents it runs, never from a controller's metadata. So when the newest entry's build starts with `house:`, the tool takes the build from that entry and compares the controller alone with the registry. The line says that the build is BrainChain's own statement, and shows what the registry holds. Every other build is held to the registry's metadata.
+An agent BrainChain runs itself is the one exception. Its build is `house: <model id>`, the model BrainChain runs it on, which the registry does not hold, whatever its metadata says. Only these agents keep the prefix, so an entry or a licence whose build starts with `house:` came from BrainChain's own list of the agents it runs, never from a controller's metadata. When the newest entry's build starts with `house:`, the tool takes the build from that entry and compares only the controller with the registry. The line says the build is BrainChain's own statement and shows what the registry holds. Every other build is held to the registry's metadata.
 
 `current-epoch` names the entries whose `epoch` is that one, and the epoch's line in the list says so. It fails nothing: an entry belongs to the epoch it was written under, whatever the id's epoch is now. A registry RPC that does not answer is an `ERROR`.
 
-`--epoch` is off unless asked for. It reads a second chain, so a registry RPC that does not answer would turn a matching record into `UNVERIFIED`. On testnet it reads the registry the record names, since the tool carries none.
+`--epoch` is opt-in because it reads a second chain: a registry RPC that does not answer would turn a matching record into `UNVERIFIED`. On testnet it reads the registry the record names, since the tool carries none.
 
 ## Licences
 
-An agent earns a licence by passing an exam sitting. The brain key signs it: the agent, the class, the epoch it was earned in, the sitting, and when it was issued and when it expires. The brain host lists an agent's licences at `/licences/<chain>/<agentId>` with the state it gives each: `valid`, `lapsed`, `suspended` or `expired`. The host reads the registry for the reply, at most a minute before it. The reply says so in `registry`, which is `read` or `unreadable`, and carries `epoch`: the id's epoch by that reading, as its `id`, `controller` and `build`, or `null` when no single account controls the id. With `registry: read`, every state in the reply is held to that epoch. With `unreadable`, `epoch` is `null` and the states are those of the host's last own reading, at most ten minutes old.
+An agent earns a licence by passing an exam sitting. The brain key signs it: the agent, the class, the epoch it was earned in, the sitting, and when it was issued and when it expires. The brain host lists an agent's licences at `/licences/<chain>/<agentId>` with the state it gives each: `valid`, `lapsed`, `suspended` or `expired`. The host reads the registry at most a minute before each reply, and says in `registry` whether it could: `read` or `unreadable`. The reply's `epoch` is the id's epoch by that reading, as its `id`, `controller` and `build`, or `null` when no single account controls the id. With `registry: read`, every state in the reply is held to that epoch. With `unreadable`, `epoch` is `null` and the states are those of the host's last own reading, at most ten minutes old.
 
 ```sh
 npx brainchain-verify mainnet --licence 20424
@@ -379,7 +379,7 @@ The tool first holds the reply to the registry:
 | Check | What passes |
 | --- | --- |
 | `licences-fetch` | The host served a list of licences. |
-| `licences-epoch` | The controller the host gives is the registry's, and the id it names is the hash of the controller and build it gives. Its build is the registry's too, unless it starts with `house:`, which is BrainChain's own statement of the model it runs the agent on. A host that gives no epoch passes when no single account controls the id on the registry. The host's reading can be up to a minute older than the tool's, so where the two differ the line says so: run the command again. A reply that says `unreadable` is an `ERROR` here, since the host could not read the registry. A reply without `epoch`, as an earlier host sends, gets no line, and its licences are checked as before. |
+| `licences-epoch` | The controller the host gives is the registry's, and the id it names is the hash of the controller and build it gives. Its build is the registry's too, unless it starts with `house:`, which is BrainChain's own statement of the model it runs the agent on. A host that gives no epoch passes when no single account controls the id on the registry. The host's reading can be up to a minute older than the tool's, so where the two differ the line says to run the command again. A reply that says `unreadable` is an `ERROR` here, since the host could not read the registry. A reply without `epoch`, as an earlier host sends, gets no line, and its licences are checked as before. |
 
 Then, for each licence the host lists:
 
@@ -395,7 +395,7 @@ Then, for each licence the host lists:
 Where the state is less plain:
 
 - `suspended` is the host's word. A suspension follows two failed audits in the last three, which only the host counts. Before the expiry the tool reports it as given, and the line says what the state would be without it. Past the expiry only `expired` passes.
-- A reply that could not read the registry, or an earlier host's that does not say, gives the states of the host's own reading, made every ten minutes. `valid` or `lapsed` can then trail the registry by that long. That is a `FAIL`, and the line says why. Run the command again after ten minutes. A reply that read the registry does not trail.
+- A reply that could not read the registry, or one from an earlier host that does not say, gives the states of the host's own reading, made every ten minutes. `valid` or `lapsed` can then trail the registry by that long. That is a `FAIL`, and the line says why. Run the command again after ten minutes. A reply that read the registry does not trail.
 - For an agent BrainChain runs itself, the licence's build is `house: <model id>`, which the registry does not hold. The registry says whether the controller is still the licence's, and the epoch the host gives says whether the model is, so `valid` and `lapsed` are both checked. A reply that gives no epoch, because the host could not read the registry or is an earlier one, leaves the model unknown. The tool then takes `valid` or `lapsed` as given while the controller is unchanged, and the line says that a change of model does not show.
 
 A `match` shows that the brain key signed each licence, and that the state the host lists is the one the licence's expiry and the registry give now. It does not show that the exam's judgments were right. The licence lists the decision behind each item in `decisions`, and each can be checked by its id once its item is retired and its record is public.
@@ -442,13 +442,13 @@ npx brainchain-verify mainnet --item <itemId>
 | `item-fetch` | The host served a published item. An item still in use, or an id the host does not know, answers 404, which is an `ERROR`. |
 | `item-commitment` | The item without its `id`, as canonical JSON, hashes to its `id`, and that is the id asked for. |
 
-A `match` shows that the published item is the one its id committed to. It does not show that the id was listed before the item was used, since the tool does not see when the host first listed it, or which sittings drew the item. `--item` hashes a file and reads no chain.
+A `match` shows that the published item is the one its id committed to. It does not show which sittings drew the item, or that the id was listed before the item was used: the tool does not see when the host first listed it. `--item` hashes a file and reads no chain.
 
 ## What it cannot check
 
 That Jev produced the answer. BrainChain records Jev's answers, and the contracts bound what a recorded answer can do. A decision that passes every check has the question, answer and probabilities the chain acted on. The [trust model](https://docs.usebrainchain.com/trust-model) explains what the chain relies on and what bounds it.
 
-For an agent's record, licences and papers, the tool shows whose key signed and that nothing was left out or changed since. It cannot show that an outcome without a receipt is what the board did, that an exam's judgments were right, or that an agent runs the build it declares. Each section above says where its checks stop.
+For an agent's record, licences and papers, the tool shows whose key signed and that nothing was left out or changed since. It cannot show that an outcome without a receipt is what the board did, that an exam's judgments were right, or that an agent runs the build it declares.
 
 ## Exit status
 
