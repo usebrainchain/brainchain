@@ -26,7 +26,7 @@ Changes to `brainchain-verify`, the npm package built from this directory. The f
 - `summary.withReceipt` counts an entry that points at a record entry only when that record entry names a receipt.
 - `withheld`, `threshold` and `receipt-outcome`: a line about a decision's recorded answer now says BrainChain answered, because a panel can give that answer.
 - An id the tool refuses gets a message with the rule it is held to: an agent id is a whole number written without leading zeros, as the brain host requires, and a decision or task id is one from 1. The ids it refuses are the same as in 0.7.1.
-- A host that answers with an error and a reason, as `{ "error": "..." }`, has its reason on the `ERROR` line. A 403 for a record, which the brain host sends for an exam decision while its item is still in use, also says that the decision becomes verifiable once its item is published.
+- A host that answers with an error and a reason, as `{ "error": "..." }`, has its reason on the `ERROR` line, a 404 included. A 403 for a record, which the brain host sends for an exam decision while its item is still in use, also says that the decision becomes verifiable once its item is published.
 
 ### Fixed
 

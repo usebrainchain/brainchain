@@ -1945,6 +1945,33 @@ describe("records", () => {
     assert.doesNotMatch(check(down, "fetch").message, /exam/);
   });
 
+  it("carry the host's reason on a 404 wherever the brain host is read, and say what was missing where it sends none", async () => {
+    // records.ts for a hash it does not serve.
+    const unknown = await verify({ code: 404, serve: { error: "No public record with that hash." } });
+    assert.match(check(unknown, "fetch").message, /^could not fetch the record: http:\S+ answered with status 404: No public record with that hash$/);
+    // epoch.ts's uncontrolled, which exam-routes.ts and papers.ts send for an id nobody holds, and main.ts's answer to any other address.
+    const UNCONTROLLED = "Agent 99999999 is not registered on chain 4663, or no single account controls it.";
+    const answered = { "/agents/4663/99999999/record?from=1&limit=200": "Not found.", "/licences/4663/99999999": UNCONTROLLED, "/papers/4663/99999999": UNCONTROLLED };
+    for (const [path, error] of Object.entries(answered)) pages.set(path, { status: 404, body: JSON.stringify({ error }) });
+    try {
+      const ctx = onChain({ sets: [set] });
+      assert.match(check(await verifyRecord(ctx, brainHost(), 99999999n), "record-fetch").message, /^could not read the record: http:\S+ answered with status 404: Not found$/);
+      const said = `answered with status 404: ${UNCONTROLLED.replace(/\.$/, "")}`;
+      assert.ok(check(await verifyLicences(ctx, brainHost(), 99999999n), "licences-fetch").message.endsWith(said));
+      assert.ok(check(await verifyPapers(ctx, brainHost(), 99999999n), "papers-fetch").message.endsWith(said));
+    } finally {
+      unserve("/agents/", "/licences/", "/papers/");
+    }
+    const ITEM = `0x${"0d".repeat(32)}`;
+    const ctx = { client: { transport: { url: "http://127.0.0.1:1" } } };
+    pages.set(`/exams/items/${ITEM}.json`, { status: 404, body: JSON.stringify({ error: "Not found." }) });
+    assert.match(check(await verifyItem(ctx, { url: base }, ITEM), "item-fetch").message, /answered with status 404: Not found\. An item is published once it is retired$/);
+    // A 404 whose body is not the host's reason, such as a proxy's page, says what the tool looked for.
+    pages.set(`/exams/items/${ITEM}.json`, { status: 404, body: "<html>Not Found</html>" });
+    assert.match(check(await verifyItem(ctx, { url: base }, ITEM), "item-fetch").message, /answered with status 404: the host has no exam item at this address\. An item is published once it is retired$/);
+    pages.delete(`/exams/items/${ITEM}.json`);
+  });
+
   it("are an error, not a mismatch, when the host is out of reach or too large", async () => {
     pages.set("/big-record", { stream: 8 });
     const decision = { kind: 2, subject: taskSubject(7n), inputHash: NO, answer: YES, confidenceBps: 9000, recordedAt: 1793000000n };
@@ -3378,6 +3405,10 @@ describe("the command line", () => {
       const old = await runAsync("mainnet", "--papers", "501", ...host, ...registry, "--json");
       assert.deepEqual([JSON.parse(old.stdout).verdict, old.code], ["mismatch", 1]);
       owner = HOLDER;
+      pages.set("/papers/4663/99999999", { status: 404, body: JSON.stringify({ error: "Agent 99999999 is not registered on chain 4663, or no single account controls it." }) });
+      const unregistered = await runAsync("mainnet", "--papers", "99999999", ...host, ...registry);
+      assert.equal(unregistered.code, 1);
+      assert.match(unregistered.stdout, /\n {2}ERROR could not read the papers: \S+ answered with status 404: Agent 99999999 is not registered on chain 4663, or no single account controls it\n\nVerdict: UNVERIFIED\. /);
 
       const rest = { template: "window-sum", title: "Sum a sliding window", salt: `0x${"02".repeat(32)}`, createdAt: now - 500 };
       const id = keccak256(toBytes(canonicalStringify(rest)));
