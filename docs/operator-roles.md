@@ -1,6 +1,6 @@
 # Operator roles
 
-BrainChain's operator key, `0x70C665780E43BA1496a4E691e408F24844dB58eC`, runs routine jobs around the clock. Two of those jobs wait for both Safe owners to sign: topping up the desk's USDG, and executing a timelock operation once its delay has passed. This page describes a narrow power for each. Neither is in place for these jobs yet: the desk's copies of `CappedTransferModule` are not deployed, and the operator does not hold the timelock's executor role. One copy of the module is live for another recipient, described below. With both in place, the owners keep every other power and can take either one back with a Safe transaction. A third narrow power is in place: passing the treasury Safe's liquidity share to $BRAIN's lock, described below. The Safe can take that one back at any time as well.
+BrainChain's operator key, `0x70C665780E43BA1496a4E691e408F24844dB58eC`, runs routine jobs around the clock. Two of those jobs wait for both Safe owners to sign: topping up the desk's USDG, and executing a timelock operation once its delay has passed. This page describes a narrow power for each. Neither is in place for these jobs yet: the desk's copies of `CappedTransferModule` are not deployed, and the operator does not hold the timelock's executor role. One copy of the module is live for another recipient, described below. A third narrow power is in place: passing the treasury Safe's liquidity share to $BRAIN's lock, also described below. With these in place, the owners keep every other power and can take any of them back with a Safe transaction.
 
 ## Keys
 
@@ -50,7 +50,7 @@ A disabled module can send nothing, whatever its settings.
 
 70% of the 1% trading fee on $BRAIN's market goes into locked liquidity. The market locks part of that itself. The rest is paid out to BrainChain's income contract and forwarded to the treasury Safe on Robinhood Chain, and until 18 November 2026 both Safe owners signed each time it was passed on to $BRAIN's pair-and-lock contract, `0x870b0bfb24af2c06180fbee266117305e0b0e00f`.
 
-[`FeeShareModule`](../src/safe/FeeShareModule.sol) is a Safe module for that one payment. It is deployed at `0xFD268Ae2c1Ec0Db03C3C6b17E1AEDE973729FE29`, and the Safe enabled it on 18 November 2026. It counts from the 0.0726 ETH the Safe had passed by hand before.
+[`FeeShareModule`](../src/safe/FeeShareModule.sol) is a Safe module for that one payment. It is deployed at `0xFD268Ae2c1Ec0Db03C3C6b17E1AEDE973729FE29`, and the Safe enabled it on 18 November 2026. Its count of what has been passed on was set to 0.0726 ETH at deployment, the amount the Safe had passed by hand until then.
 
 The operator can call `passAndPair(minPrice, maxPrice)`. The Safe sends the share that is due, in ETH, to the lock and calls the lock's `pair` with the operator's price bounds, in one transaction. The lock pairs the ETH with $BRAIN it already holds, in a position owned by the burn address. If the lock refuses to pair, the whole call reverts and the share stays in the Safe.
 
