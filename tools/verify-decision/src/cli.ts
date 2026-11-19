@@ -96,7 +96,8 @@ about an agent the same way: its record, licences and papers. Needs no keys.
   --version      print the version
 
 Exit status: 0 when every check that could run matches, 1 on a mismatch, on
-stale papers or when a decision or its record cannot be read, 2 on bad arguments.`;
+stale papers or licences or when a decision or its record cannot be read, 2 on
+bad arguments.`;
 
 const TRUST_MODEL = "https://docs.usebrainchain.com/trust-model";
 const NOT_CHECKED = "That Jev produced the answer. BrainChain records Jev's answers, and the contracts bound what a recorded answer can do.";
@@ -442,7 +443,7 @@ interface Hosted {
   /** What a match shows, and what no check here can. */
   match: string;
   notChecked: string;
-  /** Signed papers the registry no longer bears out: what the verdict says, in place of a mismatch. */
+  /** Papers or licence states the registry no longer bears out: what the verdict says, in place of a mismatch. */
   stale?: string;
 }
 
@@ -561,13 +562,18 @@ async function checkHosted(): Promise<never> {
       if (r.licences.length === 0 && r.checks.every((c) => c.status === "ok")) fail(`The brain host lists no licence for agent ${agentId} at ${r.url}`);
       const lines = r.checks.map(line);
       for (const l of r.licences) lines.push("", `  ${l.class}: ${l.state ?? "not a licence"}`, ...l.checks.map(line));
+      const checks = [...r.checks, ...r.licences.flatMap((l) => l.checks)];
       reportHosted({
         header: `Agent ${agentId}'s licences ${on} ${r.url}`,
-        checks: [...r.checks, ...r.licences.flatMap((l) => l.checks)],
+        checks,
         fields: { service: url, ...r, licences: r.licences.map((l) => ({ ...l, verdict: outcomeOf([l]) })) },
         lines,
         match: "Each licence is signed by a key its DecisionLog named its brain, and the state the host gives is the one its expiry and the identity registry give.",
         notChecked: "that the exam's judgments were right, or the audits behind a suspension.",
+        // Each state follows the reply, so a reply read just before the id moved is stale, as papers are. Any other failure still reads as a mismatch.
+        ...(r.stale && checks.every((c) => c.status !== "fail" || c.name === "licences-epoch")
+          ? { stale: "The states the host gives no longer hold: the agent's id has changed epoch since the host read the registry for its reply, as the FAIL line shows. The host reads it at most a minute before it answers, so run the command again in a minute." }
+          : {}),
       });
     }
     const r = await verifyPapers(ctx, service, agentId);

@@ -3225,6 +3225,8 @@ export interface LicencesReport {
   /** The epoch the host gives for the id, or null where it gives none. Absent from a host whose reply does not carry it. The `licences-epoch` check says whether the registry bears it out. */
   epoch?: HostEpoch | null;
   licences: LicenceReport[];
+  /** The id has changed epoch since the host read the registry for its reply, so the states it gives no longer hold. `licences-epoch` fails and says how. */
+  stale?: true;
   /** The fetch, and the host's epoch against the registry. Each licence's checks are its own. */
   checks: Check[];
 }
@@ -3284,9 +3286,10 @@ export async function verifyLicences(ctx: Context, service: Service, agentId: bi
  * controller is the registry's, its id is the hash of what it gives, and its
  * build is the registry's unless it is one BrainChain states itself. A reply
  * that says the host read the registry holds every state in it to that epoch,
- * by a reading up to a minute old. One that says the registry was unreadable
- * gives none, and its states are the host's last own reading. A host from
- * before either field gives neither, and nothing is added.
+ * by a reading up to a minute old, and is stale where its epoch is not the
+ * registry's now. One that says the registry was unreadable gives none, and
+ * its states are the host's last own reading. A host from before either field
+ * gives neither, and nothing is added.
  */
 async function checkHostEpoch(c: Checks, report: LicencesReport, service: Service, agentId: bigint, { given, reading }: { given: unknown; reading: unknown }, registry: Address | undefined, read: EpochReader | undefined): Promise<HostReading> {
   const add = (status: Status, message: string): HostReading => {
@@ -3316,21 +3319,27 @@ async function checkHostEpoch(c: Checks, report: LicencesReport, service: Servic
   }
   // A host that read the registry for its reply may have read it up to a minute before this tool did.
   const minute = held ? ". The host's reading is up to a minute old, so run the command again" : "";
+  const moved = (message: string): HostReading => {
+    if (held) report.stale = true;
+    return reply("fail", `${message}${minute}`);
+  };
   if (!host && !own) return reply("ok", "the host gives no epoch for the id, and no single account controls it on the identity registry");
-  if (!own) return reply("fail", `the host gives controller ${short(host!.controller)} for the id, and no single account controls it on the identity registry${minute}`);
+  if (!own) return moved(`the host gives controller ${short(host!.controller)} for the id, and no single account controls it on the identity registry`);
   if (!host) {
     const none = held ? "as it does when no single account controls it" : "as it does when no single account controls it or it could not read the registry";
-    return reply("fail", `the host gives no epoch for the id, ${none}, and the identity registry gives controller ${short(own.controller)}${minute}`);
+    return moved(`the host gives no epoch for the id, ${none}, and the identity registry gives controller ${short(own.controller)}`);
   }
   const house = isHouseBuild(host.build);
   const differs: string[] = [];
   if (!eq(host.controller, own.controller)) differs.push(`the host gives controller ${short(host.controller)}, and the identity registry gives ${short(own.controller)}`);
   if (!house && host.build !== own.build) differs.push(`the host gives ${built(host.build)}, and the identity registry gives ${built(own.build)}`);
   const unhashed = epochId({ chainId: service.identity.chainId, registry, id: agentId.toString() }, host.controller, host.build) !== host.id.toLowerCase();
-  if (differs.length > 0 || unhashed) {
-    const wrong = [...differs, ...(unhashed ? [`the epoch the host names, ${short(host.id)}, is not the hash of the controller and build it gives`] : [])];
+  // An epoch that is not the hash of what the host gives is wrong however old the reading is.
+  if (unhashed) {
+    const wrong = [...differs, `the epoch the host names, ${short(host.id)}, is not the hash of the controller and build it gives`];
     return reply("fail", `${wrong.join("; ")}${differs.length > 0 ? minute : ""}`);
   }
+  if (differs.length > 0) return moved(differs.join("; "));
   return reply(
     "ok",
     house
