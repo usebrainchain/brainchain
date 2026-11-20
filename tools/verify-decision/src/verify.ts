@@ -1795,12 +1795,22 @@ async function readDesk({ client, network, set }: Context, origin: string): Prom
   const body = (text === undefined ? undefined : parseJson(text)) as { signed?: unknown; signature?: unknown } | null | undefined;
   const signed = typeof body?.signed === "string" && body.signed.startsWith(MANIFEST_PREFIX) ? body.signed : undefined;
   if (!signed || typeof body?.signature !== "string") throw new Error(`${display(uri)} is not a signed network manifest`);
-  const log = (network.sets[0] ?? set).log;
-  const [signer, brain] = await Promise.all([
-    recoverMessageAddress({ message: signed, signature: body.signature as Hex }),
-    client.readContract({ address: log, abi: decisionLogAbi, functionName: "brain" }),
-  ]);
-  if (!eq(signer, brain)) throw new Mismatch(`${display(uri)} is signed by ${short(signer)}, not by ${short(brain)}, the brain on DecisionLog ${short(log)}`);
+  const active = network.sets[0] ?? set;
+  const brainOf = (s: ContractSet): Promise<Address> => client.readContract({ address: s.log, abi: decisionLogAbi, functionName: "brain" });
+  const [signer, brain] = await Promise.all([recoverMessageAddress({ message: signed, signature: body.signature as Hex }), brainOf(active)]);
+  if (!eq(signer, brain)) {
+    // Another set's brain is refused all the same, as a retired set's key may have been exposed since, but the line says whose it is.
+    const others = network.sets.filter((s) => s !== active);
+    const brains = await Promise.allSettled(others.map(brainOf));
+    const theirs = others.find((_, i) => {
+      const read = brains[i]!;
+      return read.status === "fulfilled" && eq(read.value, signer);
+    });
+    const named = theirs
+      ? `, the brain of set ${theirs.key}, not by ${short(brain)}, the brain the active set ${active.key} names on DecisionLog ${short(active.log)}. The host may be mid-switch, or this verifier's set list is ahead of it`
+      : `, not by ${short(brain)}, the brain on DecisionLog ${short(active.log)}`;
+    throw new Mismatch(`${display(uri)} is signed by ${short(signer)}${named}`);
+  }
   const manifest = parseJson(signed.slice(MANIFEST_PREFIX.length)) as { chainId?: unknown; payees?: unknown; formerDesks?: unknown } | undefined;
   const payees = manifest?.payees;
   const valid = Array.isArray(payees) && payees.every((p: Record<string, unknown> | null) => typeof p === "object" && p !== null && ["network", "asset", "payTo"].every((k) => typeof p[k] === "string"));

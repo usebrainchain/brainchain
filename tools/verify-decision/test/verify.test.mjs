@@ -204,6 +204,8 @@ function onChain({
   hiredAt = 1793000000n,
   // Each key the log named its brain, with the block that named it and that block's time.
   brains = [{ brain, block: 1n, at: 1_793_000_000n }],
+  // brain() on another set's log, by its address.
+  brainOn = {},
 }) {
   const original = JSON.stringify(publish);
   const served = serve === undefined ? original : typeof serve === "string" ? serve : JSON.stringify(serve);
@@ -219,7 +221,7 @@ function onChain({
     },
     getBlock: async ({ blockNumber } = {}) => ({ timestamp: brains.find((b) => b.block === blockNumber)?.at ?? hiredAt }),
     readContract: async ({ functionName, address }) => {
-      if (functionName === "brain") return brain;
+      if (functionName === "brain") return brainOn[address] ?? brain;
       if (functionName === "count") return 1n;
       if (functionName === "config") return [5000, bar, 7000, 0n, 0n, 0n, 0n, 0n, 0n];
       if (functionName === "changeThresholdBps") return 7000;
@@ -1260,6 +1262,14 @@ describe("evidence and receipts", () => {
       assert.deepEqual(failed(unsigned), ["receipt-payment"]);
       assert.match(check(unsigned, "receipt-payment").message, /^payment: the receipt's payment is the record's, but \S+\/network\.json is signed by \S+, not by \S+, the brain on DecisionLog 0x2222…2222$/);
       assert.equal(outcomeOf([unsigned]), "mismatch");
+      // A host that signs with another carried set's brain is refused all the same, since a retired key may have been exposed, and the line says whose key it is.
+      const retired = { key: "r", release: "3.3.0", fromBlock: 1, board: "0x8888888888888888888888888888888888888888", log: "0x9999999999999999999999999999999999999999", executor: "0x7777777777777777777777777777777777777777" };
+      const switching = await paid(record, { receipt, sets: [set, retired], brainOn: { [retired.log]: OTHER.address } });
+      assert.deepEqual(failed(switching), ["receipt-payment"]);
+      assert.equal(
+        check(switching, "receipt-payment").message,
+        `payment: the receipt's payment is the record's, but ${base}/network.json is signed by ${abbr(OTHER.address)}, the brain of set r, not by ${abbr(BRAIN.address)}, the brain the active set t names on DecisionLog 0x2222…2222. The host may be mid-switch, or this verifier's set list is ahead of it`,
+      );
 
       await manifest(BRAIN, undefined, { chainId: 274630 });
       const elsewhere = await paid(record, { receipt });
