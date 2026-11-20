@@ -3516,6 +3516,59 @@ describe("the command line", () => {
     }
   });
 
+  it("reads a bare decision id the active set does not hold yet from the newest set that holds it, and says so", async () => {
+    const [active, newest, older] = NETWORKS.mainnet.sets;
+    const subject = keccak256(encodeAbiParameters([{ type: "uint256" }, { type: "address" }, { type: "uint256" }], [BigInt(MAINNET), newest.board, 7n]));
+    const record = grade();
+    const body = JSON.stringify(record);
+    pages.set("/cli-retired.json", { body });
+    const decision = { kind: 2, subject, inputHash: keccak256(toBytes(canonicalStringify(record.request))), answer: YES, confidenceBps: 9000, recordedAt: 1793000000n };
+    const brief = JSON.stringify({ ...BRIEF, title: "Summarise the release notes" });
+    const logs = [
+      log(newest.log, encodeEventTopics({ abi: decisionLogAbi, eventName: "Recorded", args: { id: 3n, kind: 2, subject } }), encodeAbiParameters(parseAbiParameters("bytes32, bytes32, uint16, bytes32, string"), [decision.inputHash, YES, 9000, keccak256(toBytes(body)), `${base}/cli-retired.json`]), 900n),
+      log(newest.board, encodeEventTopics({ abi: taskBoardAbi, eventName: "Posted", args: { id: 7n, poster: STRANGER } }), encodeAbiParameters(parseAbiParameters("uint128, uint64, bytes32, string"), [1n, 0n, keccak256(toBytes(brief)), dataUri(brief)]), 800n),
+    ];
+    // The active set has decided nothing yet, the newest retired set holds 5 decisions and the one before it 9.
+    const counts = new Map([[active.log, 0n], [newest.log, 5n], [older.log, 9n]].map(([address, n]) => [address.toLowerCase(), n]));
+    let lagging = false;
+    const rpc = await stubRpc(MAINNET, (method, [params] = []) => {
+      if (method === "eth_getLogs") return logs.filter((l) => l.topics[0] === params.topics[0] && l.address.toLowerCase() === params.address.toLowerCase());
+      const to = params.to.toLowerCase();
+      const abi = NETWORKS.mainnet.sets.some((s) => s.board.toLowerCase() === to) ? taskBoardAbi : decisionLogAbi;
+      const { functionName } = decodeFunctionData({ abi, data: params.data });
+      if (lagging && to === newest.log.toLowerCase()) return new Error("header not found");
+      if (abi === taskBoardAbi) return encodeFunctionResult({ abi, functionName, result: functionName === "count" ? 7n : paid });
+      return encodeFunctionResult({ abi, functionName, result: functionName === "count" ? (counts.get(to) ?? 0n) : decision });
+    });
+    try {
+      const text = await runAsync("mainnet", "3", "--rpc", urlOf(rpc));
+      assert.equal(text.stderr, `Decision 3 is not on set ${active.key} yet; reading set ${newest.key}.\n`);
+      assert.match(text.stdout, new RegExp(`^Decision 3 on BrainChain mainnet, contract set ${newest.key} \\(DecisionLog ${newest.log}\\)\nTask 7: Summarise the release notes\n\n {2}ok {4}read from DecisionLog `));
+      const asJson = await runAsync("mainnet", "3", "--rpc", urlOf(rpc), "--json");
+      assert.equal(asJson.stderr, text.stderr);
+      assert.deepEqual([JSON.parse(asJson.stdout).set.key, JSON.parse(asJson.stdout).decisions[0].title], [newest.key, "Summarise the release notes"]);
+      // Past the newest retired set's count, the one before it is read.
+      assert.equal((await runAsync("mainnet", "7", "--rpc", urlOf(rpc), "--json")).stderr, `Decision 7 is not on set ${active.key} yet; reading set ${older.key}.\n`);
+
+      // No set holds the id, and a set named outright is read as named, with a hint that lists only the sets that hold it.
+      const nowhere = await runAsync("mainnet", "20", "--rpc", urlOf(rpc));
+      assert.deepEqual([nowhere.code, nowhere.stderr], [1, `DecisionLog ${active.log} (set ${active.key}) holds decisions 1 to 0.\n`]);
+      const named = await runAsync("mainnet", "7", "--set", newest.key, "--rpc", urlOf(rpc));
+      assert.deepEqual([named.code, named.stderr], [1, `DecisionLog ${newest.log} (set ${newest.key}) holds decisions 1 to 5. Each set numbers its own decisions; try --set ${older.key}.\n`]);
+      const activeNamed = await runAsync("mainnet", "3", "--set", active.key, "--rpc", urlOf(rpc));
+      assert.equal(activeNamed.stderr, `DecisionLog ${active.log} (set ${active.key}) holds decisions 1 to 0. Each set numbers its own decisions; try --set ${newest.key} or ${older.key}.\n`);
+
+      // A newer set whose count cannot be read is never passed over for an older one.
+      lagging = true;
+      const unread = await runAsync("mainnet", "7", "--rpc", urlOf(rpc));
+      assert.equal(unread.code, 1);
+      assert.match(unread.stderr, /^BrainChain RPC \S+: .*header not found/);
+      assert.doesNotMatch(unread.stderr, /reading set/);
+    } finally {
+      rpc.close();
+    }
+  });
+
   it("checks the rest of a task's decisions when the RPC cannot read one", async () => {
     const [active] = NETWORKS.mainnet.sets;
     const subject = keccak256(encodeAbiParameters([{ type: "uint256" }, { type: "address" }, { type: "uint256" }], [BigInt(MAINNET), active.board, 7n]));

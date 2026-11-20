@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { createPublicClient, isAddress, type Hex, type PublicClient } from "viem";
 
 import { decisionLogAbi, taskBoardAbi } from "./abi.js";
-import { NETWORKS } from "./deployments.js";
+import { NETWORKS, type ContractSet } from "./deployments.js";
 import {
   balancesFrom,
   clean,
@@ -83,7 +83,8 @@ about an agent the same way: its record, licences and papers. Needs no keys.
   --offline      fetch no receipt from the brain host
   --set <board>  a retired contract set from 3.0.0 on, by TaskBoard address, by
                  its key on the site (v3-1) or by release (3.1.0); without it, the
-                 active set
+                 active set, or for a decision id the active set does not hold
+                 yet, the newest set that holds it
   --rpc <url>    another RPC for the same chain; records and briefs on private
                  addresses are read only when this is on one too
   --registry-rpc <url>
@@ -280,7 +281,7 @@ async function main(): Promise<void> {
     }
   }
 
-  function report(reports: DecisionReport[], header: string, task?: number): never {
+  function report(reports: DecisionReport[], header: string, on: ContractSet, task?: number): never {
     const all = reports.flatMap((r) => r.checks);
     const failed = tally(all, "fail");
     const errors = tally(all, "error");
@@ -308,7 +309,7 @@ async function main(): Promise<void> {
       const out = {
         network: network.name,
         chainId: network.chainId,
-        set,
+        set: on,
         ...(task === undefined ? {} : { task }),
         verdict: overall,
         failed,
@@ -640,6 +641,35 @@ async function main(): Promise<void> {
     return holding.length > 0 ? ` Each set numbers its own tasks; try --set ${holding.map((s) => s.key).join(" or ")}.` : "";
   }
 
+  /**
+   * The set that holds decision `id`: the one named, by --set or by the receipt, or else the active set. The active set
+   * numbers its decisions from 1 again, so a bare id it does not hold yet is read from the newest set that does.
+   */
+  async function holding(id: bigint): Promise<ContractSet> {
+    const count = (s: ContractSet): Promise<bigint> => client.readContract({ address: s.log, abi: decisionLogAbi, functionName: "count" });
+    const decisions = await count(set);
+    if (id <= decisions) return set;
+    const others = network.sets.filter((s) => s !== set);
+    const counts = await Promise.allSettled(others.map(count));
+    const holds = (i: number): boolean => {
+      const read = counts[i]!;
+      return read.status === "fulfilled" && read.value >= id;
+    };
+    const range = `DecisionLog ${set.log} (set ${set.key}) holds decisions 1 to ${decisions}.`;
+    if (setArg !== undefined || receiptSet) {
+      // Only a hint, so a log the RPC cannot read is left out of it.
+      const sets = others.filter((_, i) => holds(i)).map((s) => s.key);
+      fail(`${range}${sets.length > 0 ? ` Each set numbers its own decisions; try --set ${sets.join(" or ")}.` : ""}`);
+    }
+    // The sets run newest first, so an older set is chosen only once each newer one is known to stop short of the id.
+    const at = counts.findIndex((read, i) => read.status === "rejected" || holds(i));
+    if (at < 0) fail(range);
+    const read = counts[at]!;
+    if (read.status === "rejected") throw read.reason;
+    console.error(`Decision ${id} is not on set ${set.key} yet; reading set ${others[at]!.key}.`);
+    return others[at]!;
+  }
+
   try {
     await sameChain();
     const where = `on ${network.name}, contract set ${set.key}`;
@@ -653,19 +683,14 @@ async function main(): Promise<void> {
       const reports: DecisionReport[] = [];
       for (const id of ids) reports.push(await verifyDecision(ctx, id).catch((error: unknown) => ({ id: Number(id), checks: [unread(`decision ${id}`, error)] })));
       const title = reports.find((r) => r.title)?.title;
-      report(reports, `Task ${task} ${where} (TaskBoard ${set.board}): decision${ids.length === 1 ? "" : "s"} ${ids.join(", ")}${title ? `\nBrief: ${title}` : ""}`, Number(task));
+      report(reports, `Task ${task} ${where} (TaskBoard ${set.board}): decision${ids.length === 1 ? "" : "s"} ${ids.join(", ")}${title ? `\nBrief: ${title}` : ""}`, set, Number(task));
     }
 
     const id = BigInt(target);
-    const decisions = await ctx.client.readContract({ address: set.log, abi: decisionLogAbi, functionName: "count" });
-    if (id > decisions) {
-      const others = network.sets.filter((s) => s !== set).map((s) => s.key);
-      const hint = others.length > 0 ? ` Each set numbers its own decisions; try --set ${others.join(" or ")}.` : "";
-      fail(`DecisionLog ${set.log} (set ${set.key}) holds decisions 1 to ${decisions}.${hint}`);
-    }
-    const checked = await verifyDecision(ctx, id, receipt);
+    const on = await holding(id);
+    const checked = await verifyDecision(on === set ? ctx : { ...ctx, set: on }, id, receipt);
     // What the task is about, so a decision read from the wrong set does not pass for the one meant.
-    report([checked], `Decision ${id} ${where} (DecisionLog ${set.log})${checked.title ? `\nTask ${checked.task}: ${checked.title}` : ""}`);
+    report([checked], `Decision ${id} on ${network.name}, contract set ${on.key} (DecisionLog ${on.log})${checked.title ? `\nTask ${checked.task}: ${checked.title}` : ""}`, on);
   } catch (error) {
     failWith(error);
   }
