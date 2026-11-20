@@ -2606,6 +2606,9 @@ const isObject = (value: unknown): value is Record<string, unknown> => typeof va
 const isAccount = (value: unknown): value is Address => typeof value === "string" && ADDRESS.test(value);
 const isHash = (value: unknown): value is Hex => typeof value === "string" && BYTES32.test(value);
 const isSignature = (value: unknown): value is Hex => typeof value === "string" && /^0x[0-9a-f]*$/i.test(value);
+// The brain signs times of the present, in Unix seconds. One past the last a Date holds names no moment, so no object that gives one is the brain's.
+const MAX_TIME = 8_640_000_000_000;
+const isTime = (value: unknown): value is number => uint(value) && value <= MAX_TIME;
 const isAgentName = (value: unknown): value is AgentName =>
   isObject(value) && uint(value.chainId) && isAccount(value.registry) && typeof value.id === "string" && /^(0|[1-9]\d{0,77})$/.test(value.id) && BigInt(value.id) >> 256n === 0n;
 
@@ -2627,7 +2630,7 @@ function isEntry(e: unknown): e is RecordEntry {
     (RECORD_KINDS as readonly unknown[]).includes(e.kind) &&
     (RECORD_OUTCOMES as readonly unknown[]).includes(e.outcome) &&
     typeof e.ref === "string" &&
-    uint(e.issuedAt) &&
+    isTime(e.issuedAt) &&
     (decision === undefined || (isObject(decision) && isAccount(decision.log) && typeof decision.id === "string" && AMOUNT.test(decision.id))) &&
     (e.ruled === undefined || e.ruled === true) &&
     (receipt === undefined || (isObject(receipt) && typeof receipt.path === "string" && isHash(receipt.hash))) &&
@@ -2642,7 +2645,7 @@ const signedEntry = (value: unknown): SignedEntry | undefined => (isSigned(value
 function signedHead(value: unknown): SignedHead | undefined {
   if (!isSigned(value, "head") || !isObject(value.head)) return undefined;
   const h = value.head;
-  const valid = h.version === 1 && uint(h.chainId) && isAccount(h.decisionLog) && isAccount(h.brain) && isAgentName(h.agent) && uint(h.seq) && h.seq >= 1 && isHash(h.hash) && uint(h.at);
+  const valid = h.version === 1 && uint(h.chainId) && isAccount(h.decisionLog) && isAccount(h.brain) && isAgentName(h.agent) && uint(h.seq) && h.seq >= 1 && isHash(h.hash) && isTime(h.at);
   return valid ? (value as unknown as SignedHead) : undefined;
 }
 
@@ -3224,8 +3227,8 @@ function isLicence(l: unknown): l is Licence {
     l.decisions.every((d) => typeof d === "string") &&
     uint(l.accepted) &&
     uint(l.of) &&
-    uint(l.issuedAt) &&
-    uint(l.expiresAt)
+    isTime(l.issuedAt) &&
+    isTime(l.expiresAt)
   );
 }
 
@@ -3523,7 +3526,7 @@ function isPapers(p: unknown): p is Papers {
     isAccount(p.decisionLog) &&
     isAccount(p.brain) &&
     isAgentName(p.agent) &&
-    uint(p.at) &&
+    isTime(p.at) &&
     isHash(epoch.id) &&
     isAccount(epoch.controller) &&
     typeof epoch.build === "string" &&

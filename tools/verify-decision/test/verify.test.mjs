@@ -268,6 +268,8 @@ const HOLDER = getAddress("0x00000000000000000000000000000000000000c7");
 const AGENT = { chainId: REPUTATION.chainId, registry: IDENTITY, id: "501" };
 // The clock the checks read, in Unix seconds. The stub log named its brain at 1793000000.
 const NOW = 1_793_100_000;
+// A time in Unix seconds that a Date cannot hold, though it is a safe integer.
+const FAR = 9_000_000_000_000_000;
 const at = (seconds) => `${new Date(seconds * 1000).toISOString().replace("T", " ").slice(0, 19)} UTC`;
 const abbr = (value) => `${value.slice(0, 6)}…${value.slice(-4)}`;
 const signedAs = (key, prefix, value) => key.signMessage({ message: `${prefix}${canonicalStringify(value)}` });
@@ -2358,6 +2360,13 @@ describe("an agent's record", () => {
     assert.match(check(extra, "record-fetch").message, /lists, in place 1, something other than a record entry as BrainChain signs one$/);
     const versioned = await recordOf([{ version: 2 }]);
     assert.deepEqual(lines(await served(versioned, await recordHead(versioned[0]))), ["record-fetch fail"]);
+
+    // A time past the last a Date holds names no moment, so an entry or a head that gives one is not the brain's.
+    const [late] = await recordOf([{ issuedAt: FAR }]);
+    assert.deepEqual(lines(await served([late], await recordHead(late))), ["record-fetch fail"]);
+    const ahead = await served([entry], await recordHead(entry, { at: FAR }));
+    assert.deepEqual(lines(ahead), ["record-fetch fail"]);
+    assert.match(check(ahead, "record-fetch").message, /is not an agent's record: a signed head and a list of entries$/);
   });
 
   it("reads the identity registry for the epoch the id is in now, when asked", async () => {
@@ -2584,6 +2593,7 @@ describe("an agent's licences", () => {
     assert.equal(check(relabelled, "licence").message, "licence: names the class code, and the host lists it under prose");
     const malformed = await held({ licence: { ...real.licence, version: 2 }, signature: real.signature });
     assert.deepEqual(lines(malformed), ["licence fail"]);
+    for (const time of ["issuedAt", "expiresAt"]) assert.deepEqual(lines(await held(await licence({ [time]: FAR }))), ["licence fail"], time);
     // Issued before the log named the key.
     assert.deepEqual(failed(await held(await licence({ issuedAt: 1_792_000_000 }))), ["licence-brain"]);
   });
@@ -2808,6 +2818,7 @@ describe("an agent's papers", () => {
   });
 
   it("fail when the file shows other papers than the text that was signed, or another key signed it", async () => {
+    assert.deepEqual(lines(await shown(await papers({ at: FAR }))), ["papers-fetch ok", "papers-signed ok", "papers fail"]);
     const tampered = await shown(await papers({}, { show: (p) => ({ ...p, licences: [{ class: "code", state: "valid" }] }) }));
     assert.deepEqual(failed(tampered), ["papers-signed"]);
     assert.equal(check(tampered, "papers-signed").message, "signed text: the papers the file shows are not the ones in the text that was signed");
