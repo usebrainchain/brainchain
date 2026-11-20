@@ -1444,13 +1444,19 @@ function checkEvidence(c: Checks, record: Published, inputHash: Hex, uri: string
   const byVersion = ([2, 1] as const).map((version) => ({ version, hash: evidenceOf(record, inputHash, version) }));
   if (byVersion.some(({ hash }) => !hash)) return fail("the record's judges, payments or versions are not as the brain records them, so its evidence hash cannot be rebuilt");
   const target = anchor ?? kept;
-  const { version, hash: recomputed } = byVersion.find(({ hash }) => hash === target) ?? byVersion[0]!;
+  const matched = byVersion.find(({ hash }) => hash === target);
+  if (!matched) {
+    // Neither version gives the hash, so the line shows what each gives.
+    const [v2, v1] = byVersion.map(({ hash }) => short(hash!));
+    const against = anchor ? `${short(anchor)}, the hash its Recorded event's payloadURI carries` : `the record's ${short(String(record.evidence))}`;
+    return fail(`${EVIDENCE_COVERS[2]} is ${v2}, and under evidence version 1, which leaves out the panel's rule, the pass level and the checks, it is ${v1}. Neither is ${against}`);
+  }
+  const { version, hash: recomputed } = matched;
   const over = `${EVIDENCE_COVERS[version]} is ${short(recomputed!)}${version === 1 ? " (evidence version 1, from before the panel's rule, the pass level and the checks were hashed)" : ""}`;
   if (anchor === undefined) {
-    c.check("evidence", recomputed === kept, `evidence: ${over}, as recorded`, `evidence: ${over}, not the record's ${short(String(record.evidence))}`);
+    c.add("evidence", "ok", `evidence: ${over}, as recorded`);
     return undefined;
   }
-  if (recomputed !== anchor) return fail(`${over}, not ${short(anchor)}, the hash its Recorded event's payloadURI carries`);
   if (kept !== anchor) return fail(`${over}, as its Recorded event's payloadURI carries it, but the record holds ${kept ? short(kept) : "none"}`);
   c.add("evidence", "ok", `evidence: ${over}, as the record and its Recorded event's payloadURI state`);
   return anchor;

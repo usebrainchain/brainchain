@@ -1025,7 +1025,7 @@ describe("evidence and receipts", () => {
     assert.deepEqual(failed(await paid(kept, { ...refunded, serve: redacted(kept) })), []);
     const anchored = await paid(kept, { ...refunded, serve: rebuilt });
     assert.deepEqual(failed(anchored), ["evidence"]);
-    assert.match(check(anchored, "evidence").message, /, not 0x\w{4}…\w{4}, the hash its Recorded event's payloadURI carries$/);
+    assert.match(check(anchored, "evidence").message, /the checks is 0x\w{4}…\w{4}, and under evidence version 1, which leaves out the panel's rule, the pass level and the checks, it is 0x\w{4}…\w{4}\. Neither is 0x\w{4}…\w{4}, the hash its Recorded event's payloadURI carries$/);
     const unanchored = await paid(kept, { ...refunded, serve: rebuilt, fragment: "" });
     assert.equal(status(unanchored, "evidence"), "ok");
     assert.deepEqual(failed(unanchored), ["receipt-decision"]);
@@ -1047,8 +1047,14 @@ describe("evidence and receipts", () => {
     const other = `0x${"e7".repeat(32)}`;
     const mismatch = await verify({ ...recorded(record), offline: true, fragment: `#evidence=${other}` });
     assert.deepEqual(failed(mismatch), ["evidence"]);
-    assert.match(check(mismatch, "evidence").message, /is 0x\w{4}…\w{4}, not 0xe7e7…e7e7, the hash its Recorded event's payloadURI carries$/);
+    // Neither version gives the hash on chain, so the line names what each gives.
+    const v1 = sealed(accepted(), [PAYMENT], VERSIONS, undefined, 1).evidence;
+    const both = `evidence: the hash over inputHash, every judge's answer and receipt, the payments, the versions, the panel's rule, the pass level and the checks is ${abbr(record.evidence)}, and under evidence version 1, which leaves out the panel's rule, the pass level and the checks, it is ${abbr(v1)}. Neither is`;
+    assert.equal(check(mismatch, "evidence").message, `${both} 0xe7e7…e7e7, the hash its Recorded event's payloadURI carries`);
     assert.equal(mismatch.evidence, undefined);
+    const unanchored = await verify({ ...recorded({ ...record, evidence: other }), offline: true, fragment: "" });
+    assert.deepEqual(failed(unanchored), ["evidence"]);
+    assert.equal(check(unanchored, "evidence").message, `${both} the record's 0xe7e7…e7e7`);
 
     // A copy served without the work whose own field disagrees, or that drops its evidence to read as an older record.
     const kept = sealed(rejected());
