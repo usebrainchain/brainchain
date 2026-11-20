@@ -9,7 +9,10 @@ import { after, before, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  AbiDecodingDataSizeTooSmallError,
+  BaseError,
   ContractFunctionRevertedError,
+  ContractFunctionZeroDataError,
   createPublicClient,
   decodeFunctionData,
   encodeAbiParameters,
@@ -314,7 +317,7 @@ const unserve = (...prefixes) => {
   for (const path of [...pages.keys()]) if (prefixes.some((prefix) => path.startsWith(prefix))) pages.delete(path);
 };
 
-/** The identity registry and a binding adapter, as epoch.ts reads them. A token nobody owns reverts, and `down` is a registry that cannot be read. */
+/** The identity registry and a binding adapter, as epoch.ts reads them. A token nobody owns reverts, a `holder` that is an error is how the token fails, and `down` is a registry that cannot be read. */
 function identityChain({ owner = HOLDER, build = "worker-1", binding, holder, down } = {}) {
   return {
     readContract: async ({ address, functionName }) => {
@@ -322,6 +325,7 @@ function identityChain({ owner = HOLDER, build = "worker-1", binding, holder, do
       if (functionName === "getMetadata") return toHex(build);
       if (functionName === "bindingOf") return binding;
       const held = address === IDENTITY ? owner : holder;
+      if (held instanceof Error) throw held;
       if (!held) throw new ContractFunctionRevertedError({ abi: [], functionName });
       return held;
     },
@@ -2391,6 +2395,11 @@ describe("an agent's record", () => {
       assert.equal(check(nobody, "current-epoch").message, "current epoch: no single account controls agent 501 on the identity registry now, so none of its entries belongs to a current epoch");
       assert.equal(nobody.current, null);
     }
+
+    // A token that answers with no data, too little data or out of gas gives no holder either, as the brain reads it. Any other failure is an outage.
+    const nobodyHolds = [new ContractFunctionZeroDataError({ functionName: "ownerOf" }), new AbiDecodingDataSizeTooSmallError({ data: "0x01", params: [{ type: "address" }], size: 1 }), new BaseError("call failed", { details: "out of gas" })];
+    for (const holder of nobodyHolds) assert.equal(await currentEpoch(identityChain({ owner: ADAPTER, binding: [0, TOKEN, 9n], holder }), { ...AGENT, adapters: [ADAPTER] }, 501n), null, holder.name);
+    await assert.rejects(currentEpoch(identityChain({ owner: ADAPTER, binding: [0, TOKEN, 9n], holder: new Error("token down") }), { ...AGENT, adapters: [ADAPTER] }, 501n), /token down/);
 
     const down = await asked({ down: true });
     assert.equal(status(down, "current-epoch"), "error");

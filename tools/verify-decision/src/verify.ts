@@ -6,8 +6,10 @@ import { BlockList, isIP } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import {
+  AbiDecodingDataSizeTooSmallError,
   BaseError,
   ContractFunctionRevertedError,
+  ContractFunctionZeroDataError,
   createPublicClient,
   decodeFunctionData,
   encodeAbiParameters,
@@ -2907,6 +2909,10 @@ function declared(label: string): string {
 }
 const MAX_BUILD = 96;
 const reverted = (error: unknown): boolean => error instanceof BaseError && error.walk((e) => e instanceof ContractFunctionRevertedError) !== null;
+/** The call reached the contract and got no answer from it: a revert, no gas left, or no data or too little back (unanswered in epoch.ts). */
+const unanswered = (error: unknown): boolean =>
+  error instanceof BaseError &&
+  error.walk((e) => e instanceof ContractFunctionRevertedError || e instanceof ContractFunctionZeroDataError || e instanceof AbiDecodingDataSizeTooSmallError || (e instanceof BaseError && /out ?of ?gas/i.test(e.details))) !== null;
 
 /** A build as the brain reads it (buildLabel in epoch.ts): printable ASCII on one line, 96 characters at most. */
 function buildLabel(raw: Hex): string {
@@ -2940,7 +2946,11 @@ export async function currentEpoch(client: PublicClient, identity: { chainId: nu
   if (adapter) {
     const binding = await client.readContract({ address: adapter, abi: adapterAbi, functionName: "bindingOf", args: [agentId] }).catch(orNull<readonly [number, Address, bigint]>);
     if (!binding || binding[0] !== ERC721) return null;
-    const holder = await client.readContract({ address: binding[1], abi: identityAbi, functionName: "ownerOf", args: [binding[2]] }).catch(orNull<Address>);
+    // The token is whatever contract the binding names, and one that gives no holder leaves the id with no controller, as the brain reads it. Only an outage throws.
+    const holder = await client.readContract({ address: binding[1], abi: identityAbi, functionName: "ownerOf", args: [binding[2]] }).catch((error: unknown) => {
+      if (unanswered(error)) return null;
+      throw error;
+    });
     if (!holder) return null;
     controller = holder;
     bound = { token: binding[1], tokenId: binding[2].toString() };
