@@ -3405,6 +3405,8 @@ async function checkLicence(ctx: Context, service: Service, agentId: bigint, ite
       house = same && !host;
       moved = house ? undefined : (same ? host!.id : current?.id)?.toLowerCase() !== l.epoch.toLowerCase();
       const kept = current && `epoch: the identity registry gives controller ${short(current.controller)} now, the one the licence was earned under`;
+      // A reply made just before the id moved still holds the licence to the old epoch, and the state line below follows the reply.
+      const lapsed = held?.epoch?.id.toLowerCase() === l.epoch.toLowerCase() ? "it lapses once the host reads the registry again" : "it has lapsed";
       c.add(
         "licence-epoch",
         "ok",
@@ -3414,10 +3416,10 @@ async function checkLicence(ctx: Context, service: Service, agentId: bigint, ite
             ? `${kept}. Its build, "${l.build}", is BrainChain's own statement of the model it runs this agent on, which the registry does not hold, so a change of model does not show here`
             : same
               ? moved
-                ? `${kept}, and the host gives ${built(host!.build)} for the id. The licence was earned under ${built(l.build)}, so it has lapsed`
+                ? `${kept}, and the host gives ${built(host!.build)} for the id. The licence was earned under ${built(l.build)}, so ${lapsed}`
                 : `${kept}, and the host gives the build "${l.build}" for the id, the licence's. That build is BrainChain's own statement of the model it runs this agent on, which the registry does not hold`
               : moved
-                ? `epoch: the identity registry gives controller ${short(current.controller)} and ${built(current.build)} now. The licence was earned under ${earned}, so it has lapsed`
+                ? `epoch: the identity registry gives controller ${short(current.controller)} and ${built(current.build)} now. The licence was earned under ${earned}, so ${lapsed}`
                 : `epoch: the identity registry gives ${earned} now, the epoch the licence was earned in`,
       );
     } catch (error) {

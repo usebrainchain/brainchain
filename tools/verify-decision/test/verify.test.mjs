@@ -3332,7 +3332,7 @@ describe("the command line", () => {
         "Not checked",
         "",
       ]);
-      assert.match(record.stdout, new RegExp(`\\n {2}ok {4}brain: ${abbr(BRAIN.address)} was the brain of DecisionLog 0x2EF5…cB68 \\(set v3-5\\) when it signed entries 1 to 2; `));
+      assert.match(record.stdout, new RegExp(`\\n {2}ok {4}brain: ${abbr(BRAIN.address)} was the brain of DecisionLog ${abbr(NETWORKS.mainnet.sets[0].log)} \\(set ${NETWORKS.mainnet.sets[0].key}\\) when it signed entries 1 to 2; `));
       assert.match(record.stdout, / UTC\): task 1 accepted, 1 rejected\. The agent's id is in this epoch now\n/);
       assert.match(record.stdout, /\nVerdict: match\. The record is whole: 2 entries, chained from the first to a head the brain key signed at \S+ \S+ UTC, each signed by a key its DecisionLog named its brain\.\nNot checked: that an entry without a receipt states what the board did, or that the agent runs the build its entries name\. See https:\/\/docs\.usebrainchain\.com\/trust-model\n$/);
 
@@ -3379,6 +3379,9 @@ describe("the command line", () => {
       assert.equal(moved.code, 1);
       assert.deepEqual(moved.stdout.split("\n").map((text) => text.split(":")[0]), ["Agent 501's licences on BrainChain mainnet, read from http", "", "  ok    fetched 1 licence from http", "  FAIL  epoch", "", "  code", "  ok    licence", "  ok    signature", "  ok    brain", "  ok    expiry", "  ok    epoch", "  ok    state", "", "Verdict", "Not checked", ""]);
       assert.match(moved.stdout, /\n {2}FAIL {2}epoch: .*\. The host's reading is up to a minute old, so run the command again\n/);
+      // The licence's own epoch line must not call it lapsed while the state line still follows the host's reply.
+      assert.match(moved.stdout, /, so it lapses once the host reads the registry again\n/);
+      assert.doesNotMatch(moved.stdout, /so it has lapsed/);
       assert.match(moved.stdout, /\nVerdict: STALE\. The states the host gives no longer hold: the agent's id has changed epoch since the host read the registry for its reply, as the FAIL line shows\. The host reads it at most a minute before it answers, so run the command again in a minute\.\n/);
       const movedJson = await runAsync("mainnet", "--licence", "501", ...host, ...registry, "--json");
       assert.equal(movedJson.code, 1);
