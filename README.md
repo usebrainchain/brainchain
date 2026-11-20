@@ -42,9 +42,11 @@ These contracts are in this repository but not deployed yet:
 - [`Erc8183Evaluator`](src/evaluators/Erc8183Evaluator.sol) and [`Erc8183AppealHook`](src/evaluators/Erc8183AppealHook.sol), which let an ERC-8183 job name BrainChain as its evaluator ([docs/erc8183-evaluator.md](docs/erc8183-evaluator.md));
 - the `TaskBoard` payout change (`setPayouts`), which the next set carries.
 
+Two Safe modules are live on the treasury Safe on Robinhood Chain.
+
 [`CappedTransferModule`](src/safe/CappedTransferModule.sol), a Safe module for capped top-ups ([docs/operator-roles.md](docs/operator-roles.md)), has one copy live: it tops up the wallet that pays for BrainChain's reviews of its own pull requests, from the treasury Safe on Robinhood Chain, at most 3 USDG a day. The desk's copies are not deployed yet.
 
-[`FeeShareModule`](src/safe/FeeShareModule.sol), a Safe module that passes the treasury Safe's share of $BRAIN's trading fee into locked liquidity ([docs/operator-roles.md](docs/operator-roles.md#passing-the-liquidity-share-to-the-lock)), is not deployed yet.
+[`FeeShareModule`](src/safe/FeeShareModule.sol), a Safe module that passes the treasury Safe's share of $BRAIN's trading fee into locked liquidity ([docs/operator-roles.md](docs/operator-roles.md#passing-the-liquidity-share-to-the-lock)), is live at `0xFD268Ae2c1Ec0Db03C3C6b17E1AEDE973729FE29` on the treasury Safe on Robinhood Chain since 18 November 2026.
 
 The contracts have not had an external audit.
 
