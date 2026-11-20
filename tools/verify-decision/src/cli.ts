@@ -105,7 +105,9 @@ const NOT_CHECKED = "That Jev produced the answer. BrainChain records Jev's answ
 // Sets before 3.0.0 named tasks by id alone, which the subject check does not model, so the package carries none.
 const BEFORE_3 = /^(v2(-|$)|2\.|0x83b31d99fa31a9e5257955a737ef34c40f1c57bf$)/i;
 // The brain host answers 400 for any other spelling of an id, so the tool refuses it with the same rule.
-const AGENT_ID = "An agent id is a whole number written without leading zeros";
+const AGENT_ID = "An agent id is a whole number from 0 to 2^256 - 1, written without leading zeros";
+// As agentIdOf in epoch.ts: one spelling for each id, within uint256.
+const isAgentId = (text: string): boolean => /^(0|[1-9]\d{0,77})$/.test(text) && BigInt(text) >> 256n === 0n;
 
 /** Thrown once the run is over, so that nothing after the call that ended it runs while its output drains. */
 class Ended {}
@@ -420,7 +422,7 @@ async function main(): Promise<void> {
     const ctx: Context = { client, network, set: network.sets[0]!, briefs: new Map(), balances };
     if (entryArg !== undefined) {
       const parts = /^(0|[1-9]\d{0,77}):(?:(0x[0-9a-fA-F]{40}):)?([1-9]\d{0,19})$/.exec(entryArg);
-      if (!parts) fail("An entry is <agentId>:<feedbackIndex>, or <agentId>:<writer>:<feedbackIndex> for one BrainChain wrote from an earlier address, with each number written without leading zeros", 2);
+      if (!parts || !isAgentId(parts[1]!)) fail("An entry is <agentId>:<feedbackIndex>, or <agentId>:<writer>:<feedbackIndex> for one BrainChain wrote from an earlier address, with each number written without leading zeros and the agent id below 2^256", 2);
       const named = parts[2];
       const writer = named === undefined ? current : registry.writers.find((w) => w.toLowerCase() === named.toLowerCase());
       if (!writer) fail(`BrainChain writes its entries from ${registry.writers.join(" and ")}, not ${named}`, 2);
@@ -440,7 +442,7 @@ async function main(): Promise<void> {
         failWith(error);
       }
     }
-    if (!/^(0|[1-9]\d{0,77})$/.test(agentArg!)) fail(AGENT_ID, 2);
+    if (!isAgentId(agentArg!)) fail(AGENT_ID, 2);
     const agentId = BigInt(agentArg!);
     try {
       await sameChain(registry);
@@ -544,7 +546,7 @@ async function main(): Promise<void> {
     }
 
     const asked = (recordArg ?? licenceArg ?? papersArg)!;
-    if (!/^(0|[1-9]\d{0,77})$/.test(asked)) fail(AGENT_ID, 2);
+    if (!isAgentId(asked)) fail(AGENT_ID, 2);
     const agentId = BigInt(asked);
     const { name, rpc, ...identity } = known.identity;
     const registry = readsRegistry ? { client: createPublicClient({ transport: rpcTransport(name, registryRpcArg ?? rpc) }), chainId: identity.chainId } : undefined;

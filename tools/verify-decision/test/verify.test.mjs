@@ -3335,9 +3335,16 @@ describe("the command line", () => {
       if (shape.includes(args)) assert.match(asText.stderr, /^[^\n]+\n\nUsage:\n/, args.join(" "));
       else assert.match(asText.stderr, /^[^\n]+\n$/, args.join(" "));
     }
-    for (const id of ["x", "0501", "0x1f5", "1e3"]) assert.equal(run("mainnet", "--record", id).stderr, "An agent id is a whole number written without leading zeros\n", id);
-    assert.equal(run("mainnet", "--agent", "007").stderr, "An agent id is a whole number written without leading zeros\n");
-    assert.match(run("mainnet", "--entry", "0501:1").stderr, /, with each number written without leading zeros\n$/);
+    // The brain host's rule: one spelling for each id, within uint256.
+    const RULE = "An agent id is a whole number from 0 to 2^256 - 1, written without leading zeros\n";
+    const beyond = (2n ** 256n).toString();
+    for (const id of ["x", "0501", "0x1f5", "1e3", beyond]) {
+      for (const option of ["--record", "--licence", "--papers", "--agent"]) {
+        const refused = run("mainnet", option, id);
+        assert.deepEqual([refused.status, refused.stderr], [2, RULE], `${option} ${id}`);
+      }
+    }
+    for (const entry of ["0501:1", `${beyond}:1`]) assert.match(run("mainnet", "--entry", entry).stderr, /, with each number written without leading zeros and the agent id below 2\^256\n$/, entry);
     assert.equal(run("mainnet", "01").stderr, "A decision id is a whole number from 1, written without leading zeros\n");
     assert.equal(run("mainnet", "--item", "0x12").stderr, "An item id is 0x and 64 hex digits\n");
     assert.equal(run("mainnet", "--record", "1", "--registry-rpc", "https://x.invalid").stderr, "With --record, --registry-rpc is read only with --epoch\n");
