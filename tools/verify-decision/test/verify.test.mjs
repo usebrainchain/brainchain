@@ -238,7 +238,7 @@ function onChain({
       if (eventName === "Queued" && queued) return [{ args: { changeId: 1n, target: set.board, data: queued } }];
       if (eventName === "WorkerHired" && hired) return [{ args: { id: args.id, model: hired, decisionId: 1n }, blockNumber: 800n }];
       if (eventName === "BrainSet") return brains.map((b, logIndex) => ({ args: { brain: b.brain }, blockNumber: b.block, logIndex }));
-      if (eventName === "BrainAttested") return attested.filter((a) => a.blockNumber <= toBlock && args.brain === sender).map((a) => ({ args: { brain: sender, image: a.image, app: a.app }, blockNumber: a.blockNumber }));
+      if (eventName === "BrainAttested") return attested.filter((a) => (toBlock === undefined || a.blockNumber <= toBlock) && args.brain === sender).map((a) => ({ args: { brain: sender, image: a.image, app: a.app }, blockNumber: a.blockNumber }));
       return [];
     },
   };
@@ -1094,7 +1094,21 @@ describe("evidence and receipts", () => {
     assert.equal(status(later, "versions"), "ok");
     const reattested = await verify({ ...recorded(sealed(accepted())), offline: true, attested: [{ image: IMAGE, app: APP, blockNumber: 800n }, { image: `0x${"3c".repeat(32)}`, app: APP, blockNumber: 850n }] });
     assert.deepEqual(failed(reattested), ["versions"]);
-    assert.match(check(reattested, "versions").message, /last attested \S+ before this decision for image 0x3c3c…3c3c and app 0x2b2b…2b2b, and the record names image 0x1a1a…1a1a/);
+    assert.match(check(reattested, "versions").message, /last attested \S+ before this decision for image 0x3c3c…3c3c and app 0x2b2b…2b2b, and the record names image 0x1a1a…1a1a and app 0x2b2b…2b2b$/);
+
+    // An image or app the log never attested for this key, before the decision or since, is named as such.
+    const UNSEEN = `0x${"97".repeat(31)}ff`;
+    const lastAttested = `versions: the log last attested ${abbr(BRAIN.address)} before this decision for image 0x1a1a…1a1a and app 0x2b2b…2b2b, and the record names`;
+    const unseenApp = await verify({ ...recorded(sealed(accepted(), [PAYMENT], { ...VERSIONS, app: UNSEEN })), offline: true });
+    assert.deepEqual(failed(unseenApp), ["versions"]);
+    assert.equal(check(unseenApp, "versions").message, `${lastAttested} image 0x1a1a…1a1a and app 0x9797…97ff, which the log never attested for this key`);
+    const unseenImage = await verify({ ...recorded(sealed(accepted(), [PAYMENT], { ...VERSIONS, image: UNSEEN })), offline: true });
+    assert.equal(check(unseenImage, "versions").message, `${lastAttested} image 0x9797…97ff, which the log never attested for this key, and app 0x2b2b…2b2b`);
+    const unseenBoth = await verify({ ...recorded(sealed(accepted(), [PAYMENT], { ...VERSIONS, image: UNSEEN, app: UNSEEN })), offline: true });
+    assert.equal(check(unseenBoth, "versions").message, `${lastAttested} image 0x9797…97ff and app 0x9797…97ff, neither of which the log ever attested for this key`);
+    // One the log attested only after the decision was attested all the same.
+    const afterwards = await verify({ ...recorded(sealed(accepted(), [PAYMENT], { ...VERSIONS, app: UNSEEN })), offline: true, attested: [{ image: IMAGE, app: APP, blockNumber: 800n }, { image: IMAGE, app: UNSEEN, blockNumber: 950n }] });
+    assert.equal(check(afterwards, "versions").message, `${lastAttested} image 0x1a1a…1a1a and app 0x9797…97ff`);
 
     const otherKey = await verify({ ...recorded(sealed(accepted())), offline: true, sender: OTHER.address });
     assert.deepEqual(failed(otherKey), ["versions"]);

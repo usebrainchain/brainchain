@@ -1466,6 +1466,17 @@ function isVersions(value: unknown): value is Versions {
   );
 }
 
+/** The image and app a record names, each marked where the log has never attested the key for it, before the decision or since. */
+async function unattested(client: PublicClient, set: ContractSet, brain: Address, { image, app }: Versions): Promise<string> {
+  if (!image || !app) return "no image or app";
+  const ever = await client.getContractEvents({ address: set.log, abi: decisionLogAbi, eventName: "BrainAttested", args: { brain }, fromBlock: BigInt(set.fromBlock), strict: true });
+  const never = (of: "image" | "app", value: Hex): boolean => !ever.some(({ args }) => eq(args[of], value));
+  const [noImage, noApp] = [never("image", image), never("app", app)];
+  if (noImage && noApp) return `image ${short(image)} and app ${short(app)}, neither of which the log ever attested for this key`;
+  const unseen = ", which the log never attested for this key";
+  return `image ${short(image)}${noImage ? `${unseen},` : ""} and app ${short(app)}${noApp ? unseen : ""}`;
+}
+
 /** The key that sent the Recorded transaction, and the image and app of its latest attestation on the log at the decision's block, or none for a key the owner named. */
 async function checkVersions({ client, set }: Context, c: Checks, versions: unknown, sender: Address, block: bigint): Promise<void> {
   if (!isVersions(versions)) return c.add("versions", "fail", "versions: not a prompt version, a brain key and the image and app it was attested for, as the brain records them");
@@ -1475,7 +1486,7 @@ async function checkVersions({ client, set }: Context, c: Checks, versions: unkn
   const wrong: string[] = [];
   if (!eq(versions.brain, sender)) wrong.push(`the record names the brain ${short(versions.brain)}, but ${short(sender)} sent its Recorded transaction`);
   if (attested && !(eq(versions.image ?? "", attested.image) && eq(versions.app ?? "", attested.app))) {
-    wrong.push(`the log last attested ${short(sender)} before this decision for image ${short(attested.image)} and app ${short(attested.app)}, and the record names ${named}`);
+    wrong.push(`the log last attested ${short(sender)} before this decision for image ${short(attested.image)} and app ${short(attested.app)}, and the record names ${await unattested(client, set, sender, versions)}`);
   }
   if (!attested && versions.image) wrong.push(`the record names ${named}, but the log had not attested ${short(sender)} before this decision`);
   const bound = attested ? ` and that the log attested for ${named}` : ". The log had not attested it, so the owner named it and the record names no image or app";
