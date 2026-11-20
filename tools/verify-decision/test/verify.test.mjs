@@ -3562,4 +3562,24 @@ describe("the command line", () => {
       rpc.close();
     }
   });
+
+  it("writes the whole of a report longer than a pipe holds before it exits", async () => {
+    const rest = { template: "window-sum", title: "t".repeat(300_000), salt: `0x${"03".repeat(32)}`, createdAt: 1_763_000_000 };
+    const id = keccak256(toBytes(canonicalStringify(rest)));
+    const other = `0x${"0f".repeat(32)}`;
+    pages.set(`/exams/items/${id}.json`, { body: JSON.stringify({ item: { id, ...rest } }) });
+    pages.set(`/exams/items/${other}.json`, { body: JSON.stringify({ item: { id, ...rest } }) });
+    const rpc = ["--service", base, "--rpc", `http://127.0.0.1:${await closedPort()}`];
+    const asJson = await runAsync("mainnet", "--item", id, ...rpc, "--json");
+    assert.equal(asJson.code, 0);
+    assert.equal(JSON.parse(asJson.stdout).title, rest.title);
+    const asText = await runAsync("mainnet", "--item", id, ...rpc);
+    assert.equal(asText.code, 0);
+    assert.ok(asText.stdout.includes(rest.title));
+    assert.match(asText.stdout, /\nNot checked: .* See https:\/\/docs\.usebrainchain\.com\/trust-model\n$/);
+    // A mismatch is written whole too, and still exits 1.
+    const misfiled = await runAsync("mainnet", "--item", other, ...rpc, "--json");
+    assert.equal(misfiled.code, 1);
+    assert.deepEqual([JSON.parse(misfiled.stdout).verdict, JSON.parse(misfiled.stdout).title], ["mismatch", rest.title]);
+  });
 });
