@@ -475,7 +475,8 @@ async function main(): Promise<void> {
     const failed = tally(checks, "fail");
     const errors = tally(checks, "error");
     const skipped = tally(checks, "skip");
-    const overall = stale ? "stale" : outcomeOf([{ checks, withheld: withheld.length > 0 }]);
+    // Stale says that all else held, which a check that could not run leaves unknown.
+    const overall = stale ? (errors > 0 ? "unverified" : "stale") : outcomeOf([{ checks, withheld: withheld.length > 0 }]);
     const status = failed + errors > 0 ? 1 : 0;
     if (json) {
       const out = {
@@ -588,15 +589,23 @@ async function main(): Promise<void> {
         const lines = r.checks.map(line);
         for (const l of r.licences) lines.push("", `  ${l.class}: ${l.state ?? "not a licence"}`, ...l.checks.map(line));
         const checks = [...r.checks, ...r.licences.flatMap((l) => l.checks)];
+        // Each state follows the reply, so a reply read just before the id moved is stale, as papers are, and so is each licence it gives. Any other failure still reads as a mismatch.
+        const stale = r.stale === true && checks.every((c) => c.status !== "fail" || c.name === "licences-epoch");
         reportHosted({
           header: `Agent ${agentId}'s licences ${on} ${r.url}`,
           checks,
-          fields: { service: url, ...r, licences: r.licences.map((l) => ({ ...l, verdict: outcomeOf([l]) })) },
+          fields: {
+            service: url,
+            ...r,
+            licences: r.licences.map((l) => {
+              const verdict = outcomeOf([l]);
+              return { ...l, verdict: stale && verdict === "match" ? "stale" : verdict };
+            }),
+          },
           lines,
           match: "Each licence is signed by a key its DecisionLog named its brain, and the state the host gives is the one its expiry and the identity registry give.",
           notChecked: "that the exam's judgments were right, or the audits behind a suspension.",
-          // Each state follows the reply, so a reply read just before the id moved is stale, as papers are. Any other failure still reads as a mismatch.
-          ...(r.stale && checks.every((c) => c.status !== "fail" || c.name === "licences-epoch")
+          ...(stale
             ? { stale: "The states the host gives no longer hold: the agent's id has changed epoch since the host read the registry for its reply, as the FAIL line shows. The host reads it at most a minute before it answers, so run the command again in a minute." }
             : {}),
         });

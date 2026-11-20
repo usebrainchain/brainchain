@@ -3414,7 +3414,17 @@ describe("the command line", () => {
       const movedJson = await runAsync("mainnet", "--licence", "501", ...host, ...registry, "--json");
       assert.equal(movedJson.code, 1);
       const staleOut = JSON.parse(movedJson.stdout);
-      assert.deepEqual([staleOut.verdict, staleOut.failed, staleOut.stale, staleOut.licences[0].verdict], ["stale", 1, true, "match"]);
+      assert.deepEqual([staleOut.verdict, staleOut.failed, staleOut.stale, staleOut.licences[0].verdict, staleOut.licences[0].state], ["stale", 1, true, "stale", "valid"]);
+      // Stale says that all else held: beside a check that could not run, the reply is unverified, and so is the licence.
+      const blind = await stubRpc(MAINNET, (method) => (method === "eth_getLogs" ? new Error("logs unavailable") : encodeFunctionResult({ abi: decisionLogAbi, functionName: "brain", result: BRAIN.address })));
+      try {
+        const unread = await runAsync("mainnet", "--licence", "501", "--service", base, "--rpc", urlOf(blind), ...registry, "--json");
+        const out = JSON.parse(unread.stdout);
+        assert.deepEqual([unread.code, out.verdict, out.failed, out.errors, out.licences[0].verdict], [1, "unverified", 1, 1, "unverified"]);
+        assert.match((await runAsync("mainnet", "--licence", "501", "--service", base, "--rpc", urlOf(blind), ...registry)).stdout, /\nVerdict: UNVERIFIED\. /);
+      } finally {
+        blind.close();
+      }
       // A stale reply beside any other failure is a mismatch.
       read("lapsed");
       const lapsed = await runAsync("mainnet", "--licence", "501", ...host, ...registry, "--json");
