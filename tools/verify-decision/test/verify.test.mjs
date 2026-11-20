@@ -1766,6 +1766,13 @@ describe("evidence and receipts", () => {
         const misnamed = await verifyRecord(ctx, brainHost(), 20424n);
         assert.equal(check(misnamed, "record-receipt").message, "entry 2: 2 checks on its receipt failed (entry-task, record-settled)");
         assert.equal(misnamed.receipts[0].checks.find((c) => c.name === "record-settled").message, "settled: the entry says rejected and the receipt accepted");
+        // A task on a board the tool does not carry: the decision is not tied to it, so the receipt is not called verified.
+        const unplaced = [first, await recordEntry(first, settled(receipt, { ref: `task:${OTHER_SET.board.toLowerCase()}:7` }))];
+        listRecord(unplaced, await recordHead(unplaced[1]), { id: "20424" });
+        const elsewhere = await verifyRecord(ctx, brainHost(), 20424n);
+        assert.equal(status(elsewhere, "record-receipt"), "skip");
+        assert.equal(check(elsewhere, "record-receipt").message, `entry 2: the receipt at ${pathOf(receipt)} hashes to the entry's ${abbr(unplaced[1].entry.receipt.hash)}, and decision 1 in set t passes every check that could run with it. 1 check could not run (entry-task)`);
+        assert.deepEqual([failed(elsewhere), outcomeOf([elsewhere])], [[], "match"]);
 
         // A decision record served without the work is never a full match, and no receipt is fetched offline.
         const kept = sealed(rejected());
@@ -1776,7 +1783,8 @@ describe("evidence and receipts", () => {
         listRecord(refused, await recordHead(refused[0]), { id: "20424" });
         const withheld = await verifyRecord(onKept, brainHost(), 20424n);
         assert.deepEqual(failed(withheld), []);
-        assert.match(check(withheld, "record-receipt").message, /and decision 1 in set t passes the checks a record served without the work allows with it,/);
+        assert.equal(status(withheld, "record-receipt"), "skip");
+        assert.match(check(withheld, "record-receipt").message, /and decision 1 in set t passes the checks a record served without the work allows with it\. \d checks could not run \(record-hash, input-hash/);
         assert.equal(outcomeOf([withheld]), "withheld");
         const offline = await verifyRecord({ ...onKept, offline: true }, brainHost(), 20424n);
         assert.equal(check(offline, "record-receipt").message, "entry 1: it names a receipt, and none is fetched offline");
@@ -3122,9 +3130,12 @@ describe("the command line", () => {
       log(active.log, encodeEventTopics({ abi: decisionLogAbi, eventName: "Recorded", args: { id: 1n, kind: 2, subject } }), encodeAbiParameters(parseAbiParameters("bytes32, bytes32, uint16, bytes32, string"), [inputHash, YES, 9000, keccak256(toBytes(body)), `${base}/cli-paid.json#evidence=${evidence}`]), 900n),
       log(active.board, encodeEventTopics({ abi: taskBoardAbi, eventName: "Posted", args: { id: 7n, poster: STRANGER } }), encodeAbiParameters(parseAbiParameters("uint128, uint64, bytes32, string"), [1n, 0n, keccak256(toBytes(brief)), dataUri(brief)]), 800n),
       log(active.board, encodeEventTopics({ abi: taskBoardAbi, eventName: "WorkGraded", args: { id: 7n, decisionId: 1n } }), encodeAbiParameters([{ type: "bool" }], [true]), 901n),
+      log(active.log, encodeEventTopics({ abi: decisionLogAbi, eventName: "BrainSet", args: { brain: BRAIN.address } }), "0x", 970n),
     ];
+    const now = Math.floor(Date.now() / 1000);
     const brainchain = await stubRpc(MAINNET, (method, [params] = []) => {
       if (method === "eth_getLogs") return logs.filter((l) => l.topics[0] === params.topics[0] && l.address.toLowerCase() === params.address.toLowerCase());
+      if (method === "eth_getBlockByNumber") return { number: params, hash: `0x${"ab".repeat(32)}`, timestamp: toHex(now - 10_000), transactions: [] };
       if (method === "eth_getTransactionByHash") return { hash: params, from: BRAIN.address, to: active.log, blockHash: `0x${"ab".repeat(32)}`, blockNumber: toHex(900n), transactionIndex: "0x0", nonce: "0x0", gas: "0x0", gasPrice: "0x0", value: "0x0", input: "0x", type: "0x0", v: "0x1b", r: "0x1", s: "0x1" };
       const abi = params.to.toLowerCase() === active.board.toLowerCase() ? taskBoardAbi : decisionLogAbi;
       const { functionName } = decodeFunctionData({ abi, data: params.data });
@@ -3143,6 +3154,23 @@ describe("the command line", () => {
       assert.equal(read.code, 0, read.stdout + read.stderr);
       assert.match(read.stdout, /\n {2}ok {4}payment: transaction 0x9a9a…9a9a on eip155:4663 moved 1000000 of 0x0000…00E5 from 0x0000…00a1 to the desk's 0x0000…00D5, as the receipt and the record say\n/);
       assert.match(read.stdout, /\nVerdict: match\. /);
+
+      // A record entry that names this receipt, for a task on a board the tool does not carry: the receipt's task check
+      // cannot run, so its line on the record is a skip, counted as one, and the verdict is no plain match.
+      const path = `/receipts/${active.log.toLowerCase()}/1.json`;
+      const [entry] = await recordOf([
+        { decisionLog: active.log, issuedAt: now - 200, ref: `task:0x${"55".repeat(20)}:7`, receipt: { path, hash: keccak256(toBytes(pages.get(path).body)) }, paid: { payer: PAYER, amount: payment.amount, asset: TOKEN, network: payment.network }, decision: { log: active.log, id: "1" } },
+      ]);
+      listRecord([entry], await recordHead(entry, { decisionLog: active.log, at: now - 5 }));
+      const record = await runAsync("mainnet", "--record", "501", "--service", base, ...rpcs);
+      assert.equal(record.code, 0, record.stdout + record.stderr);
+      assert.match(record.stdout, new RegExp(`\n {2}skip {2}entry 1: the receipt at ${path} hashes to the entry's 0x\\w{4}…\\w{4}, and decision 1 in set ${active.key} passes every check that could run with it\\. 1 check could not run \\(entry-task\\)\n`));
+      assert.match(record.stdout, new RegExp(`\n\nEntry 1's receipt, ${path}, with decision 1 in set ${active.key}\n {2}skip {2}task: the record entry names no task on a board this tool carries, so decision 1 is not tied to one\n`));
+      assert.match(record.stdout, /\nVerdict: match\. Every check that could run passed; the skip lines say what could not be checked\.\n/);
+      const recordJson = JSON.parse((await runAsync("mainnet", "--record", "501", "--service", base, ...rpcs, "--json")).stdout);
+      assert.deepEqual([recordJson.verdict, recordJson.failed, recordJson.errors, recordJson.skipped], ["match", 0, 0, 1]);
+      assert.deepEqual([recordJson.receipts[0].verdict, recordJson.receipts[0].checks.filter((c) => c.status !== "ok").map((c) => c.name)], ["match", ["entry-task"]]);
+      unserve("/agents/");
 
       // Only that node knows the transaction: one that has not seen it yet is an error on the payment's line.
       mined = false;

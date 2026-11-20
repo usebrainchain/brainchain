@@ -3105,8 +3105,12 @@ async function checkRecordReceipt(ctx: Context, service: Service, c: Checks, rep
   const errors = named("error");
   if (failed.length > 0) return c.add("record-receipt", "fail", `${at}: ${plural(failed.length, "check", "checks")} on its receipt failed (${failed.join(", ")})`);
   if (errors.length > 0) return c.add("record-receipt", "error", `${at}: its receipt could not be checked (${errors.join(", ")})`);
-  const how = found.withheld ? "passes the checks a record served without the work allows" : "verifies";
-  c.add("record-receipt", "ok", `${at}: the receipt at ${found.path} hashes to the entry's ${short(entry.receipt!.hash)}, and decision ${decision} in set ${found.decision?.set} ${how} with it, for the task, outcome and payment the entry states`);
+  const hashed = `${at}: the receipt at ${found.path} hashes to the entry's ${short(entry.receipt!.hash)}, and decision ${decision} in set ${found.decision?.set}`;
+  const skipped = named("skip");
+  if (skipped.length === 0) return c.add("record-receipt", "ok", `${hashed} verifies with it, for the task, outcome and payment the entry states`);
+  // A receipt is verified only as far as its checks ran, so one with a check that could not run is no ok line.
+  const how = found.withheld ? "passes the checks a record served without the work allows" : "passes every check that could run";
+  c.add("record-receipt", "skip", `${hashed} ${how} with it. ${plural(skipped.length, "check", "checks")} could not run (${skipped.join(", ")})`);
 }
 
 async function checkCurrent(service: Service, c: Checks, report: RecordReport, entries: SignedEntry[]): Promise<void> {
