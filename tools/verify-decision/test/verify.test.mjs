@@ -3439,6 +3439,17 @@ describe("the command line", () => {
       const holds = await runAsync("mainnet", "--licence", "501", ...host, ...registry);
       assert.equal(holds.code, 1);
       assert.equal(holds.stderr, `The brain host lists no licence for agent 501 at ${base}/licences/4663/501\n`);
+      // The tool carries no identity registry for testnet, so the reply's epoch line is a skip there. A reply with no licence still exits 1.
+      const testnet = await stubRpc(274630);
+      const testRegistry = await stubRpc(46630);
+      try {
+        pages.set("/licences/46630/501", { body: JSON.stringify({ registry: "read", epoch: { id: l.epoch, controller: HOLDER, build: "worker-1" }, licences: [] }) });
+        const empty = await runAsync("testnet", "--licence", "501", "--service", base, "--rpc", urlOf(testnet), "--registry-rpc", urlOf(testRegistry));
+        assert.deepEqual([empty.code, empty.stdout, empty.stderr], [1, "", `The brain host lists no licence for agent 501 at ${base}/licences/46630/501\n`]);
+      } finally {
+        testnet.close();
+        testRegistry.close();
+      }
 
       const stated = { ...signedBy(BRAIN), decisionLog: LOG, agent: AGENT, at: now - 5, epoch: { id: epochOf(AGENT, HOLDER, "worker-1"), controller: HOLDER, build: "worker-1", number: 1 }, record: { entries: 2, head: head.head.hash }, licences: [{ class: "code", state: "valid" }], verify: "npx brainchain-verify mainnet --record 501" };
       const text = `BrainChain papers\n${canonicalStringify(stated)}`;

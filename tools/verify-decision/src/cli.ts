@@ -585,7 +585,8 @@ async function main(): Promise<void> {
       }
       if (licenceArg !== undefined) {
         const r = await verifyLicences(ctx, service, agentId);
-        if (r.licences.length === 0 && r.checks.every((c) => c.status === "ok")) fail(`The brain host lists no licence for agent ${agentId} at ${r.url}`);
+        // A reply that lists no licence has none to check, whatever its epoch line says.
+        if (r.licences.length === 0 && r.checks.every((c) => c.status === "ok" || c.name === "licences-epoch")) fail(`The brain host lists no licence for agent ${agentId} at ${r.url}`);
         const lines = r.checks.map(line);
         for (const l of r.licences) lines.push("", `  ${l.class}: ${l.state ?? "not a licence"}`, ...l.checks.map(line));
         const checks = [...r.checks, ...r.licences.flatMap((l) => l.checks)];
