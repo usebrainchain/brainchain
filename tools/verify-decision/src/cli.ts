@@ -79,7 +79,9 @@ about an agent the same way: its record, licences and papers. Needs no keys.
   --item <id>    check a retired exam item against the commitment it was known
                  by while it was in use
   --service <url>
-                 another brain host for --record, --licence, --papers and --item
+                 another brain host for --record, --licence, --papers and
+                 --item; one on a private address is read only when --rpc is on
+                 one too
   --offline      fetch no receipt from the brain host
   --set <board>  a retired contract set from 3.0.0 on, by TaskBoard address, by
                  its key on the site (v3-1) or by release (3.1.0); without it, the
