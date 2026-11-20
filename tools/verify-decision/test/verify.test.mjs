@@ -1658,7 +1658,8 @@ describe("evidence and receipts", () => {
         assert.equal(entryOutcome([house]), "match");
         assert.deepEqual(house.record, { seq: 1, kind: "task", outcome: "accepted", ref: TASK });
         assert.equal(house.decision, undefined);
-        assert.deepEqual(entrySummary([house]), { entries: 1, withReceipt: 0, verified: 1, withheld: 0, failed: 0, unverified: 0 });
+        // It matches, and with no receipt it counts as none verified, so verified never exceeds with a receipt.
+        assert.deepEqual(entrySummary([house]), { entries: 1, withReceipt: 0, verified: 0, withheld: 0, failed: 0, unverified: 0 });
         // An audit is written as a task is, and a refund for work never delivered as 0.
         const refunded = onChain({ task: { status: Status.Refunded }, hired: CLAUDE, sets: [set] });
         for (const fields of [{ kind: "audit", outcome: "rejected", ruled: true }, { outcome: "undelivered" }]) {

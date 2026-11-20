@@ -2480,11 +2480,13 @@ export interface EntrySummary {
 export function entrySummary(reports: EntryReport[]): EntrySummary {
   const outcomes = reports.map((r) => entryOutcome([r]));
   const count = (outcome: EntryOutcome): number => outcomes.filter((o) => o === outcome).length;
+  // A record entry names its receipt, where an agent paid; an older entry's hash is the receipt's own.
+  const receipted = reports.map((r) => (r.record ? r.record.receipt !== undefined : !eq(r.feedbackHash, NO)));
   return {
     entries: reports.length,
-    // A record entry names its receipt, where an agent paid; an older entry's hash is the receipt's own.
-    withReceipt: reports.filter((r) => (r.record ? r.record.receipt !== undefined : !eq(r.feedbackHash, NO))).length,
-    verified: count("match"),
+    withReceipt: receipted.filter(Boolean).length,
+    // A record entry with no receipt can match, but there is no receipt to have verified.
+    verified: outcomes.filter((o, i) => o === "match" && receipted[i]).length,
     withheld: count("withheld"),
     failed: count("mismatch"),
     unverified: count("unverified"),
