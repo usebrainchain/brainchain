@@ -1576,6 +1576,7 @@ function evidenceOf(record: Published, inputHash: Hex, version: 1 | 2): Hex | un
         : {}),
       ...(version === 2 && record.passFrom !== undefined ? { passFrom: record.passFrom } : {}),
       ...(version === 2 && record.checks !== undefined ? { checks: record.checks } : {}),
+      ...(version === 2 && record.shape !== undefined ? { shape: record.shape } : {}),
     };
     return keccak256(toBytes(canonicalStringify(evidence)));
   } catch (error) {
@@ -1587,7 +1588,7 @@ function evidenceOf(record: Published, inputHash: Hex, version: 1 | 2): Hex | un
 
 const EVIDENCE_COVERS = {
   1: "the hash over inputHash, every judge's answer and receipt, the payments and the versions",
-  2: "the hash over inputHash, every judge's answer and receipt, the payments, the versions, the panel's rule, the pass level and the checks",
+  2: "the hash over inputHash, every judge's answer and receipt, the payments, the versions, the panel's rule, the pass level, the checks and the shape",
 } as const;
 
 /** The evidence hash a Recorded event's payloadURI carries after #evidence=, written with the decision; null for any other fragment. */

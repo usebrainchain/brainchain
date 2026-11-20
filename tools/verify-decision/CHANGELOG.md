@@ -12,6 +12,7 @@ Changes to `brainchain-verify`, the npm package built from this directory. The f
 - `--json` carries `weights` in `panel` when the record has them.
 - `shape` checks a grade or ruling on a brief that fences a JSON schema (a block marked `json schema`). The tool checks the record's result against the schema exactly as BrainChain does before any grader is asked. The outcome and the problems must be the ones in the request, the record's `shape` field must agree, and the question must show the graders the check in BrainChain's own wording. A result that does not match must be a reject, or a refund on a ruling, at 10,000 bps. Records decided under prompt version 2 or later owe the check. Older ones skip it.
 - `--json` carries `shape` on a decision whose brief has a schema.
+- `evidence` rebuilds evidence version 2 with the record's `shape`, which the brain hashes beside `checks`, so a copy served without the work cannot change it.
 
 ### Changed
 

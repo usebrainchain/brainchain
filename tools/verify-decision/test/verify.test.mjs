@@ -1384,7 +1384,7 @@ describe("evidence and receipts", () => {
   function sealed(record, payments = [PAYMENT], versions = VERSIONS, input = keccak256(toBytes(canonicalStringify(record.request))), version = 2) {
     const payload = { ...record, versions, ...(payments.length > 0 ? { payments } : {}) };
     const judges = [payload.second, ...(payload.panel?.judges ?? [])].filter((judge) => judge !== undefined).map(({ model, probabilities, requestHash, receipt }) => ({ model, probabilities, requestHash, receipt }));
-    const { panel, passFrom, checks } = payload;
+    const { panel, passFrom, checks, shape } = payload;
     const evidence = {
       ...(version === 2 ? { version } : {}),
       input,
@@ -1394,6 +1394,7 @@ describe("evidence and receipts", () => {
       ...(version === 2 && panel ? { panel: { rule: panel.rule, ...(panel.rule === "weighted" ? { weights: panel.weights } : {}), ...(panel.degraded ? { degraded: panel.degraded } : {}) } } : {}),
       ...(version === 2 && passFrom !== undefined ? { passFrom } : {}),
       ...(version === 2 && checks !== undefined ? { checks } : {}),
+      ...(version === 2 && shape !== undefined ? { shape } : {}),
     };
     return { ...payload, evidence: keccak256(toBytes(canonicalStringify(evidence))) };
   }
@@ -1445,7 +1446,7 @@ describe("evidence and receipts", () => {
     assert.deepEqual(failed(whole), []);
     assert.match(
       check(whole, "evidence").message,
-      /^evidence: the hash over inputHash, every judge's answer and receipt, the payments, the versions, the panel's rule, the pass level and the checks is 0x\w{4}…\w{4}, as the record and its Recorded event's payloadURI state$/,
+      /^evidence: the hash over inputHash, every judge's answer and receipt, the payments, the versions, the panel's rule, the pass level, the checks and the shape is 0x\w{4}…\w{4}, as the record and its Recorded event's payloadURI state$/,
     );
     // A record decided before version 2 checks under version 1, and says what that leaves out.
     assert.equal(sealed(accepted({ placeholders: true }), [PAYMENT], VERSIONS, undefined, 1).evidence, PINNED_EVIDENCE);
@@ -1469,6 +1470,7 @@ describe("evidence and receipts", () => {
       { ...redacted(kept), versions: { ...VERSIONS, prompt: 2 } },
       { ...redacted(kept), panel: { ...kept.panel, rule: "median" } },
       { ...redacted(kept), passFrom: 2 },
+      { ...redacted(kept), shape: "passed" },
       { ...redacted(kept), checks: "failed" },
     ]) {
       const report = await verify({ ...recorded(kept), serve: forged, withheld: true, offline: true });
