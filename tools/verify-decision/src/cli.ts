@@ -557,7 +557,11 @@ async function main(): Promise<void> {
   /** --record, --licence, --papers and --item: what the brain host signs about an agent, held to the DecisionLog's brain keys and the identity registry. */
   async function checkHosted(): Promise<never> {
     const known = SERVICES[network.chainId]!;
-    const url = (serviceArg ?? known.url).replace(/\/+$/, "");
+    const given = serviceArg ?? known.url;
+    // An index, not /\/+$/: that regex backtracks on a long run of slashes.
+    let end = given.length;
+    while (end > 0 && given[end - 1] === "/") end--;
+    const url = given.slice(0, end);
     const ctx: Context = { client, network, set: network.sets[0]!, briefs: new Map(), balances };
     if (itemArg !== undefined) {
       if (!/^0x[0-9a-fA-F]{64}$/.test(itemArg)) fail("An item id is 0x and 64 hex digits", 2);

@@ -2817,7 +2817,12 @@ const few = (faults: string[]): string => (faults.length <= 3 ? faults.join("; "
 const span = (seconds: number): string =>
   seconds < 120 ? plural(seconds, "second", "seconds") : seconds < 7_200 ? `${Math.floor(seconds / 60)} minutes` : seconds < 172_800 ? `${Math.floor(seconds / 3_600)} hours` : `${Math.floor(seconds / 86_400)} days`;
 const secondsNow = (service: Pick<Service, "now">): number => Math.floor((service.now ?? Date.now)() / 1000);
-const hostOfService = (service: Pick<Service, "url">): string => service.url.replace(/\/+$/, "");
+// A loop, not /\/+$/: that regex backtracks on a long run of slashes, and --service is the caller's input.
+const hostOfService = (service: Pick<Service, "url">): string => {
+  let end = service.url.length;
+  while (end > 0 && service.url[end - 1] === "/") end--;
+  return service.url.slice(0, end);
+};
 
 async function fetchJson(ctx: Pick<Context, "client">, uri: string, what: Wanted["what"], limit: number): Promise<unknown> {
   const { bytes } = await fetchBytes(uri, { what, limit, allowPrivate: await allowsPrivate(ctx.client) });
