@@ -485,6 +485,39 @@ contract DeskMandateV2Test is DeskV2Setup {
         assertEq(mandate.floorOf(0, address(nvda), false, 1e18), 99e6);
     }
 
+    function test_aPriceThatRoundsToZeroIsRefused() public {
+        bytes memory zero = abi.encodeWithSelector(DeskMandateV2.ZeroPrice.selector, address(nvda));
+        // Under a cent of a USDG unit a share.
+        nvdaFeed.set(99, block.timestamp);
+        vm.expectRevert(zero);
+        mandate.price(address(nvda));
+        nvdaFeed.set(100e8, block.timestamp);
+        nvda.setMultiplier(1);
+        vm.expectRevert(zero);
+        mandate.price(address(nvda));
+        vm.prank(owner);
+        vm.expectRevert(zero);
+        mandate.setVenue(address(nvda), _feed(nvdaFeed), true, true);
+        _fund(0, 1_000e6);
+        vm.prank(operator);
+        vm.expectRevert(zero);
+        mandate.trade(0, address(nvda), true, 100e6, 0, REASONING, QUOTE, _swap(address(usdg), 100e6, address(nvda), 1));
+    }
+
+    function test_ownershipCannotBeRenounced() public {
+        _fund(0, 1_000e6);
+        vm.prank(owner);
+        vm.expectRevert(DeskMandateV2.NoRenounce.selector);
+        mandate.renounceOwnership();
+        vm.prank(stranger);
+        vm.expectRevert(DeskMandateV2.NoRenounce.selector);
+        mandate.renounceOwnership();
+        assertEq(mandate.owner(), owner);
+        vm.prank(owner);
+        mandate.recall(0);
+        assertEq(usdg.balanceOf(owner), 1_000e6);
+    }
+
     /// The floor rounds up, so even a sell too small to be worth one USDG unit must receive one.
     function test_aDustSellMustReceiveSomething() public {
         _fund(0, 1_000e6);

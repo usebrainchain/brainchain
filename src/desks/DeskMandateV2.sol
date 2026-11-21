@@ -46,7 +46,7 @@ interface ISettlerRegistry {
 /// SHA-256 of 0x's signed quote body.
 ///
 /// The owner (the treasury Safe) funds, pauses, tunes the bounds, keeps the allowlist and can recall
-/// any desk to itself.
+/// any desk to itself. Ownership cannot be renounced.
 contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -132,6 +132,7 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
     error Short(uint256 amount, uint256 held);
     error StaleFeed(address feed, uint256 updatedAt);
     error BadFeed(address feed);
+    error ZeroPrice(address token);
     error BadDecimals(address token);
     error OffPrice(uint256 amountOut, uint256 floor);
     error OverBudget(uint256 dayShortfall, uint256 budget);
@@ -140,6 +141,7 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
     error WrongSell(address token, uint256 amount);
     error NotSettler(address operator, address target);
     error Spent(uint256 spent, uint256 amountIn);
+    error NoRenounce();
     error ZeroAddress();
     error ZeroAmount();
 
@@ -294,6 +296,11 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
         emit BoundsSet(interval_, premiumBps_, maxBuyBps_, maxFeedAge_, budgetBps_);
     }
 
+    /// @notice Always reverts. Only the owner can bring desk money home, so there is always an owner.
+    function renounceOwnership() public pure override {
+        revert NoRenounce();
+    }
+
     // Views
 
     /// @notice A desk's worth in USDG at the feeds: its USDG plus each holding at the feed price.
@@ -442,12 +449,13 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
         return Math.mulDiv(amountIn, mark * (BPS - premiumBps), 1e18 * BPS, Math.Rounding.Ceil);
     }
 
-    function _price(Venue memory venue, address token) private view returns (uint256) {
+    function _price(Venue memory venue, address token) private view returns (uint256 mark) {
         (, int256 answer,, uint256 updatedAt,) = venue.feed.latestRoundData();
         if (answer <= 0) revert BadFeed(address(venue.feed));
         if (block.timestamp - updatedAt > maxFeedAge) revert StaleFeed(address(venue.feed), updatedAt);
         uint256 multiplier = venue.scaled ? IScaledToken(token).uiMultiplier() : 1e18;
         // 8-decimal USD per share × 18-decimal shares per token, to 6-decimal USDG per token.
-        return uint256(answer) * multiplier / 1e20;
+        mark = uint256(answer) * multiplier / 1e20;
+        if (mark == 0) revert ZeroPrice(token);
     }
 }
