@@ -1859,7 +1859,10 @@ describe("the command line", () => {
   });
 
   it("points a task this set's board does not hold, or decided nothing on, to the sets whose boards hold one", async () => {
-    const counts = new Map(NETWORKS.mainnet.sets.map((s, i) => [s.board.toLowerCase(), [40n, 5n, undefined, 20n, 11n][i]]));
+    // By key, so the test holds whichever set is the active one: a set with no count here cannot be read.
+    const held = { "v3-4": 5n, "v3-1": 20n, v3: 11n };
+    const counts = new Map(NETWORKS.mainnet.sets.map((s) => [s.board.toLowerCase(), held[s.key]]));
+    const { key } = NETWORKS.mainnet.sets[0];
     let active = 7n;
     const rpc = await stubRpc(MAINNET, (method, [params] = []) => {
       if (method === "eth_getLogs") return [];
@@ -1871,15 +1874,15 @@ describe("the command line", () => {
     try {
       const outside = await runAsync("mainnet", "--task", "11", "--rpc", urlOf(rpc));
       assert.equal(outside.code, 1);
-      assert.equal(outside.stderr, `TaskBoard ${board} (set v3-5) holds tasks 1 to 7. Each set numbers its own tasks; try --set v3-1 or v3.\n`);
+      assert.equal(outside.stderr, `TaskBoard ${board} (set ${key}) holds tasks 1 to 7. Each set numbers its own tasks; try --set v3-1 or v3.\n`);
 
       const empty = await runAsync("mainnet", "--task", "5", "--rpc", urlOf(rpc), "--json");
       assert.equal(empty.code, 1);
-      assert.equal(onlyError(empty.stdout), "Task 5 has no decisions on BrainChain mainnet, contract set v3-5. Each set numbers its own tasks; try --set v3-4 or v3-1 or v3.");
+      assert.equal(onlyError(empty.stdout), `Task 5 has no decisions on BrainChain mainnet, contract set ${key}. Each set numbers its own tasks; try --set v3-4 or v3-1 or v3.`);
 
       active = 40n;
       const alone = await runAsync("mainnet", "--task", "30", "--rpc", urlOf(rpc));
-      assert.equal(alone.stderr, "Task 30 has no decisions on BrainChain mainnet, contract set v3-5.\n");
+      assert.equal(alone.stderr, `Task 30 has no decisions on BrainChain mainnet, contract set ${key}.\n`);
     } finally {
       rpc.close();
     }
@@ -1906,9 +1909,9 @@ describe("the command line", () => {
     });
     try {
       const one = await runAsync("mainnet", "1", "--rpc", urlOf(rpc));
-      assert.match(one.stdout, new RegExp(`^Decision 1 on BrainChain mainnet, contract set v3-5 \\(DecisionLog ${active.log}\\)\nTask 7: Port the CSV parser to streaming\n\n {2}ok {4}read `));
+      assert.match(one.stdout, new RegExp(`^Decision 1 on BrainChain mainnet, contract set ${active.key} \\(DecisionLog ${active.log}\\)\nTask 7: Port the CSV parser to streaming\n\n {2}ok {4}read `));
       const task = await runAsync("mainnet", "--task", "7", "--rpc", urlOf(rpc));
-      assert.match(task.stdout, /^Task 7 on BrainChain mainnet, contract set v3-5 \(TaskBoard 0x\w+\): decision 1\nBrief: Port the CSV parser to streaming\n\nDecision 1\n/);
+      assert.match(task.stdout, new RegExp(`^Task 7 on BrainChain mainnet, contract set ${active.key} \\(TaskBoard 0x\\w+\\): decision 1\nBrief: Port the CSV parser to streaming\n\nDecision 1\n`));
       const { decisions } = JSON.parse((await runAsync("mainnet", "1", "--rpc", urlOf(rpc), "--json")).stdout);
       assert.equal(decisions[0].title, "Port the CSV parser to streaming");
     } finally {

@@ -1,10 +1,10 @@
 # Operator roles
 
-BrainChain's operator key, `0x70C665780E43BA1496a4E691e408F24844dB58eC`, runs routine jobs around the clock. Two of those jobs wait for both Safe owners to sign: topping up the desk's USDG, and executing a timelock operation once its delay has passed. This page describes a narrow power for each. Neither is in place for these jobs yet: the desk's copies of `CappedTransferModule` are not deployed, and the operator does not hold the timelock's executor role. One copy of the module is live for another recipient, described below. With both in place, the owners keep every other power and can take either one back with a Safe transaction.
+BrainChain's operator key, `0x70C665780E43BA1496a4E691e408F24844dB58eC`, runs routine jobs around the clock. Two of those jobs wait for both Safe owners to sign: topping up the desk's USDG, and executing a timelock operation once its delay has passed. This page describes a narrow power for each. Neither is in place for these jobs yet: the desk's copies of `CappedTransferModule` are not deployed, and the operator does not hold the timelock's executor role. One copy of the module is live for another recipient, described below. A third narrow power is in place: passing the treasury Safe's liquidity share to $BRAIN's lock, also described below. With these in place, the owners keep every other power and can take any of them back with a Safe transaction.
 
 ## Keys
 
-Every key that holds a role in the deployed contracts, read from the contracts on 16 November 2026. The admin Safe on BrainChain and the treasury Safe on Robinhood Chain each need both of their owners to sign, and each can replace the keys below on the contracts it owns.
+Every key that holds a role in the deployed contracts, read from the contracts on 16 November 2026; the fee share operator's row was added on 18 November. The admin Safe on BrainChain and the treasury Safe on Robinhood Chain each need both of their owners to sign, and each can replace the keys below on the contracts it owns.
 
 | Key | Address | Chain | What it can do |
 | --- | --- | --- | --- |
@@ -17,6 +17,7 @@ Every key that holds a role in the deployed contracts, read from the contracts o
 | ProofIndex operator | `0x415e4DB7D4D79FE3A2D2CAE24BA7a6c06b45bad8` | Robinhood Chain | Record the Proof token id of a task with `ProofIndex.setProof`, once per board and task |
 | RewardDistributor publisher | `0x6aF0915c1e90349C09dE4409C3d7e6D8eA4A2a85` | Robinhood Chain | Publish a reward round with `RewardDistributor.publish`, allocating no more ETH than the distributor holds unallocated. The treasury Safe can revoke a round for 24 hours after it is published |
 | Review top-up operator | `0x70C665780E43BA1496a4E691e408F24844dB58eC` | Robinhood Chain | BrainChain's operator key. Send USDG from the treasury Safe to `0xFe4d9d7c5c530c9652A46D0BF6178b041Bc2F858` through `ReviewTopUpModule.send`, at most 3 USDG per UTC day, as described below |
+| Fee share operator | `0x70C665780E43BA1496a4E691e408F24844dB58eC` | Robinhood Chain | BrainChain's operator key. Since 18 November 2026, have the treasury Safe pass its share of $BRAIN's trading fee to the pair-and-lock contract and pair it there, through `FeeShareModule.passAndPair`, as described below |
 | Float desk | `0xafB0C4Ef895D4895040cdC6435B96D3EE8350c6E` | Robinhood Chain | Nothing on the Float. It is the only address the Float's operator can release USDG to; the treasury Safe changes it with `Float.setDesk` |
 | ProofsIncome deployer | `0xf07eb9C975dC7947F66D0483084ff13efCf5427f` | Robinhood Chain | Nothing now. It could bind the Proofs collection once, and bound `0xE6E6B7DBF1a66dFB25c6F6A87a916B3186113169` |
 
@@ -44,6 +45,32 @@ Every send emits `Sent` with the recipient, the amount, the day's total and the 
 | Remove the power | `disableModule(prevModule, module)` on the Safe | At once |
 
 A disabled module can send nothing, whatever its settings.
+
+## Passing the liquidity share to the lock
+
+70% of the 1% trading fee on $BRAIN's market goes into locked liquidity. The market locks part of that itself. The rest is paid out to BrainChain's income contract and forwarded to the treasury Safe on Robinhood Chain, and until 18 November 2026 both Safe owners signed each time it was passed on to $BRAIN's pair-and-lock contract, `0x870b0bfb24af2c06180fbee266117305e0b0e00f`.
+
+[`FeeShareModule`](../src/safe/FeeShareModule.sol) is a Safe module for that one payment. It is deployed at `0xFD268Ae2c1Ec0Db03C3C6b17E1AEDE973729FE29`, and the Safe enabled it on 18 November 2026. Its count of what has been passed on was set to 0.0726 ETH at deployment, the amount the Safe had passed by hand until then.
+
+The operator can call `passAndPair(minPrice, maxPrice)`. The Safe sends the share that is due, in ETH, to the lock and calls the lock's `pair` with the operator's price bounds, in one transaction. The lock pairs the ETH with $BRAIN it already holds, in a position owned by the burn address. If the lock refuses to pair, the whole call reverts and the share stays in the Safe.
+
+What is due is counted on chain: a fixed fraction of everything the market's fee hook has paid out to the income contract (`claimed`), less what has been passed on already. For $BRAIN the fraction is one sixth.
+
+The operator cannot:
+
+- pass on more than the share, or pass the same share twice;
+- send it to any address other than the lock;
+- send another token;
+- change the fraction, the lock or the ledger, which are fixed when the module is deployed;
+- make the Safe call anything else, or delegatecall.
+
+The operator chooses the price bounds. The lock's own limits hold whatever the bounds are: it pairs only within a factor of two of its reference price, which only the Safe moves, and only while its pool is within about 8% of the market.
+
+Every call emits `Passed` with the amount, the total passed so far and the position.
+
+| To | Safe transaction | Takes effect |
+| --- | --- | --- |
+| Remove the power | `disableModule(prevModule, module)` on the Safe | At once |
 
 ## Executing ready timelock operations
 
