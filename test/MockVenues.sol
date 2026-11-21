@@ -31,6 +31,7 @@ contract MockWETH is ERC20 {
 contract MockFeed {
     int256 public answer;
     uint256 public updatedAt;
+    uint8 public decimals = 8;
 
     constructor(int256 answer_) {
         set(answer_, block.timestamp);
@@ -39,6 +40,10 @@ contract MockFeed {
     function set(int256 answer_, uint256 updatedAt_) public {
         answer = answer_;
         updatedAt = updatedAt_;
+    }
+
+    function setDecimals(uint8 decimals_) external {
+        decimals = decimals_;
     }
 
     function latestRoundData() external view returns (uint80, int256, uint256, uint256, uint80) {
