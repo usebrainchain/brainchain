@@ -15,7 +15,7 @@ interface ISafeInfo {
 /// the module. The module can do nothing until the Safe sets its recipient and caps and enables it, which takes the
 /// Safe's owners: `setRecipient`, `setCaps` and the Safe's own `enableModule`, in one batch.
 ///
-/// Env: SAFE (a Safe 1.4.1 that needs two or more owners), TOKEN (the ERC-20 to send, or
+/// Env: SAFE (a Safe 1.4.1 whose threshold is two or more), TOKEN (the ERC-20 to send, or
 /// 0x0000000000000000000000000000000000000000 for native ETH; there is no default), OPERATOR (the key that sends).
 /// Without --broadcast it simulates the deployment and prints the address:
 ///   SAFE=<safe> TOKEN=<token or zero> OPERATOR=<operator> forge script \
@@ -32,7 +32,7 @@ contract DeployCappedTransferModuleV2 is Script {
         address operator = vm.envAddress("OPERATOR");
         require(safe.code.length > 0, "SAFE has no code");
         require(keccak256(bytes(ISafeInfo(safe).VERSION())) == keccak256("1.4.1"), "SAFE is not a Safe 1.4.1");
-        require(ISafeInfo(safe).getThreshold() >= 2, "SAFE needs a single owner");
+        require(ISafeInfo(safe).getThreshold() >= 2, "SAFE must need two or more signatures");
         require(token == address(0) || token.code.length > 0, "TOKEN has no code");
         require(operator != address(0) && operator != safe, "OPERATOR is zero or the Safe");
 
