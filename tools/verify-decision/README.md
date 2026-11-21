@@ -295,6 +295,59 @@ That Jev produced the answer. BrainChain records Jev's answers, and the contract
 
 With `--entry` or `--agent`, the object holds `registry`, `verdict`, `summary` and `entries` instead of `set` and `decisions`, and `agentId` with `--agent`. `verdict` is `match`, `no-receipt`, `withheld`, `mismatch` or `unverified`. It is `no-receipt` only when every check passed and no entry had a receipt. `summary` counts `entries`, `withReceipt`, `verified`, `withheld`, `failed` and `unverified`. `verified` counts only entries whose verdict is `match`. Each entry carries its name as `entry`, the fields of its `NewFeedback` event, the `task`, `board` and `set` its endpoint names, the `decision` its receipt names with its `id`, `set` and `kind`, its own `verdict` and its `checks`.
 
+## 0x quotes
+
+`brainchain-verify/zerox` checks an answer from 0x's Swap API before anything in it is signed. It is a library, with no command of its own; `brainchain-worker buy-stake` uses it. It needs `node:crypto` and viem, and reads one contract.
+
+```js
+import { ACCEPT_SIGNATURE, readSettlers, verifyQuote } from "brainchain-verify/zerox";
+
+const response = await pay(url, { headers: { "Accept-Signature": ACCEPT_SIGNATURE } });
+const received = { status: response.status, headers: response.headers, body: new Uint8Array(await response.arrayBuffer()) };
+const report = await verifyQuote(received, url, {
+  chainId: 4663,
+  taker: wallet,
+  sellToken: "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+  buyToken: brain,
+  buyAmount: 312_500n * 10n ** 18n,
+}, { settlers: () => readSettlers(robinhoodChainClient) });
+if (!report.ok) throw new Error(report.checks.find((c) => c.status === "fail").message);
+```
+
+`url` is the URL the request went to: `https://api.0x.org/swap/allowance-holder/quote?...`, or the same request through 0x's keyless gateway, `https://agent.api.0x.org/v1/x402/swap-allowance-holder-quote/?...`. The gateway forwards it to the Swap API, and 0x signs the request it received there, so the check rebuilds that one: host `api.0x.org`, path `/swap/allowance-holder/quote`, and the query exactly as sent.
+
+The signature checks run in order and stop at the first that fails. The quote's checks run only once the signature holds.
+
+| Check | What passes |
+| --- | --- |
+| `zerox-signed` | The response carries `Signature-Input` and `Signature` (RFC 9421), Ed25519, tagged `0x-swap-api`. |
+| `zerox-key` | The signature names a key the caller trusts. |
+| `zerox-fresh` | 0x signed it at most 60 seconds from the caller's clock, either way. |
+| `zerox-covers` | It covers the status, `content-digest`, and the request's method, authority, path and query. |
+| `zerox-digest` | The body's SHA-256 is the one in `Content-Digest`. |
+| `zerox-signature` | The signature verifies over the rebuilt signature base. |
+| `quote-request` | The query 0x answered asks for this trade: chain, tokens, taker and amount. |
+| `quote-response` | HTTP 200, a route, a transaction, and the mode, tokens and amounts asked for. A refusal names 0x's error. |
+| `quote-target` | The transaction calls AllowanceHolder (`0x0000000000001fF3684f28c67538d4D072C22734` on Ethereum, Base and Robinhood Chain). |
+| `quote-spender` | When the sold token needs an approval, the spender 0x names is AllowanceHolder. Never approve the Settler. |
+| `quote-exec` | AllowanceHolder's `exec` lets the Settler take the token sold, and no more than the amount sold, or on an exact-out quote its `maxSellAmount` and at most the caller's ceiling. |
+| `quote-settler` | The Settler is the one 0x's registry (`0x00000000000004533Fe15556B1E086BB1A72cEae`) returns for taker-sent swaps, `ownerOf(2)`, or the one before it, `prev(2)`, which 0x's API can still use for a while after a new Settler is deployed. A registry that reverts means 0x paused Settler on that chain. |
+| `quote-value` | The transaction sends the amount sold when it sells the native token, and nothing otherwise. |
+| `quote-recipient` | Settler's slippage check pays what is bought to the taker, or to the recipient the caller named. |
+| `quote-buy-token` | That check counts the token the caller buys. |
+| `quote-min-out` | It reverts unless the recipient gets at least the caller's floor: `buyAmount` on an exact-out quote. |
+
+`checkQuote` runs the quote's checks alone on a body already trusted, and `verifyResponse` the signature's alone, for any Swap API answer.
+
+### When 0x changes its key
+
+0x rotates its signing key. It publishes the current keys on [one docs page](https://docs.0x.org/docs/developer-resources/response-signatures.md), lists a new key there beside the old one before it signs with it, and takes a key off the page once it retires it. There is no other key endpoint. So:
+
+- `ACCEPT_SIGNATURE` names no key, and 0x signs with whichever key is active.
+- The key is picked by the signature's `keyid`, never by position.
+- `ZEROX_KEYS` holds the keys the page listed when this package was built. A signature by any other key fails `zerox-key`, and the line names the page.
+- `fetchZeroxKeys()` reads the keys from the page. A caller that gets a `zerox-key` failure can read them and check the same response again within its 60 seconds, as `buy-stake` does, so a rotation needs no new release. A newer release of this package carries the new key.
+
 ## Building
 
 ```sh
