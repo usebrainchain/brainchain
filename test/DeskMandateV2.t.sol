@@ -314,24 +314,44 @@ contract DeskMandateV2Test is DeskV2Setup {
         );
     }
 
-    function test_recallSendsTheDeskToTheOwnerAndLeavesTheOthers() public {
+    function test_eachAssetOfADeskComesHomeOnItsOwnAndTheOtherDesksStay() public {
         _fund(0, 1_000e6);
         _fund(1, 1_000e6);
         _trade(0, address(nvda), true, 200e6, 2e18);
         vm.warp(block.timestamp + 1 hours);
         _trade(0, address(spy), true, 400e6, 0.8e18);
 
-        vm.prank(stranger);
+        vm.startPrank(stranger);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
-        mandate.recall(0);
+        mandate.recallUsdg(0);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
+        mandate.recallToken(0, address(nvda));
+        vm.stopPrank();
 
+        vm.startPrank(owner);
+        vm.expectEmit(true, true, true, true, address(mandate));
+        emit DeskMandateV2.Recalled(0, address(usdg), owner, 400e6);
+        assertEq(mandate.recallUsdg(0), 400e6);
+        vm.expectEmit(true, true, true, true, address(mandate));
+        emit DeskMandateV2.Recalled(0, address(nvda), owner, 2e18);
+        assertEq(mandate.recallToken(0, address(nvda)), 2e18);
         // A delisted token still comes home.
-        vm.prank(owner);
         mandate.setVenue(address(spy), _feed(spyFeed), true, false);
-        vm.expectEmit(true, true, false, true, address(mandate));
-        emit DeskMandateV2.Recalled(0, owner, 400e6);
-        vm.prank(owner);
-        mandate.recall(0);
+        assertEq(mandate.recallToken(0, address(spy)), 0.8e18);
+
+        // Nothing left to move is a mistake, not a silent success.
+        vm.expectRevert(DeskMandateV2.ZeroAmount.selector);
+        mandate.recallUsdg(0);
+        vm.expectRevert(DeskMandateV2.ZeroAmount.selector);
+        mandate.recallToken(0, address(nvda));
+        vm.expectRevert(DeskMandateV2.ZeroAmount.selector);
+        mandate.recallToken(0, address(usdg));
+        vm.expectRevert(DeskMandateV2.NoDesk.selector);
+        mandate.recallUsdg(5);
+        vm.expectRevert(DeskMandateV2.NoDesk.selector);
+        mandate.recallToken(5, address(nvda));
+        vm.stopPrank();
+
         assertEq(usdg.balanceOf(owner), 400e6);
         assertEq(nvda.balanceOf(owner), 2e18);
         assertEq(spy.balanceOf(owner), 0.8e18);
@@ -341,10 +361,30 @@ contract DeskMandateV2Test is DeskV2Setup {
         assertEq(mandate.equity(0), 0);
         assertEq(_usdgOf(1), 1_000e6);
         assertEq(usdg.balanceOf(address(mandate)), 1_000e6);
+    }
 
+    /// A token that will not move (paused by its issuer, or the mandate blocked) holds back only itself.
+    function test_aTokenThatWillNotMoveHoldsBackNothingElse() public {
+        _fund(0, 1_000e6);
+        _trade(0, address(nvda), true, 200e6, 2e18);
+        vm.warp(block.timestamp + 1 hours);
+        _trade(0, address(spy), true, 400e6, 0.8e18);
+        vm.mockCallRevert(address(nvda), abi.encodeWithSelector(IERC20.transfer.selector), "paused");
+
+        vm.startPrank(owner);
+        vm.expectRevert("paused");
+        mandate.recallToken(0, address(nvda));
+        mandate.recallUsdg(0);
+        mandate.recallToken(0, address(spy));
+        vm.stopPrank();
+        assertEq(usdg.balanceOf(owner), 400e6);
+        assertEq(spy.balanceOf(owner), 0.8e18);
+        assertEq(mandate.holdings(0, address(nvda)), 2e18, "the paused position stays booked");
+
+        vm.clearMockedCalls();
         vm.prank(owner);
-        vm.expectRevert(DeskMandateV2.NoDesk.selector);
-        mandate.recall(5);
+        mandate.recallToken(0, address(nvda));
+        assertEq(nvda.balanceOf(owner), 2e18);
     }
 
     function test_aPositionCanBeMovedIntoADeskAndIsCreditedWhatArrives() public {
@@ -514,7 +554,7 @@ contract DeskMandateV2Test is DeskV2Setup {
         mandate.renounceOwnership();
         assertEq(mandate.owner(), owner);
         vm.prank(owner);
-        mandate.recall(0);
+        mandate.recallUsdg(0);
         assertEq(usdg.balanceOf(owner), 1_000e6);
     }
 
@@ -828,7 +868,7 @@ contract DeskMandateV2ZeroExTest is DeskV2Setup {
             address(settler),
             address(usdg),
             100e6,
-            abi.encodeCall(MockSettler.reenter, (abi.encodeCall(DeskMandateV2.recall, (1))))
+            abi.encodeCall(MockSettler.reenter, (abi.encodeCall(DeskMandateV2.recallUsdg, (1))))
         );
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(settler)));
         _attempt(0, address(nvda), true, 100e6, reenterRecall);
@@ -1006,5 +1046,95 @@ contract DeskMandateV2BudgetTest is DeskV2Setup {
 
         vm.expectRevert(DeskMandateV2.NoDesk.selector);
         mandate.budgetOf(5);
+    }
+}
+
+/// The owner's ways to put the books right: write off what an issuer took, sweep what arrived outside them.
+contract DeskMandateV2BooksTest is DeskV2Setup {
+    function test_aDirectTransferComesOutBySweepAndDeskMoneyDoesNot() public {
+        _fund(0, 1_000e6);
+        _trade(0, address(nvda), true, 200e6, 2e18);
+        usdg.mint(owner, 50e6);
+        vm.prank(owner);
+        usdg.transfer(address(mandate), 50e6); // a Safe batch that transfers instead of approve + fund
+        nvda.mint(address(mandate), 0.5e18);
+        MockERC20 airdrop = new MockERC20();
+        airdrop.mint(address(mandate), 7e6);
+        assertEq(mandate.booked(address(usdg)), 800e6);
+        assertEq(mandate.booked(address(nvda)), 2e18);
+
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
+        mandate.sweep(address(usdg), stranger);
+        vm.startPrank(owner);
+        vm.expectRevert(DeskMandateV2.ZeroAddress.selector);
+        mandate.sweep(address(usdg), address(0));
+        vm.expectEmit(true, true, false, true, address(mandate));
+        emit DeskMandateV2.Swept(address(usdg), owner, 50e6);
+        assertEq(mandate.sweep(address(usdg), owner), 50e6);
+        assertEq(mandate.sweep(address(nvda), owner), 0.5e18);
+        assertEq(mandate.sweep(address(airdrop), stranger), 7e6);
+        vm.expectRevert(DeskMandateV2.ZeroAmount.selector);
+        mandate.sweep(address(usdg), owner);
+        vm.expectRevert(DeskMandateV2.ZeroAmount.selector);
+        mandate.sweep(address(nvda), owner);
+        vm.stopPrank();
+
+        assertEq(usdg.balanceOf(address(mandate)), 800e6, "the desk's USDG stays");
+        assertEq(nvda.balanceOf(address(mandate)), 2e18, "and so does its position");
+        assertEq(airdrop.balanceOf(stranger), 7e6);
+        vm.startPrank(owner);
+        mandate.recallUsdg(0);
+        mandate.recallToken(0, address(nvda));
+        vm.stopPrank();
+        assertEq(usdg.balanceOf(owner), 850e6);
+        assertEq(nvda.balanceOf(owner), 2.5e18);
+    }
+
+    /// An issuer burns three of the four NVDA two desks hold. The owner decides whose books carry it, and can
+    /// clear no more than went missing.
+    function test_aBurnedPositionIsWrittenOffUpToWhatIsMissing() public {
+        _fund(0, 1_000e6);
+        _fund(1, 1_000e6);
+        _trade(0, address(nvda), true, 200e6, 2e18);
+        _trade(1, address(nvda), true, 200e6, 2e18);
+        deal(address(nvda), address(mandate), 1e18);
+
+        vm.startPrank(owner);
+        vm.expectRevert();
+        mandate.recallToken(0, address(nvda));
+        mandate.recallUsdg(0);
+        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OverCap.selector, 2e18 + 1, 2e18));
+        mandate.writeOff(0, address(nvda), 2e18 + 1);
+        vm.expectEmit(true, true, false, true, address(mandate));
+        emit DeskMandateV2.WrittenOff(0, address(nvda), 2e18);
+        mandate.writeOff(0, address(nvda), 2e18);
+        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OverCap.selector, 1e18 + 1, 1e18));
+        mandate.writeOff(1, address(nvda), 1e18 + 1);
+        mandate.writeOff(1, address(nvda), 1e18);
+        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OverCap.selector, 1, 0));
+        mandate.writeOff(1, address(nvda), 1);
+        assertEq(mandate.recallToken(1, address(nvda)), 1e18);
+
+        // USDG taken from the contract comes off the books the same way.
+        deal(address(usdg), address(mandate), 790e6);
+        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OverCap.selector, 10e6 + 1, 10e6));
+        mandate.writeOff(1, address(usdg), 10e6 + 1);
+        mandate.writeOff(1, address(usdg), 10e6);
+        assertEq(mandate.booked(address(usdg)), 790e6);
+        assertEq(mandate.recallUsdg(1), 790e6);
+
+        vm.expectRevert(DeskMandateV2.ZeroAmount.selector);
+        mandate.writeOff(1, address(nvda), 0);
+        vm.expectRevert(DeskMandateV2.NoDesk.selector);
+        mandate.writeOff(5, address(nvda), 1);
+        vm.stopPrank();
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
+        mandate.writeOff(1, address(nvda), 1);
+
+        assertEq(mandate.equity(0), 0);
+        assertEq(mandate.equity(1), 0);
+        assertEq(nvda.balanceOf(owner), 1e18);
     }
 }

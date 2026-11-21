@@ -45,8 +45,10 @@ interface ISettlerRegistry {
 /// `maxBuyBps` of the desk's USDG. Each order carries the hash of the model's reasoning and the
 /// SHA-256 of 0x's signed quote body.
 ///
-/// The owner (the treasury Safe) funds, pauses, tunes the bounds, keeps the allowlist and can recall
-/// any desk to itself. Ownership cannot be renounced.
+/// The owner (the treasury Safe) funds, pauses, tunes the bounds and keeps the allowlist. It brings
+/// a desk's USDG and each of its positions home one at a time, so a token that refuses to move holds
+/// back nothing else; clears from the books a position the issuer burned; and sweeps what arrived
+/// outside the books. Ownership cannot be renounced.
 contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -117,7 +119,9 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
         address settler
     );
     event Funded(uint8 indexed desk, address indexed token, uint256 amount);
-    event Recalled(uint8 indexed desk, address indexed to, uint256 usdg);
+    event Recalled(uint8 indexed desk, address indexed token, address indexed to, uint256 amount);
+    event WrittenOff(uint8 indexed desk, address indexed token, uint256 amount);
+    event Swept(address indexed token, address indexed to, uint256 amount);
     event VenueSet(address indexed token, address feed, bool scaled, bool live);
     event OperatorSet(address indexed operator);
     event PausedSet(bool paused);
@@ -229,20 +233,53 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
         emit Funded(desk, token, received);
     }
 
-    /// @notice Everything a desk holds goes to the owner; the desk stops with an empty book.
-    function recall(uint8 desk) external onlyOwner nonReentrant {
+    /// @notice Sends all of a desk's USDG to the owner.
+    function recallUsdg(uint8 desk) external onlyOwner nonReentrant returns (uint256 amount) {
         if (desk >= DESKS) revert NoDesk();
-        Desk storage d = desks[desk];
-        uint256 usdg = d.usdg;
-        d.usdg = 0;
-        if (usdg != 0) USDG.safeTransfer(owner(), usdg);
-        for (uint256 i = 0; i < tokens.length; i++) {
-            uint256 held = holdings[desk][tokens[i]];
-            if (held == 0) continue;
-            holdings[desk][tokens[i]] = 0;
-            IERC20(tokens[i]).safeTransfer(owner(), held);
-        }
-        emit Recalled(desk, owner(), usdg);
+        amount = desks[desk].usdg;
+        if (amount == 0) revert ZeroAmount();
+        desks[desk].usdg = 0;
+        USDG.safeTransfer(owner(), amount);
+        emit Recalled(desk, address(USDG), owner(), amount);
+    }
+
+    /// @notice Sends all of a desk's position in `token` to the owner, listed or not.
+    function recallToken(uint8 desk, address token) external onlyOwner nonReentrant returns (uint256 amount) {
+        if (desk >= DESKS) revert NoDesk();
+        amount = holdings[desk][token];
+        if (amount == 0) revert ZeroAmount();
+        holdings[desk][token] = 0;
+        IERC20(token).safeTransfer(owner(), amount);
+        emit Recalled(desk, token, owner(), amount);
+    }
+
+    /// @notice Clears `amount` of `token` (USDG included) from a desk's books when the contract holds less
+    /// than the desks are booked, as after an issuer burns or seizes it. At most what is missing goes.
+    function writeOff(uint8 desk, address token, uint256 amount) external onlyOwner nonReentrant {
+        if (desk >= DESKS) revert NoDesk();
+        if (amount == 0) revert ZeroAmount();
+        uint256 total = _booked(token);
+        uint256 balance = IERC20(token).balanceOf(address(this));
+        uint256 missing = total > balance ? total - balance : 0;
+        bool usdg = token == address(USDG);
+        uint256 held = usdg ? desks[desk].usdg : holdings[desk][token];
+        uint256 cap = Math.min(missing, held);
+        if (amount > cap) revert OverCap(amount, cap);
+        if (usdg) desks[desk].usdg = held - amount;
+        else holdings[desk][token] = held - amount;
+        emit WrittenOff(desk, token, amount);
+    }
+
+    /// @notice Sends `to` whatever the contract holds of `token` beyond what the desks are booked: a stray
+    /// transfer or an airdrop. Desk money never moves this way.
+    function sweep(address token, address to) external onlyOwner nonReentrant returns (uint256 amount) {
+        if (to == address(0)) revert ZeroAddress();
+        uint256 balance = IERC20(token).balanceOf(address(this));
+        uint256 total = _booked(token);
+        if (balance <= total) revert ZeroAmount();
+        amount = balance - total;
+        IERC20(token).safeTransfer(to, amount);
+        emit Swept(token, to, amount);
     }
 
     // Settings, the owner's
@@ -322,6 +359,11 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
         bool open = d.day == block.timestamp / 1 days;
         budget = (open ? d.dayEquity : _openingEquity(desk)) * budgetBps / BPS;
         used = open ? d.dayShortfall : 0;
+    }
+
+    /// @notice What the desks' books say the contract holds of `token`, USDG included.
+    function booked(address token) external view returns (uint256) {
+        return _booked(token);
     }
 
     function tokenCount() external view returns (uint256) {
@@ -430,6 +472,13 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
             if (priced) total += held * abi.decode(mark, (uint256)) / 1e18;
         }
         if (total > type(uint64).max) total = type(uint64).max;
+    }
+
+    function _booked(address token) private view returns (uint256 total) {
+        bool usdg = token == address(USDG);
+        for (uint8 i = 0; i < DESKS; i++) {
+            total += usdg ? desks[i].usdg : holdings[i][token];
+        }
     }
 
     // Rounded up, so no order is let through for less than the feed allows, dust included.
