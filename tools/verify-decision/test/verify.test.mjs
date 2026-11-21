@@ -1113,11 +1113,13 @@ describe("evidence and receipts", () => {
     const lastAttested = `versions: the log last attested ${abbr(BRAIN.address)} before this decision for image 0x1a1a…1a1a and app 0x2b2b…2b2b, and the record names`;
     const unseenApp = await verify({ ...recorded(sealed(accepted(), [PAYMENT], { ...VERSIONS, app: UNSEEN })), offline: true });
     assert.deepEqual(failed(unseenApp), ["versions"]);
-    assert.equal(check(unseenApp, "versions").message, `${lastAttested} image 0x1a1a…1a1a and app 0x9797…97ff, which the log never attested for this key`);
+    // An app the log never attested is how a build it never measured shows, and the line points to the decisions known to fail this way.
+    const HISTORY = ". Some decisions fail this check by design: see https://github.com/usebrainchain/brainchain/tree/main/tools/verify-decision#known-history";
+    assert.equal(check(unseenApp, "versions").message, `${lastAttested} image 0x1a1a…1a1a and app 0x9797…97ff, which the log never attested for this key${HISTORY}`);
     const unseenImage = await verify({ ...recorded(sealed(accepted(), [PAYMENT], { ...VERSIONS, image: UNSEEN })), offline: true });
     assert.equal(check(unseenImage, "versions").message, `${lastAttested} image 0x9797…97ff, which the log never attested for this key, and app 0x2b2b…2b2b`);
     const unseenBoth = await verify({ ...recorded(sealed(accepted(), [PAYMENT], { ...VERSIONS, image: UNSEEN, app: UNSEEN })), offline: true });
-    assert.equal(check(unseenBoth, "versions").message, `${lastAttested} image 0x9797…97ff and app 0x9797…97ff, neither of which the log ever attested for this key`);
+    assert.equal(check(unseenBoth, "versions").message, `${lastAttested} image 0x9797…97ff and app 0x9797…97ff, neither of which the log ever attested for this key${HISTORY}`);
     // One the log attested only after the decision was attested all the same.
     const afterwards = await verify({ ...recorded(sealed(accepted(), [PAYMENT], { ...VERSIONS, app: UNSEEN })), offline: true, attested: [{ image: IMAGE, app: APP, blockNumber: 800n }, { image: IMAGE, app: UNSEEN, blockNumber: 950n }] });
     assert.equal(check(afterwards, "versions").message, `${lastAttested} image 0x1a1a…1a1a and app 0x9797…97ff`);
@@ -1290,12 +1292,18 @@ describe("evidence and receipts", () => {
       assert.equal(outcomeOf([unsigned]), "mismatch");
       // A host that signs with another carried set's brain is refused all the same, since a retired key may have been exposed, and the line says whose key it is.
       const retired = { key: "r", release: "3.3.0", fromBlock: 1, board: "0x8888888888888888888888888888888888888888", log: "0x9999999999999999999999999999999999999999", executor: "0x7777777777777777777777777777777777777777" };
-      const switching = await paid(record, { receipt, sets: [set, retired], brainOn: { [retired.log]: OTHER.address } });
+      const midSwitch = { sets: [set, retired], brainOn: { [retired.log]: OTHER.address } };
+      const SWITCHING = "payment: the receipt's payment is the record's, but the host signs its network file as set r's brain, while the active set t names a different brain. This usually means BrainChain is switching sets: run it again later";
+      const switching = await paid(record, { receipt, ...midSwitch });
       assert.deepEqual(failed(switching), ["receipt-payment"]);
-      assert.equal(
-        check(switching, "receipt-payment").message,
-        `payment: the receipt's payment is the record's, but ${base}/network.json is signed by ${abbr(OTHER.address)}, the brain of set r, not by ${abbr(BRAIN.address)}, the brain the active set t names on DecisionLog 0x2222…2222. The host may be mid-switch, or this verifier's set list is ahead of it`,
-      );
+      assert.equal(check(switching, "receipt-payment").message, SWITCHING);
+      // A receipt the host served can be left out offline, which a receipt the caller gave cannot.
+      serveReceipt(receipt.value);
+      const served = await paid(record, midSwitch);
+      assert.deepEqual(failed(served), ["receipt-payment"]);
+      assert.equal(check(served, "receipt-payment").message, `${SWITCHING}. --offline checks the decision without its receipt`);
+      assert.deepEqual(failed(await paid(record, { ...midSwitch, offline: true })), []);
+      pages.delete(new URL(RECEIPT_URL()).pathname);
 
       await manifest(BRAIN, undefined, { chainId: 274630 });
       const elsewhere = await paid(record, { receipt });
@@ -1479,7 +1487,7 @@ describe("evidence and receipts", () => {
       const { receipt, ctx } = await paidTask();
       const zero = await checked(ctx, entry({ receipt, value: 0n }));
       assert.deepEqual(failed(zero), ["entry-value"]);
-      assert.equal(check(zero, "entry-value").message, "value: 0, but the board paid task 7, which BrainChain writes as 100 and the receipt says accepted");
+      assert.equal(check(zero, "entry-value").message, "value: 0, but the board paid task 7, which BrainChain writes as 100, and the receipt says accepted");
 
       const refunded = onChain({ task: { status: Status.Refunded }, hired: CLAUDE, sets: [set] });
       const hundred = await checked(refunded, entry({ value: 100n }));
@@ -1559,7 +1567,7 @@ describe("evidence and receipts", () => {
       pages.set(new URL(f.feedbackURI).pathname, { body: canonicalStringify(later) });
       const elsewhere = await checked(ctx, f);
       assert.deepEqual(failed(elsewhere), ["entry-receipt"]);
-      assert.match(check(elsewhere, "entry-receipt").message, /^receipt: names decision 2, and DecisionLog 0x2222…2222 holds decisions 1 to 1 and decision 2 on DecisionLog 0x2222…2222, whose receipt the brain serves at \/receipts\/0x2222222222222222222222222222222222222222\/2\.json, not at /);
+      assert.match(check(elsewhere, "entry-receipt").message, /^receipt: names decision 2, and DecisionLog 0x2222…2222 holds decisions 1 to 1, and decision 2 on DecisionLog 0x2222…2222, whose receipt the brain serves at \/receipts\/0x2222222222222222222222222222222222222222\/2\.json, not at /);
     });
 
     it("counts an entry whose record is served without the work as withheld, never as verified", async () => {
@@ -1652,7 +1660,7 @@ describe("evidence and receipts", () => {
         const disagreeing = await recordEntry(undefined, settled(receipt, { paid: { payer: PAYER, amount: "5", asset: USDC, network: PAYMENT.network }, decision: { log: set.log, id: "2" } }));
         const unsettled = await checked(ctx, pointing(disagreeing));
         assert.deepEqual(failed(unsettled), ["record-settled"]);
-        assert.equal(check(unsettled, "record-settled").message, "settled: the entry's payment is not the receipt's payer, amount, asset and network and the entry names decision 2 on DecisionLog 0x2222…2222, and the receipt decision 1 on 0x2222…2222");
+        assert.equal(check(unsettled, "record-settled").message, "settled: the entry's payment is not the receipt's payer, amount, asset and network, and the entry names decision 2 on DecisionLog 0x2222…2222, and the receipt decision 1 on 0x2222…2222");
         const elsewhere = await recordEntry(undefined, settled(receipt, { receipt: { path: "//evil.example/receipts/1.json", hash: NO } }));
         assert.deepEqual(failed(await checked(ctx, pointing(elsewhere))), ["record-receipt"]);
       });
@@ -2000,10 +2008,15 @@ describe("records", () => {
     for (const [path, error] of Object.entries(answered)) pages.set(path, { status: 404, body: JSON.stringify({ error }) });
     try {
       const ctx = onChain({ sets: [set] });
-      assert.match(check(await verifyRecord(ctx, brainHost(), 99999999n), "record-fetch").message, /^could not read the record: http:\S+ answered with status 404: Not found$/);
+      // The host answers every address it serves nothing at with the same 404, which is all it gives before agent records are switched on.
+      const UNSWITCHED = "The host serves records, licences and papers once BrainChain switches agent records on, and returns 404 until then";
+      assert.match(check(await verifyRecord(ctx, brainHost(), 99999999n), "record-fetch").message, new RegExp(`^could not read the record: http:\\S+ answered with status 404: Not found\\. ${UNSWITCHED}$`));
       const said = `answered with status 404: ${UNCONTROLLED.replace(/\.$/, "")}`;
       assert.ok(check(await verifyLicences(ctx, brainHost(), 99999999n), "licences-fetch").message.endsWith(said));
       assert.ok(check(await verifyPapers(ctx, brainHost(), 99999999n), "papers-fetch").message.endsWith(said));
+      for (const path of ["/licences/4663/99999999", "/papers/4663/99999999"]) pages.set(path, { status: 404, body: JSON.stringify({ error: "Not found." }) });
+      assert.ok(check(await verifyLicences(ctx, brainHost(), 99999999n), "licences-fetch").message.endsWith(`answered with status 404: Not found. ${UNSWITCHED}`));
+      assert.ok(check(await verifyPapers(ctx, brainHost(), 99999999n), "papers-fetch").message.endsWith(`answered with status 404: Not found. ${UNSWITCHED}`));
     } finally {
       unserve("/agents/", "/licences/", "/papers/");
     }
@@ -2345,7 +2358,7 @@ describe("an agent's record", () => {
   it("is an error when the host serves no record, and a mismatch when what it serves is not one", async () => {
     const none = await verifyRecord(onChain({ sets: [set] }), brainHost(), 501n);
     assert.deepEqual(lines(none), ["record-fetch error"]);
-    assert.match(check(none, "record-fetch").message, /^could not read the record: http:\S+\/agents\/4663\/501\/record\?from=1&limit=200 answered with status 404: the host has no agent record at this address$/);
+    assert.match(check(none, "record-fetch").message, /^could not read the record: http:\S+\/agents\/4663\/501\/record\?from=1&limit=200 answered with status 404: the host has no agent record at this address\. The host serves records, licences and papers once BrainChain switches agent records on, and returns 404 until then$/);
     assert.equal(outcomeOf([none]), "unverified");
     assert.equal(none.entries, 0);
 
@@ -2848,7 +2861,7 @@ describe("an agent's papers", () => {
     const theirs = await shown(await papers({ agent: { ...AGENT, id: "502" }, epoch: { id: `0x${"ee".repeat(32)}`, controller: HOLDER, build: "worker-1", number: 1 } }));
     assert.deepEqual(failed(theirs), ["papers-agent"]);
     assert.equal(check(theirs, "papers-epoch").message, "epoch: the papers are not the asked agent's, so the registry was not read");
-    assert.equal(check(theirs, "papers-agent").message, "agent: the papers name agent 502, not agent 501 and an epoch that is not the hash of its agent, controller and build");
+    assert.equal(check(theirs, "papers-agent").message, "agent: the papers name agent 502, not agent 501, and an epoch that is not the hash of its agent, controller and build");
 
     const old = await shown(await papers({ at: NOW - 20 * 60 }));
     assert.deepEqual(failed(old), ["papers-fresh"]);
@@ -3025,21 +3038,21 @@ describe("the command line", () => {
     }
   });
 
-  it("opens a set by a key the site published it under before, as the site's ?set= does", async () => {
+  it("opens a set by a key the site published it under before, as the site's ?set= does, in any case", async () => {
     const rpc = await stubRpc(MAINNET);
     try {
-      const { code, stderr } = await runAsync("mainnet", "1", "--set", "v4", "--rpc", urlOf(rpc));
-      assert.equal(code, 1);
-      assert.match(stderr, /^DecisionLog 0xFdFEDb376c9632A4D6F15a1697E2b6853f12B4d7 \(set v3-4\) holds decisions 1 to 0/);
+      for (const name of ["v4", "V4", "V3-4", "0x8385bb4b8990411ccdd8e851b2676da1a4c1f3c4"]) {
+        const { code, stderr } = await runAsync("mainnet", "1", "--set", name, "--rpc", urlOf(rpc));
+        assert.equal(code, 1, name);
+        assert.match(stderr, /^DecisionLog 0xFdFEDb376c9632A4D6F15a1697E2b6853f12B4d7 \(set v3-4\) holds decisions 1 to 0/, name);
+      }
     } finally {
       rpc.close();
     }
-    // The site matches names exactly, and publishes no testnet sets.
-    for (const [network, name] of [["mainnet", "V4"], ["testnet", "v4"]]) {
-      const { status, stderr } = run(network, "1", "--set", name);
-      assert.equal(status, 2);
-      assert.match(stderr, new RegExp(`^No contract set ${name} on `));
-    }
+    // The site publishes no testnet sets under other keys.
+    const { status, stderr } = run("testnet", "1", "--set", "v4");
+    assert.equal(status, 2);
+    assert.match(stderr, /^No contract set v4 on /);
   });
 
   it("does not take an inherited name for a network", () => {
@@ -3362,13 +3375,38 @@ describe("the command line", () => {
         assert.deepEqual([refused.status, refused.stderr], [2, RULE], `${option} ${id}`);
       }
     }
-    for (const entry of ["0501:1", `${beyond}:1`]) assert.match(run("mainnet", "--entry", entry).stderr, /, with each number written without leading zeros and the agent id below 2\^256\n$/, entry);
+    for (const entry of ["0501:1", `${beyond}:1`]) assert.deepEqual([run("mainnet", "--entry", entry).stderr], [RULE], entry);
+    // The registry counts each agent's entries from 1, for each writer.
+    assert.equal(run("mainnet", "--entry", "20424:0").stderr, "An entry's index counts from 1 for each agent and writer, so the first is 20424:1\n");
+    assert.equal(run("mainnet", "--entry", `20424:${STRANGER}:00`).stderr, `An entry's index counts from 1 for each agent and writer, so the first is 20424:${STRANGER}:1\n`);
+    assert.equal(run("mainnet", "--entry", "20424:07").stderr, "An entry's index is a whole number from 1, written without leading zeros\n");
     assert.equal(run("mainnet", "01").stderr, "A decision id is a whole number from 1, written without leading zeros\n");
     assert.equal(run("mainnet", "--item", "0x12").stderr, "An item id is 0x and 64 hex digits\n");
     assert.equal(run("mainnet", "--record", "1", "--registry-rpc", "https://x.invalid").stderr, "With --record, --registry-rpc is read only with --epoch\n");
-    assert.match(run("mainnet", "--item", ITEM, "--registry-rpc", "https://x.invalid").stderr, /^--registry-rpc is for --entry, --agent, --licence, --papers and --record with --epoch\n/);
     assert.match(run("--help").stdout, /brainchain-verify <mainnet\|testnet\|chainId> --record <agentId> \[--epoch\] \[--service <url>\] \[--rpc <url>\] \[--registry-rpc <url>\] \[--payment-rpc <url>\] \[--json\]\n/);
-    assert.match(run("mainnet", "--licence", "1", "--payment-rpc", "https://x.invalid").stderr, /^--payment-rpc is for decisions, --receipt, --entry, --agent and --record, which check a receipt's payment\n/);
+    // Each mode names exactly the options its usage line lists.
+    const takes = {
+      "--record 1": "--record takes only --epoch, --service, --rpc, --registry-rpc, --payment-rpc and --json",
+      "--licence 1": "--licence takes only --service, --rpc, --registry-rpc and --json",
+      "--papers 1": "--papers takes only --service, --rpc, --registry-rpc and --json",
+      [`--item ${ITEM}`]: "--item takes only --service, --rpc and --json",
+      "--entry 1:1": "--entry takes only --rpc, --registry-rpc, --payment-rpc and --json",
+      "--agent 1": "--agent takes only --rpc, --registry-rpc, --payment-rpc and --json",
+      1: "A decision id takes only --set, --rpc, --payment-rpc, --offline and --json",
+      "--task 1": "--task takes only --set, --rpc, --payment-rpc, --offline and --json",
+    };
+    const stray = { "--record 1": "--set", "--licence 1": "--payment-rpc", "--papers 1": "--epoch", [`--item ${ITEM}`]: "--registry-rpc", "--entry 1:1": "--offline", "--agent 1": "--service", 1: "--epoch", "--task 1": "--service" };
+    for (const [mode, message] of Object.entries(takes)) {
+      const option = stray[mode];
+      const refused = run("mainnet", ...mode.split(" "), option, ...(["--epoch", "--offline"].includes(option) ? [] : ["https://x.invalid"]));
+      assert.equal(refused.status, 2, mode);
+      assert.ok(refused.stderr.startsWith(`${message}, not ${option}\n\nUsage:\n`), `${mode}: ${refused.stderr.split("\n")[0]}`);
+    }
+    assert.ok(run("mainnet").stderr.startsWith("Name what to check: a decision id, --task, --receipt, --entry, --agent, --record, --licence, --papers or --item\n\nUsage:\n"));
+    assert.equal(run("nowhere").stderr, 'Unknown network "nowhere": use mainnet, testnet, 274663 or 274630\n');
+    // The README gives the usage the tool prints.
+    const documented = /## Usage\n\n```text\n([\s\S]*?)\n```/.exec(readFileSync(new URL("../README.md", import.meta.url), "utf8"))[1];
+    assert.equal(documented, run("--help").stdout.split("\n\n")[0].split("\n").slice(1).map((l) => l.slice(2)).join("\n"));
   });
 
   it("checks an agent's record, licences and papers and an exam item, from the brain host over JSON-RPC", async () => {
@@ -3443,7 +3481,7 @@ describe("the command line", () => {
       unserve("/agents/");
       const none = await runAsync("mainnet", "--record", "501", ...host);
       assert.equal(none.code, 1);
-      assert.match(none.stdout, /\n {2}ERROR could not read the record: .* answered with status 404: the host has no agent record at this address\n\nVerdict: UNVERIFIED\. /);
+      assert.match(none.stdout, /\n {2}ERROR could not read the record: .* answered with status 404: the host has no agent record at this address\. The host serves records, licences and papers once BrainChain switches agent records on, and returns 404 until then\n\nVerdict: UNVERIFIED\. /);
       // The registry's chain is checked before anything is read from it.
       const crossed = await runAsync("mainnet", "--record", "501", "--epoch", ...host, "--registry-rpc", urlOf(brainchain));
       assert.equal(crossed.code, 2);
@@ -3576,7 +3614,7 @@ describe("the command line", () => {
     });
     const [board] = NETWORKS.mainnet.sets.map((s) => s.board);
     try {
-      const outside = await runAsync("mainnet", "--task", "11", "--rpc", urlOf(rpc));
+      const outside = await runAsync("mainnet", "--task", "11", "--set", key, "--rpc", urlOf(rpc));
       assert.equal(outside.code, 1);
       assert.equal(outside.stderr, `TaskBoard ${board} (set ${key}) holds tasks 1 to 7. Each set numbers its own tasks; try --set v3-1 or v3.\n`);
 
@@ -3644,7 +3682,8 @@ describe("the command line", () => {
       const abi = NETWORKS.mainnet.sets.some((s) => s.board.toLowerCase() === to) ? taskBoardAbi : decisionLogAbi;
       const { functionName } = decodeFunctionData({ abi, data: params.data });
       if (lagging && to === newest.log.toLowerCase()) return new Error("header not found");
-      if (abi === taskBoardAbi) return encodeFunctionResult({ abi, functionName, result: functionName === "count" ? 7n : paid });
+      // The active board has no tasks yet; every retired one holds 7.
+      if (abi === taskBoardAbi) return encodeFunctionResult({ abi, functionName, result: functionName === "count" ? (to === active.board.toLowerCase() ? 0n : 7n) : paid });
       return encodeFunctionResult({ abi, functionName, result: functionName === "count" ? (counts.get(to) ?? 0n) : decision });
     });
     try {
@@ -3657,9 +3696,17 @@ describe("the command line", () => {
       // Past the newest retired set's count, the one before it is read.
       assert.equal((await runAsync("mainnet", "7", "--rpc", urlOf(rpc), "--json")).stderr, `Decision 7 is not on set ${active.key} yet; reading set ${older.key}.\n`);
 
-      // No set holds the id, and a set named outright is read as named, with a hint that lists only the sets that hold it.
+      // A task id falls back the same way, by the boards' counts.
+      const task = await runAsync("mainnet", "--task", "7", "--rpc", urlOf(rpc));
+      assert.equal(task.stderr, `Task 7 is not on set ${active.key} yet; reading set ${newest.key}.\n`);
+      assert.match(task.stdout, new RegExp(`^Task 7 on BrainChain mainnet, contract set ${newest.key} \\(TaskBoard ${newest.board}\\): decision 3\nBrief: Summarise the release notes\n\nDecision 3\n`));
+      assert.equal(JSON.parse((await runAsync("mainnet", "--task", "7", "--rpc", urlOf(rpc), "--json")).stdout).set.key, newest.key);
+
+      // No set holds the id, which names the most any set holds, and a set named outright is read as named, with a hint that lists only the sets that hold it.
       const nowhere = await runAsync("mainnet", "20", "--rpc", urlOf(rpc));
-      assert.deepEqual([nowhere.code, nowhere.stderr], [1, `DecisionLog ${active.log} (set ${active.key}) holds decisions 1 to 0.\n`]);
+      assert.deepEqual([nowhere.code, nowhere.stderr], [1, `No set holds decision 20; set ${older.key} holds 1 to 9.\n`]);
+      const noTask = await runAsync("mainnet", "--task", "8", "--rpc", urlOf(rpc));
+      assert.deepEqual([noTask.code, noTask.stderr], [1, `No set holds task 8; set ${newest.key} holds 1 to 7.\n`]);
       const named = await runAsync("mainnet", "7", "--set", newest.key, "--rpc", urlOf(rpc));
       assert.deepEqual([named.code, named.stderr], [1, `DecisionLog ${newest.log} (set ${newest.key}) holds decisions 1 to 5. Each set numbers its own decisions; try --set ${older.key}.\n`]);
       const activeNamed = await runAsync("mainnet", "3", "--set", active.key, "--rpc", urlOf(rpc));
@@ -3717,7 +3764,7 @@ describe("the command line", () => {
       const { code, stdout, stderr } = await runAsync("mainnet", "1", "--rpc", urlOf(rpc), "--json");
       assert.equal(code, 1);
       assert.equal(stderr, "");
-      assert.match(onlyError(stdout), /holds decisions 1 to 0/);
+      assert.equal(onlyError(stdout), "No set holds any decisions yet.");
     } finally {
       rpc.close();
     }

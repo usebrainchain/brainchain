@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
 
-import { createPublicClient, isAddress, type Hex, type PublicClient } from "viem";
+import { createPublicClient, type Hex, type PublicClient } from "viem";
 
 import { decisionLogAbi, taskBoardAbi } from "./abi.js";
 import { NETWORKS, type ContractSet } from "./deployments.js";
@@ -41,16 +41,34 @@ import {
   type Status,
 } from "./verify.js";
 
+type Option = "--set" | "--epoch" | "--service" | "--rpc" | "--registry-rpc" | "--payment-rpc" | "--offline";
+
+interface Mode {
+  /** The option that names the mode. A decision id names its own. */
+  flag?: string;
+  shape: string;
+  /** What the mode takes besides --json, in the order the usage lists it. */
+  options: Option[];
+}
+
+// The usage and the parser both read this table, so the options the usage lists for a mode are the ones it takes.
+const MODES: Mode[] = [
+  { shape: "<mainnet|testnet|chainId> <decisionId>", options: ["--set", "--rpc", "--payment-rpc", "--offline"] },
+  { flag: "--task", shape: "<mainnet|testnet|chainId> --task <taskId>", options: ["--set", "--rpc", "--payment-rpc", "--offline"] },
+  { flag: "--receipt", shape: "<mainnet|testnet|chainId> [<decisionId>] --receipt <file|url>", options: ["--set", "--rpc", "--payment-rpc", "--offline"] },
+  { flag: "--entry", shape: "mainnet --entry <agentId>:[<writer>:]<feedbackIndex>", options: ["--rpc", "--registry-rpc", "--payment-rpc"] },
+  { flag: "--agent", shape: "mainnet --agent <agentId>", options: ["--rpc", "--registry-rpc", "--payment-rpc"] },
+  { flag: "--record", shape: "<mainnet|testnet|chainId> --record <agentId>", options: ["--epoch", "--service", "--rpc", "--registry-rpc", "--payment-rpc"] },
+  { flag: "--licence", shape: "<mainnet|testnet|chainId> --licence <agentId>", options: ["--service", "--rpc", "--registry-rpc"] },
+  { flag: "--papers", shape: "<mainnet|testnet|chainId> --papers <agentId>", options: ["--service", "--rpc", "--registry-rpc"] },
+  { flag: "--item", shape: "<mainnet|testnet|chainId> --item <itemId>", options: ["--service", "--rpc"] },
+];
+const VALUES: Partial<Record<Option, string>> = { "--set": "<TaskBoard>", "--service": "<url>", "--rpc": "<url>", "--registry-rpc": "<url>", "--payment-rpc": "<url>" };
+const list = (items: string[], last = "and"): string => (items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} ${last} ${items.at(-1)}`);
+const usageLine = (m: Mode): string => `  brainchain-verify ${m.shape} ${m.options.map((o) => `[${VALUES[o] ? `${o} ${VALUES[o]}` : o}]`).join(" ")} [--json]`;
+
 const USAGE = `Usage:
-  brainchain-verify <mainnet|testnet|chainId> <decisionId> [--set <TaskBoard>] [--rpc <url>] [--payment-rpc <url>] [--offline] [--json]
-  brainchain-verify <mainnet|testnet|chainId> --task <taskId> [--set <TaskBoard>] [--rpc <url>] [--payment-rpc <url>] [--offline] [--json]
-  brainchain-verify <mainnet|testnet|chainId> [<decisionId>] --receipt <file|url> [--set <TaskBoard>] [--rpc <url>] [--payment-rpc <url>] [--json]
-  brainchain-verify mainnet --entry <agentId>:[<writer>:]<feedbackIndex> [--rpc <url>] [--registry-rpc <url>] [--payment-rpc <url>] [--json]
-  brainchain-verify mainnet --agent <agentId> [--rpc <url>] [--registry-rpc <url>] [--payment-rpc <url>] [--json]
-  brainchain-verify <mainnet|testnet|chainId> --record <agentId> [--epoch] [--service <url>] [--rpc <url>] [--registry-rpc <url>] [--payment-rpc <url>] [--json]
-  brainchain-verify <mainnet|testnet|chainId> --licence <agentId> [--service <url>] [--rpc <url>] [--registry-rpc <url>] [--json]
-  brainchain-verify <mainnet|testnet|chainId> --papers <agentId> [--service <url>] [--rpc <url>] [--registry-rpc <url>] [--json]
-  brainchain-verify <mainnet|testnet|chainId> --item <itemId> [--service <url>] [--rpc <url>] [--json]
+${MODES.map(usageLine).join("\n")}
 
 Checks a BrainChain decision against the chain: reads it from the DecisionLog,
 fetches the published record, recomputes its hashes and confidence, and applies
@@ -84,9 +102,9 @@ about an agent the same way: its record, licences and papers. Needs no keys.
                  one too
   --offline      fetch no receipt from the brain host
   --set <board>  a retired contract set from 3.0.0 on, by TaskBoard address, by
-                 its key on the site (v3-1) or by release (3.1.0); without it, the
-                 active set, or for a decision id the active set does not hold
-                 yet, the newest set that holds it
+                 its key on the site (v3-1) or by release (3.1.0), in any case;
+                 without it, the active set, or for a decision or task id the
+                 active set does not hold yet, the newest set that holds it
   --rpc <url>    another RPC for the same chain; records and briefs on private
                  addresses are read only when this is on one too
   --registry-rpc <url>
@@ -98,9 +116,9 @@ about an agent the same way: its record, licences and papers. Needs no keys.
   --json         one JSON object on stdout
   --version      print the version
 
-Exit status: 0 when every check that could run matches, 1 on a mismatch, on
-stale papers or licences or when a decision or its record cannot be read, 2 on
-bad arguments.`;
+Exit status: 0 when every check that could run passed, 1 on a FAIL or ERROR
+line, on stale papers or licences, or when what was asked for cannot be read,
+2 on bad arguments or an RPC that serves another chain.`;
 
 const TRUST_MODEL = "https://docs.usebrainchain.com/trust-model";
 const NOT_CHECKED = "That Jev produced the answer. BrainChain records Jev's answers, and the contracts bound what a recorded answer can do.";
@@ -186,37 +204,41 @@ async function main(): Promise<void> {
 
   const [networkArg, idArg, ...extra] = args;
   if (networkArg === undefined) usage("Name a network: mainnet, testnet or a chain id");
-  if (extra.length > 0 || (taskArg !== undefined && idArg !== undefined)) usage("Too many arguments");
-  if (taskArg !== undefined && receiptArg !== undefined) usage("A receipt is for one decision: name it, not a task");
-  const reputation = entryArg !== undefined || agentArg !== undefined;
-  if (reputation && (idArg !== undefined || taskArg !== undefined || receiptArg !== undefined || setArg !== undefined || offline)) {
-    usage("An entry names its own task, decision and receipt, so --entry and --agent take only --rpc, --registry-rpc, --payment-rpc and --json");
-  }
-  const hostedArgs = [recordArg, licenceArg, papersArg, itemArg].filter((arg) => arg !== undefined);
-  const hosted = hostedArgs.length > 0;
-  if (hostedArgs.length > 1) usage("Name one of --record, --licence, --papers and --item");
-  if (hosted && (reputation || idArg !== undefined || taskArg !== undefined || receiptArg !== undefined || setArg !== undefined || offline)) {
-    usage("--record, --licence, --papers and --item read the brain host, so they take only --service, --rpc, --registry-rpc, --payment-rpc and --json");
-  }
-  if (paymentRpcArg !== undefined && (licenceArg ?? papersArg ?? itemArg) !== undefined) usage("--payment-rpc is for decisions, --receipt, --entry, --agent and --record, which check a receipt's payment");
-  if (paymentRpcArg !== undefined && offline && receiptArg === undefined) usage("With --offline, --payment-rpc is read only with --receipt");
-  if (!hosted && serviceArg !== undefined) usage("--service is for --record, --licence, --papers and --item");
-  if (epoch && recordArg === undefined) usage("--epoch is for --record");
-  // The registry says which epoch an id is in now: a licence's state and the papers turn on it, and a record reads it only when asked.
-  const readsRegistry = licenceArg !== undefined || papersArg !== undefined || (recordArg !== undefined && epoch);
-  // The usage lists --registry-rpc for --record, so leaving out --epoch is not a command line of the wrong shape.
-  if (registryRpcArg !== undefined && recordArg !== undefined && !epoch) fail("With --record, --registry-rpc is read only with --epoch", 2);
-  if (registryRpcArg !== undefined && !reputation && !readsRegistry) usage("--registry-rpc is for --entry, --agent, --licence, --papers and --record with --epoch");
-  if (entryArg !== undefined && agentArg !== undefined) usage("Name one entry with --entry, or an agent with --agent");
-  if (!reputation && !hosted && taskArg === undefined && idArg === undefined && receiptArg === undefined) usage("Name a decision id, a task with --task, or an entry with --entry");
-  const given = taskArg ?? idArg;
-  if (given !== undefined && !/^[1-9]\d*$/.test(given)) fail(`${taskArg === undefined ? "A decision" : "A task"} id is a whole number from 1, written without leading zeros`, 2);
-
   const foundNetwork = Object.hasOwn(NETWORKS, networkArg)
     ? NETWORKS[networkArg as keyof typeof NETWORKS]
     : Object.values(NETWORKS).find((n) => String(n.chainId) === networkArg);
   if (!foundNetwork) fail(`Unknown network "${networkArg}": use mainnet, testnet, 274663 or 274630`, 2);
   const network = foundNetwork;
+  if (extra.length > 0) usage("Too many arguments");
+  if (taskArg !== undefined && receiptArg !== undefined) usage("A receipt is for one decision: name it, not a task");
+  const flagged: Record<string, string | undefined> = { "--task": taskArg, "--receipt": receiptArg, "--entry": entryArg, "--agent": agentArg, "--record": recordArg, "--licence": licenceArg, "--papers": papersArg, "--item": itemArg };
+  // A decision id is a mode alone, and with --receipt it names the decision the receipt is held to.
+  const asked = MODES.filter((m) => (m.flag === undefined ? idArg !== undefined && receiptArg === undefined : flagged[m.flag] !== undefined));
+  const modes = list(MODES.map((m) => m.flag ?? "a decision id"), "or");
+  if (asked.length === 0) usage(`Name what to check: ${modes}`);
+  if (asked.length > 1) usage(`Check one thing at a time: ${modes}`);
+  const mode = asked[0]!;
+  const options: Record<Option, boolean> = {
+    "--set": setArg !== undefined,
+    "--epoch": epoch,
+    "--service": serviceArg !== undefined,
+    "--rpc": rpcArg !== undefined,
+    "--registry-rpc": registryRpcArg !== undefined,
+    "--payment-rpc": paymentRpcArg !== undefined,
+    "--offline": offline,
+  };
+  const stray = (Object.keys(options) as Option[]).find((o) => options[o] && !mode.options.includes(o));
+  if (stray) usage(`${mode.flag ?? "A decision id"} takes only ${list([...mode.options, "--json"])}, not ${stray}`);
+  if (paymentRpcArg !== undefined && offline && receiptArg === undefined) usage("With --offline, --payment-rpc is read only with --receipt");
+  // The usage lists --registry-rpc for --record, so leaving out --epoch is not a command line of the wrong shape.
+  if (registryRpcArg !== undefined && recordArg !== undefined && !epoch) fail("With --record, --registry-rpc is read only with --epoch", 2);
+  const reputation = mode.flag === "--entry" || mode.flag === "--agent";
+  const hosted = mode.flag === "--record" || mode.flag === "--licence" || mode.flag === "--papers" || mode.flag === "--item";
+  // The registry says which epoch an id is in now: a licence's state and the papers turn on it, and a record reads it only when asked.
+  const readsRegistry = licenceArg !== undefined || papersArg !== undefined || (recordArg !== undefined && epoch);
+  const given = taskArg ?? idArg;
+  if (given !== undefined && !/^[1-9]\d*$/.test(given)) fail(`${taskArg === undefined ? "A decision" : "A task"} id is a whole number from 1, written without leading zeros`, 2);
+
   const client = createPublicClient({ transport: rpcTransport("BrainChain", rpcArg ?? network.rpc) });
   // BrainChain settles on the chain its registries are on, so a receipt's own network is that one: Robinhood Chain, or its testnet.
   const { name: paymentChain, chainId: paymentChainId } = SERVICES[network.chainId]!.identity;
@@ -244,7 +266,7 @@ async function main(): Promise<void> {
   const foundSet =
     setArg === undefined
       ? (receiptSet ?? network.sets[0])
-      : network.sets.find((s) => (isAddress(setArg) ? s.board.toLowerCase() === setArg.toLowerCase() : s.key === setArg || s.release === setArg || s.aliases?.includes(setArg)));
+      : network.sets.find((s) => [s.board, s.key, s.release, ...(s.aliases ?? [])].some((name) => name.toLowerCase() === setArg.toLowerCase()));
   if (!foundSet) {
     if (setArg !== undefined && BEFORE_3.test(setArg)) fail(`Contract set ${setArg} predates release 3.0.0, which this tool does not read: those boards named tasks by id alone.`, 2);
     const sets = network.sets.map((s, i) => `${s.key} (TaskBoard ${s.board}${i === 0 ? ", active" : ""})`);
@@ -423,8 +445,11 @@ async function main(): Promise<void> {
     const where = `in the ERC-8004 reputation registry on Robinhood Chain (${registry.address})`;
     const ctx: Context = { client, network, set: network.sets[0]!, briefs: new Map(), balances };
     if (entryArg !== undefined) {
-      const parts = /^(0|[1-9]\d{0,77}):(?:(0x[0-9a-fA-F]{40}):)?([1-9]\d{0,19})$/.exec(entryArg);
-      if (!parts || !isAgentId(parts[1]!)) fail("An entry is <agentId>:<feedbackIndex>, or <agentId>:<writer>:<feedbackIndex> for one BrainChain wrote from an earlier address, with each number written without leading zeros and the agent id below 2^256", 2);
+      const parts = /^(\d+):(?:(0x[0-9a-fA-F]{40}):)?(\d+)$/.exec(entryArg);
+      if (!parts) fail("An entry is <agentId>:<feedbackIndex>, or <agentId>:<writer>:<feedbackIndex> for one BrainChain wrote from an earlier address", 2);
+      if (!isAgentId(parts[1]!)) fail(AGENT_ID, 2);
+      if (/^0+$/.test(parts[3]!)) fail(`An entry's index counts from 1 for each agent and writer, so the first is ${entryArg.replace(/\d+$/, "1")}`, 2);
+      if (!/^[1-9]\d*$/.test(parts[3]!)) fail("An entry's index is a whole number from 1, written without leading zeros", 2);
       const named = parts[2];
       const writer = named === undefined ? current : registry.writers.find((w) => w.toLowerCase() === named.toLowerCase());
       if (!writer) fail(`BrainChain writes its entries from ${registry.writers.join(" and ")}, not ${named}`, 2);
@@ -644,9 +669,9 @@ async function main(): Promise<void> {
     }
   }
 
-  /** The other sets whose boards hold a task with this id, for a task this set's board does not hold or decided nothing on. */
-  async function otherBoards(task: bigint): Promise<string> {
-    const others = network.sets.filter((s) => s !== set);
+  /** The other sets whose boards hold a task with this id, for a task the board of `on` decided nothing on. */
+  async function otherBoards(task: bigint, on: ContractSet): Promise<string> {
+    const others = network.sets.filter((s) => s !== on);
     // Only a hint, so a board the RPC cannot read is left out of it.
     const counts = await Promise.allSettled(others.map((s) => client.readContract({ address: s.board, abi: taskBoardAbi, functionName: "count" })));
     const holding = others.filter((_, i) => {
@@ -657,52 +682,59 @@ async function main(): Promise<void> {
   }
 
   /**
-   * The set that holds decision `id`: the one named, by --set or by the receipt, or else the active set. The active set
-   * numbers its decisions from 1 again, so a bare id it does not hold yet is read from the newest set that does.
+   * The set that holds decision or task `id`: the one named, by --set or by the receipt, or else the active set. The active
+   * set numbers its decisions and tasks from 1 again, so a bare id it does not hold yet is read from the newest set that does.
    */
-  async function holding(id: bigint): Promise<ContractSet> {
-    const count = (s: ContractSet): Promise<bigint> => client.readContract({ address: s.log, abi: decisionLogAbi, functionName: "count" });
-    const decisions = await count(set);
-    if (id <= decisions) return set;
+  async function holding(what: "decision" | "task", id: bigint): Promise<ContractSet> {
+    const count = (s: ContractSet): Promise<bigint> =>
+      what === "task"
+        ? client.readContract({ address: s.board, abi: taskBoardAbi, functionName: "count" })
+        : client.readContract({ address: s.log, abi: decisionLogAbi, functionName: "count" });
+    const held = await count(set);
+    if (id <= held) return set;
     const others = network.sets.filter((s) => s !== set);
     const counts = await Promise.allSettled(others.map(count));
     const holds = (i: number): boolean => {
       const read = counts[i]!;
       return read.status === "fulfilled" && read.value >= id;
     };
-    const range = `DecisionLog ${set.log} (set ${set.key}) holds decisions 1 to ${decisions}.`;
     if (setArg !== undefined || receiptSet) {
-      // Only a hint, so a log the RPC cannot read is left out of it.
+      // Only a hint, so a contract the RPC cannot read is left out of it.
       const sets = others.filter((_, i) => holds(i)).map((s) => s.key);
-      fail(`${range}${sets.length > 0 ? ` Each set numbers its own decisions; try --set ${sets.join(" or ")}.` : ""}`);
+      const where = what === "task" ? `TaskBoard ${set.board}` : `DecisionLog ${set.log}`;
+      fail(`${where} (set ${set.key}) holds ${what}s 1 to ${held}.${sets.length > 0 ? ` Each set numbers its own ${what}s; try --set ${sets.join(" or ")}.` : ""}`);
     }
     // The sets run newest first, so an older set is chosen only once each newer one is known to stop short of the id.
     const at = counts.findIndex((read, i) => read.status === "rejected" || holds(i));
-    if (at < 0) fail(range);
+    if (at < 0) {
+      let most = { key: set.key, held };
+      for (const [i, read] of counts.entries()) if (read.status === "fulfilled" && read.value > most.held) most = { key: others[i]!.key, held: read.value };
+      fail(most.held === 0n ? `No set holds any ${what}s yet.` : `No set holds ${what} ${id}; set ${most.key} holds 1 to ${most.held}.`);
+    }
     const read = counts[at]!;
     if (read.status === "rejected") throw read.reason;
-    console.error(`Decision ${id} is not on set ${set.key} yet; reading set ${others[at]!.key}.`);
+    console.error(`${what === "task" ? "Task" : "Decision"} ${id} is not on set ${set.key} yet; reading set ${others[at]!.key}.`);
     return others[at]!;
   }
 
   try {
     await sameChain();
-    const where = `on ${network.name}, contract set ${set.key}`;
 
     if (taskArg !== undefined) {
       const task = BigInt(taskArg);
-      const tasks = await ctx.client.readContract({ address: set.board, abi: taskBoardAbi, functionName: "count" });
-      if (task > tasks) fail(`TaskBoard ${set.board} (set ${set.key}) holds tasks 1 to ${tasks}.${await otherBoards(task)}`);
-      const ids = await decisionsOf(ctx, task);
-      if (ids.length === 0) fail(`Task ${task} has no decisions ${where}.${await otherBoards(task)}`);
+      const on = await holding("task", task);
+      const context = on === set ? ctx : { ...ctx, set: on };
+      const where = `on ${network.name}, contract set ${on.key}`;
+      const ids = await decisionsOf(context, task);
+      if (ids.length === 0) fail(`Task ${task} has no decisions ${where}.${await otherBoards(task, on)}`);
       const reports: DecisionReport[] = [];
-      for (const id of ids) reports.push(await verifyDecision(ctx, id).catch((error: unknown) => ({ id: Number(id), checks: [unread(`decision ${id}`, error)] })));
+      for (const id of ids) reports.push(await verifyDecision(context, id).catch((error: unknown) => ({ id: Number(id), checks: [unread(`decision ${id}`, error)] })));
       const title = reports.find((r) => r.title)?.title;
-      report(reports, `Task ${task} ${where} (TaskBoard ${set.board}): decision${ids.length === 1 ? "" : "s"} ${ids.join(", ")}${title ? `\nBrief: ${title}` : ""}`, set, Number(task));
+      report(reports, `Task ${task} ${where} (TaskBoard ${on.board}): decision${ids.length === 1 ? "" : "s"} ${ids.join(", ")}${title ? `\nBrief: ${title}` : ""}`, on, Number(task));
     }
 
     const id = BigInt(target);
-    const on = await holding(id);
+    const on = await holding("decision", id);
     const checked = await verifyDecision(on === set ? ctx : { ...ctx, set: on }, id, receipt);
     // What the task is about, so a decision read from the wrong set does not pass for the one meant.
     report([checked], `Decision ${id} on ${network.name}, contract set ${on.key} (DecisionLog ${on.log})${checked.title ? `\nTask ${checked.task}: ${checked.title}` : ""}`, on);

@@ -27,7 +27,7 @@ Requires Node.js 22 or later.
 ```text
 brainchain-verify <mainnet|testnet|chainId> <decisionId> [--set <TaskBoard>] [--rpc <url>] [--payment-rpc <url>] [--offline] [--json]
 brainchain-verify <mainnet|testnet|chainId> --task <taskId> [--set <TaskBoard>] [--rpc <url>] [--payment-rpc <url>] [--offline] [--json]
-brainchain-verify <mainnet|testnet|chainId> [<decisionId>] --receipt <file|url> [--set <TaskBoard>] [--rpc <url>] [--payment-rpc <url>] [--json]
+brainchain-verify <mainnet|testnet|chainId> [<decisionId>] --receipt <file|url> [--set <TaskBoard>] [--rpc <url>] [--payment-rpc <url>] [--offline] [--json]
 brainchain-verify mainnet --entry <agentId>:[<writer>:]<feedbackIndex> [--rpc <url>] [--registry-rpc <url>] [--payment-rpc <url>] [--json]
 brainchain-verify mainnet --agent <agentId> [--rpc <url>] [--registry-rpc <url>] [--payment-rpc <url>] [--json]
 brainchain-verify <mainnet|testnet|chainId> --record <agentId> [--epoch] [--service <url>] [--rpc <url>] [--registry-rpc <url>] [--payment-rpc <url>] [--json]

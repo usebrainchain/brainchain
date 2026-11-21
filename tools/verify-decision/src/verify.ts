@@ -214,7 +214,8 @@ const share = (parts: number[]): number => Math.min(1, Number(parts.reduce((sum,
 const twice = (record: Published): boolean => record.second !== undefined || record.checks !== undefined || record.panel !== undefined;
 const close = (value: unknown, expected: number): boolean => typeof value === "number" && Math.abs(value - expected) < 1e-6;
 const optionsOf = (question: Question): string[] => (Array.isArray(question.criteria) ? question.criteria.map((_, i) => String(i)) : Object.keys(question.criteria ?? {}));
-const list = (items: string[]): string => (items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`);
+// Items with commas of their own take one before the "and" too, so the last item reads apart from the one before it.
+const list = (items: string[]): string => (items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")}${items.some((item) => item.includes(",")) ? "," : ""} and ${items.at(-1)}`);
 
 // The brain's candidate rules and the bar of a panel short of a member (judges.ts).
 const PANEL_RULES = ["lower-of", "majority", "median"] as const;
@@ -512,6 +513,9 @@ class TooLarge extends Refused {}
 /** A host that answered 404, which for a receipt means it has not been signed yet. */
 class NotFound extends Error {}
 
+/** A 404 that says no more than that nothing is there, as the brain host answers every address it serves nothing at. */
+class NothingThere extends NotFound {}
+
 /** A host that answered 403. The brain host refuses a record on an exam item still in use, which would give the item away. */
 class Forbidden extends Error {}
 
@@ -618,7 +622,8 @@ async function readBytes(uri: string, url: URL, wanted: Wanted, deadline: AbortS
   const said = response.status < 200 || response.status >= 300 ? reasonIn(response.bytes) : undefined;
   if (response.status === 404) {
     const gone = wanted.what === "network manifest" ? "the host has none" : `the host has no ${wanted.what} at this address`;
-    throw new NotFound(`${display(uri)} answered with status 404: ${said ?? gone}`);
+    const message = `${display(uri)} answered with status 404: ${said ?? gone}`;
+    throw said === undefined || /^not found$/i.test(said) ? new NothingThere(message) : new NotFound(message);
   }
   if (response.status < 200 || response.status >= 300) {
     const message = `${display(uri)} answered with status ${response.status}${said ? `: ${said}` : ""}`;
@@ -683,6 +688,9 @@ function readDecision({ client, set }: Context, id: bigint) {
 
 /** What the chain contradicts, such as bytes that miss their hash: a disagreement, where an unreachable host is only a check that could not run. */
 class Mismatch extends Error {}
+
+/** A network.json signed by the brain of another set the tool carries. Refused all the same, though it most often means BrainChain is switching sets. */
+class Switching extends Mismatch {}
 
 async function briefOf({ client, set }: Context, task: bigint): Promise<Brief> {
   const [posted] = await client.getContractEvents({
@@ -930,7 +938,7 @@ export async function verifyDecision(ctx: Context, id: bigint, receipt?: GivenRe
   if (anchored) report.evidence = anchored;
   if (record.versions !== undefined) await checkVersions(ctx, c, record.versions, await sender(), recorded.blockNumber);
   const kept = receipt ?? (await servedReceipt(ctx, c, decided));
-  if (kept) report.receipt = await checkReceipt(ctx, c, decided, kept);
+  if (kept) report.receipt = await checkReceipt(ctx, c, decided, kept, receipt === undefined);
   return report;
 }
 
@@ -1474,16 +1482,19 @@ function isVersions(value: unknown): value is Versions {
   );
 }
 
-/** The image and app a record names, each marked where the log has never attested the key for it, before the decision or since. */
-async function unattested(client: PublicClient, set: ContractSet, brain: Address, { image, app }: Versions): Promise<string> {
-  if (!image || !app) return "no image or app";
+/** The image and app a record names, each marked where the log has never attested the key for it, before the decision or since, and whether the app is one it never attested. */
+async function unattested(client: PublicClient, set: ContractSet, brain: Address, { image, app }: Versions): Promise<[string, boolean]> {
+  if (!image || !app) return ["no image or app", false];
   const ever = await client.getContractEvents({ address: set.log, abi: decisionLogAbi, eventName: "BrainAttested", args: { brain }, fromBlock: BigInt(set.fromBlock), strict: true });
   const never = (of: "image" | "app", value: Hex): boolean => !ever.some(({ args }) => eq(args[of], value));
   const [noImage, noApp] = [never("image", image), never("app", app)];
-  if (noImage && noApp) return `image ${short(image)} and app ${short(app)}, neither of which the log ever attested for this key`;
+  if (noImage && noApp) return [`image ${short(image)} and app ${short(app)}, neither of which the log ever attested for this key`, true];
   const unseen = ", which the log never attested for this key";
-  return `image ${short(image)}${noImage ? `${unseen},` : ""} and app ${short(app)}${noApp ? unseen : ""}`;
+  return [`image ${short(image)}${noImage ? `${unseen},` : ""} and app ${short(app)}${noApp ? unseen : ""}`, noApp];
 }
+
+// A decision made by a build whose app the log never attested fails versions for good, so the line points to where the README lists such decisions.
+const KNOWN_HISTORY = "Some decisions fail this check by design: see https://github.com/usebrainchain/brainchain/tree/main/tools/verify-decision#known-history";
 
 /** The key that sent the Recorded transaction, and the image and app of its latest attestation on the log at the decision's block, or none for a key the owner named. */
 async function checkVersions({ client, set }: Context, c: Checks, versions: unknown, sender: Address, block: bigint): Promise<void> {
@@ -1492,13 +1503,16 @@ async function checkVersions({ client, set }: Context, c: Checks, versions: unkn
   const attested = events.at(-1)?.args;
   const named = versions.image && versions.app ? `image ${short(versions.image)} and app ${short(versions.app)}` : "no image or app";
   const wrong: string[] = [];
+  let history = "";
   if (!eq(versions.brain, sender)) wrong.push(`the record names the brain ${short(versions.brain)}, but ${short(sender)} sent its Recorded transaction`);
   if (attested && !(eq(versions.image ?? "", attested.image) && eq(versions.app ?? "", attested.app))) {
-    wrong.push(`the log last attested ${short(sender)} before this decision for image ${short(attested.image)} and app ${short(attested.app)}, and the record names ${await unattested(client, set, sender, versions)}`);
+    const [names, appUnseen] = await unattested(client, set, sender, versions);
+    wrong.push(`the log last attested ${short(sender)} before this decision for image ${short(attested.image)} and app ${short(attested.app)}, and the record names ${names}`);
+    if (appUnseen) history = `. ${KNOWN_HISTORY}`;
   }
   if (!attested && versions.image) wrong.push(`the record names ${named}, but the log had not attested ${short(sender)} before this decision`);
   const bound = attested ? ` and that the log attested for ${named}` : ". The log had not attested it, so the owner named it and the record names no image or app";
-  c.check("versions", wrong.length === 0, `versions: prompt version ${versions.prompt}, brain ${short(sender)}, the key that sent this decision's Recorded transaction${bound}`, `versions: ${wrong.join("; ")}`);
+  c.check("versions", wrong.length === 0, `versions: prompt version ${versions.prompt}, brain ${short(sender)}, the key that sent this decision's Recorded transaction${bound}`, `versions: ${wrong.join("; ")}${history}`);
 }
 
 interface ReceiptPayload extends Payment {
@@ -1668,7 +1682,8 @@ async function servedReceipt(ctx: Context, c: Checks, d: Decided): Promise<Given
   }
 }
 
-async function checkReceipt(ctx: Context, c: Checks, d: Decided, given: GivenReceipt): Promise<NonNullable<DecisionReport["receipt"]>> {
+/** `served` is a receipt fetched from the host, which a check offline leaves out. */
+async function checkReceipt(ctx: Context, c: Checks, d: Decided, given: GivenReceipt, served: boolean): Promise<NonNullable<DecisionReport["receipt"]>> {
   const receipt = parseReceipt(given.value);
   if (!receipt) {
     c.add("receipt", "fail", `receipt: ${display(given.from)} is not a receipt as BrainChain or the x402 extension signs one`);
@@ -1685,7 +1700,7 @@ async function checkReceipt(ctx: Context, c: Checks, d: Decided, given: GivenRec
 
   if (receipt.x402) {
     c.add("receipt-decision", "skip", "receipt: the x402 extension's receipt names no decision, evidence hash, outcome or amount. BrainChain's own receipt, in the reply's receipt field, names them");
-    await checkPayment(ctx, c, d, receipt.payload, ["network", "payer", "transaction"]);
+    await checkPayment(ctx, c, d, receipt.payload, ["network", "payer", "transaction"], served);
     return { from: given.from };
   }
   const p = receipt.payload;
@@ -1708,7 +1723,7 @@ async function checkReceipt(ctx: Context, c: Checks, d: Decided, given: GivenRec
     `receipt: names ${list(wrong)}`,
   );
   await checkOutcome(ctx, c, d, p);
-  await checkPayment(ctx, c, d, p, PAYMENT_FIELDS);
+  await checkPayment(ctx, c, d, p, PAYMENT_FIELDS, served);
   return { from: given.from, job: clean(p.job), outcome: clean(p.outcome) };
 }
 
@@ -1751,7 +1766,7 @@ const isPayments = (value: unknown): value is Payment[] =>
   value.every((p: Record<string, unknown> | null) => typeof p === "object" && p !== null && PAYMENT_FIELDS.every((f) => typeof p[f] === "string") && AMOUNT.test(String(p.amount)));
 
 /** The receipt's payment is one the record names, and on its network the transaction moved the amount from the payer to the desk. */
-async function checkPayment(ctx: Context, c: Checks, d: Decided, claimed: Partial<Payment>, fields: readonly (keyof Payment)[]): Promise<void> {
+async function checkPayment(ctx: Context, c: Checks, d: Decided, claimed: Partial<Payment>, fields: readonly (keyof Payment)[], served: boolean): Promise<void> {
   const payments = d.record.payments;
   if (!isPayments(payments)) return c.add("receipt-payment", "fail", payments === undefined ? "payment: the record names no payment for this job" : "payment: the record's payments are not as the brain records them");
   const payment = payments.find((p) => p.network === claimed.network && p.transaction === claimed.transaction);
@@ -1768,7 +1783,11 @@ async function checkPayment(ctx: Context, c: Checks, d: Decided, claimed: Partia
     // A manifest the chain contradicts fails whatever else could not be read, and a host that did not answer outweighs one that has nothing.
     const reasons = [deskRead, movedRead].flatMap((read) => (read.status === "rejected" ? [read.reason as unknown] : []));
     const reason = reasons.find((r) => r instanceof Mismatch) ?? reasons.find((r) => !absent(r)) ?? reasons[0];
-    if (reason instanceof Mismatch) return c.add("receipt-payment", "fail", `payment: the receipt's payment is the record's, but ${errorMessage(reason)}`);
+    if (reason instanceof Mismatch) {
+      // Only the payment rests on the host's network.json, so a receipt the host served can be left out and the rest still checked.
+      const offline = reason instanceof Switching && served ? ". --offline checks the decision without its receipt" : "";
+      return c.add("receipt-payment", "fail", `payment: the receipt's payment is the record's, but ${errorMessage(reason)}${offline}`);
+    }
     return c.add("receipt-payment", absent(reason) ? "skip" : "error", `payment: the receipt's payment is the record's, and ${tx} was not checked: ${errorMessage(reason)}`);
   }
   const desk = deskRead.value;
@@ -1825,10 +1844,10 @@ async function readDesk({ client, network, set }: Context, origin: string): Prom
       const read = brains[i]!;
       return read.status === "fulfilled" && eq(read.value, signer);
     });
-    const named = theirs
-      ? `, the brain of set ${theirs.key}, not by ${short(brain)}, the brain the active set ${active.key} names on DecisionLog ${short(active.log)}. The host may be mid-switch, or this verifier's set list is ahead of it`
-      : `, not by ${short(brain)}, the brain on DecisionLog ${short(active.log)}`;
-    throw new Mismatch(`${display(uri)} is signed by ${short(signer)}${named}`);
+    if (theirs) {
+      throw new Switching(`the host signs its network file as set ${theirs.key}'s brain, while the active set ${active.key} names a different brain. This usually means BrainChain is switching sets: run it again later`);
+    }
+    throw new Mismatch(`${display(uri)} is signed by ${short(signer)}, not by ${short(brain)}, the brain on DecisionLog ${short(active.log)}`);
   }
   const manifest = parseJson(signed.slice(MANIFEST_PREFIX.length)) as { chainId?: unknown; payees?: unknown; formerDesks?: unknown } | undefined;
   const payees = manifest?.payees;
@@ -2803,6 +2822,10 @@ async function fetchJson(ctx: Pick<Context, "client">, uri: string, what: Wanted
 const unread = (c: Checks, name: string, what: string, error: unknown): void =>
   c.add(name, error instanceof Mismatch ? "fail" : "error", error instanceof Mismatch ? errorMessage(error) : `could not read ${what}: ${errorMessage(error)}`);
 
+// Until BrainChain switches agent records on, the brain host serves no record, licence or papers, and answers each address as one it has nothing at.
+const unswitched = (error: unknown): unknown =>
+  error instanceof NothingThere ? new Error(`${errorMessage(error)}. The host serves records, licences and papers once BrainChain switches agent records on, and returns 404 until then`) : error;
+
 interface Listed {
   entries: SignedEntry[];
   head: SignedHead;
@@ -3034,7 +3057,7 @@ export async function verifyRecord(ctx: Context, service: Service, agentId: bigi
   try {
     listed = await readRecord(ctx, service, agentId);
   } catch (error) {
-    unread(c, "record-fetch", "the record", error);
+    unread(c, "record-fetch", "the record", unswitched(error));
     return report;
   }
   const { entries, head, pages } = listed;
@@ -3308,7 +3331,7 @@ export async function verifyLicences(ctx: Context, service: Service, agentId: bi
     given = body.epoch;
     reading = body.registry;
   } catch (error) {
-    unread(c, "licences-fetch", "the licences", error);
+    unread(c, "licences-fetch", "the licences", unswitched(error));
     return report;
   }
   c.add("licences-fetch", "ok", `fetched ${plural(listed.length, "licence", "licences")} from ${display(url)}`);
@@ -3581,7 +3604,7 @@ export async function verifyPapers(ctx: Context, service: Service, agentId: bigi
     if (typeof held.signed !== "string" || !isSignature(held.signature)) throw new Mismatch(`${display(url)} is not an agent's papers: it holds no signed text under brainchain`);
     ({ signed, papers: shown, signature } = held as { signed: string; papers: unknown; signature: Hex });
   } catch (error) {
-    unread(c, "papers-fetch", "the papers", error);
+    unread(c, "papers-fetch", "the papers", unswitched(error));
     return report;
   }
   c.add("papers-fetch", "ok", `fetched the papers from ${display(url)}`);
