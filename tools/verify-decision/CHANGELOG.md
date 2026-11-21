@@ -19,22 +19,28 @@ Changes to `brainchain-verify`, the npm package built from this directory. The f
 
 ### Changed
 
-- A decision id given without `--set` that the active set does not hold yet is read from the newest set that holds it. Each set numbers its decisions from 1, so a new active set starts with none. The tool says so in one line on stderr, such as `Decision 968 is not on set v3-6 yet; reading set v3-5.`, and the header and the JSON's `set` name the set it read. A newer set whose count cannot be read is never passed over for an older one. With `--set`, or a receipt that names its DecisionLog, the set is read as named.
-- An id beyond the set read gets a hint that lists only the sets that hold it, where 0.7.1 listed every other set.
+- A decision or task id given without `--set` that the active set does not hold yet is read from the newest set that holds it. Each set numbers its decisions and tasks from 1, so a new active set starts with none. The tool says so in one line on stderr, such as `Decision 968 is not on set v3-6 yet; reading set v3-5.`, and the header and the JSON's `set` name the set it read. A newer set whose count cannot be read is never passed over for an older one. With `--set`, or a receipt that names its DecisionLog, the set is read as named.
+- An id beyond the set named gets a hint that lists only the sets that hold it, where 0.7.1 listed every other set. An id beyond every set names the set that holds the most, such as `No set holds decision 99999; set v3-5 holds 1 to 991.`
+- `--set` matches a set's key, release, earlier key or TaskBoard address in any case.
 - `receipt` and `receipt-decision` read receipt version 2, signed under domain version "2" with the decision's `subject` after `decision`. The subject must be the decision's subject on the log. A version 1 receipt checks as before, and a version 2 receipt without a subject, or a version 1 receipt with one, is not a receipt.
 - `evidence` reads evidence version 2, which the brain writes from release 9: the hash also covers the panel's rule, a degraded panel's bar, the grade's pass level and the record's `checks`, so a copy served without the work cannot say the brief's checks ran otherwise. The tool rebuilds the hash under both versions and holds the record to the one its `Recorded` event carries, so a record decided under version 2 cannot pass as version 1. A version 1 record verifies as before, and its line says so. When neither version gives the hash, the line shows what each gives.
 - `--registry-rpc` is also read by `--licence` and `--papers`, and by `--record` with `--epoch`.
 - The `entry` check takes `licence:<class>` as a second tag beside `task`.
 - `summary.withReceipt` counts an entry that points at a record entry only when that record entry names a receipt. `summary.verified` counts only entries with a receipt, so it never exceeds `withReceipt`.
-- `receipt-payment`: a `/network.json` signed by the brain of a retired set still fails, since a retired key may have been exposed since. The line now names that set and says that the host may be mid-switch, or that this verifier's set list is ahead of it.
-- `versions`: when the record's image or app is one the log has never attested its key for, the line says so.
+- `receipt-payment`: a `/network.json` signed by the brain of a retired set still fails, since a retired key may have been exposed since. The line now names that set and says that BrainChain is probably switching sets, so run the command again later. For a receipt fetched from the host, it adds that `--offline` checks the decision without it.
+- `versions`: when the record's image or app is one the log has never attested its key for, the line says so. When it is the app, the line points to the README's known history.
+- Decisions on set v3-5 from decision 972 until the switch to set v3-6 on 2026-11-21 fail `versions` by design. A recovery build made them from 2026-11-20 21:22 UTC, and the DecisionLog never attested its app (`0x9715…6aff`) for its key. Every other check on them that can run passes, and the README lists them under known history.
 - `withheld`, `threshold` and `receipt-outcome`: a line about a decision's recorded answer now says BrainChain answered, because a panel can give that answer.
-- An id the tool refuses gets a message with the rule it is held to, and exits 2. An agent id is a whole number from 0 to 2^256 - 1, written without leading zeros, as the brain host requires, and a decision or task id is one from 1. An agent id from 2^256 on is now refused too.
-- A host that answers with an error and a reason, as `{ "error": "..." }`, has its reason on the `ERROR` line, a 404 included. A 403 for a record, which the brain host sends for an exam decision while its item is still in use, also says that the decision becomes verifiable once its item is published.
+- An id the tool refuses gets a message with the rule it is held to, and exits 2. An agent id is a whole number from 0 to 2^256 - 1, written without leading zeros, as the brain host requires, and a decision or task id is one from 1. An agent id from 2^256 on is now refused too. An entry's index of 0 gets a message that says the index counts from 1.
+- A host that answers with an error and a reason, as `{ "error": "..." }`, has its reason on the `ERROR` line, a 404 included. A 403 for a record, which the brain host sends for an exam decision while its item is still in use, also says that the decision becomes verifiable once its item is published. A 404 for an agent's record, licences or papers that gives no other reason says that the host serves them once BrainChain switches agent records on.
+- An option a mode does not take gets a message that lists exactly the options that mode takes, from the same table the usage lines come from. `--receipt` lists `--offline`, which it always took. A command line that names no mode, or more than one, gets a message that names every mode. An unknown network is reported before anything else.
+- `--help` gives the exit status for `FAIL` and `ERROR` lines and for an RPC that serves another chain, as the README does.
+- A line that lists items with commas of their own puts a comma before the last one too, as in `names decision 963, not 964, and evidence …`.
 
 ### Fixed
 
 - Output through a pipe, such as `--json` into another program, is no longer cut off at 64 KB. The tool exits once stdout and stderr have taken all it wrote.
+- The README's testnet example names a decision the host still serves. Testnet's records started fresh on 2026-11-20, so the host no longer serves earlier testnet decisions.
 - The README said receipts were not yet live on mainnet, gave version 1 as the receipt's only domain version and listed only evidence version 1's fields. It describes receipts and evidence under both versions.
 
 ## [0.7.1] - 2026-11-16
