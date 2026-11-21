@@ -1454,10 +1454,9 @@ function checkEvidence(c: Checks, record: Published, inputHash: Hex, uri: string
   const target = anchor ?? kept;
   const matched = byVersion.find(({ hash }) => hash === target);
   if (!matched) {
-    // Neither version gives the hash, so the line shows what each gives.
     const [v2, v1] = byVersion.map(({ hash }) => short(hash!));
     const against = anchor ? `${short(anchor)}, the hash its Recorded event's payloadURI carries` : `the record's ${short(String(record.evidence))}`;
-    return fail(`${EVIDENCE_COVERS[2]} is ${v2}, and under evidence version 1, which leaves out the panel's rule, the pass level and the checks, it is ${v1}. Neither is ${against}`);
+    return fail(`the hash rebuilds to ${v2} under evidence version 2 and to ${v1} under version 1, and neither is ${against}`);
   }
   const { version, hash: recomputed } = matched;
   const over = `${EVIDENCE_COVERS[version]} is ${short(recomputed!)}${version === 1 ? " (evidence version 1, from before the panel's rule, the pass level and the checks were hashed)" : ""}`;
@@ -1682,7 +1681,7 @@ async function servedReceipt(ctx: Context, c: Checks, d: Decided): Promise<Given
   }
 }
 
-/** `served` is a receipt fetched from the host, which a check offline leaves out. */
+/** `served`: the receipt was fetched from the host, so --offline would leave it out. */
 async function checkReceipt(ctx: Context, c: Checks, d: Decided, given: GivenReceipt, served: boolean): Promise<NonNullable<DecisionReport["receipt"]>> {
   const receipt = parseReceipt(given.value);
   if (!receipt) {
@@ -1785,7 +1784,7 @@ async function checkPayment(ctx: Context, c: Checks, d: Decided, claimed: Partia
     const reason = reasons.find((r) => r instanceof Mismatch) ?? reasons.find((r) => !absent(r)) ?? reasons[0];
     if (reason instanceof Mismatch) {
       // Only the payment rests on the host's network.json, so a receipt the host served can be left out and the rest still checked.
-      const offline = reason instanceof Switching && served ? ". --offline checks the decision without its receipt" : "";
+      const offline = reason instanceof Switching && served ? ", or with --offline to check the decision without its receipt" : "";
       return c.add("receipt-payment", "fail", `payment: the receipt's payment is the record's, but ${errorMessage(reason)}${offline}`);
     }
     return c.add("receipt-payment", absent(reason) ? "skip" : "error", `payment: the receipt's payment is the record's, and ${tx} was not checked: ${errorMessage(reason)}`);
@@ -1845,7 +1844,7 @@ async function readDesk({ client, network, set }: Context, origin: string): Prom
       return read.status === "fulfilled" && eq(read.value, signer);
     });
     if (theirs) {
-      throw new Switching(`the host signs its network file as set ${theirs.key}'s brain, while the active set ${active.key} names a different brain. This usually means BrainChain is switching sets: run it again later`);
+      throw new Switching(`${display(uri)} is signed by ${short(signer)}, the brain of set ${theirs.key}, not by ${short(brain)}, the active set ${active.key}'s. BrainChain is probably switching sets: run the command again later`);
     }
     throw new Mismatch(`${display(uri)} is signed by ${short(signer)}, not by ${short(brain)}, the brain on DecisionLog ${short(active.log)}`);
   }
@@ -2824,7 +2823,7 @@ const unread = (c: Checks, name: string, what: string, error: unknown): void =>
 
 // Until BrainChain switches agent records on, the brain host serves no record, licence or papers, and answers each address as one it has nothing at.
 const unswitched = (error: unknown): unknown =>
-  error instanceof NothingThere ? new Error(`${errorMessage(error)}. The host serves records, licences and papers once BrainChain switches agent records on, and returns 404 until then`) : error;
+  error instanceof NothingThere ? new Error(`${errorMessage(error)}. The host serves records, licences and papers once BrainChain switches agent records on`) : error;
 
 interface Listed {
   entries: SignedEntry[];
@@ -2847,7 +2846,7 @@ async function readRecord(ctx: Pick<Context, "client">, service: Service, agentI
     const head = isObject(body) ? signedHead(body.head) : undefined;
     if (!listed || !head) throw new Mismatch(`${display(uri)} is not an agent's record: a signed head and a list of entries`);
     const bad = listed.indexOf(undefined);
-    if (bad >= 0) throw new Mismatch(`${display(uri)} lists, in place ${bad + 1}, something other than a record entry as BrainChain signs one`);
+    if (bad >= 0) throw new Mismatch(`${display(uri)} lists, at position ${bad + 1}, something other than a record entry as BrainChain signs one`);
     entries.push(...(listed as SignedEntry[]));
     const { next } = body as { next?: unknown };
     if (next === undefined) return { entries, head, pages };
@@ -3110,8 +3109,12 @@ export async function verifyRecord(ctx: Context, service: Service, agentId: bigi
     const wrong = grouped(faults);
     const fault = await brainFault(ctx, head.head, true);
     if (fault) wrong.unshift(`the head: ${fault}`);
-    const signed = [...by.values()].map(({ entry, seqs }) => `${brainNamed(ctx, entry)} when it signed ${entriesNamed(seqs)}`);
-    c.check("record-brain", wrong.length === 0, `brain: ${[...signed, `${brainNamed(ctx, head.head)}, the active set's, when it signed the head`].join("; ")}`, `brain: ${few(wrong)}`);
+    const headKey = `${head.head.decisionLog}:${head.head.brain}`.toLowerCase();
+    const signed = [...by].map(([key, { entry, seqs }]) =>
+      key === headKey ? `${brainNamed(ctx, entry)}, the active set's, when it signed ${entriesNamed(seqs)} and the head` : `${brainNamed(ctx, entry)} when it signed ${entriesNamed(seqs)}`,
+    );
+    if (!by.has(headKey)) signed.push(`${brainNamed(ctx, head.head)}, the active set's, when it signed the head`);
+    c.check("record-brain", wrong.length === 0, `brain: ${signed.join("; ")}`, `brain: ${few(wrong)}`);
   } catch (error) {
     c.add("record-brain", "error", `brain: could not read which keys the DecisionLog named its brain: ${errorMessage(error)}`);
   }
@@ -3181,7 +3184,7 @@ async function checkRecordReceipt(ctx: Context, service: Service, c: Checks, rep
 async function checkCurrent(service: Service, c: Checks, report: RecordReport, entries: SignedEntry[]): Promise<void> {
   const { client, adapters } = service.identity;
   const { agent } = report;
-  if (!agent) return c.add("current-epoch", "skip", "current epoch: the record is not the asked agent's, so the registry was not read");
+  if (!agent) return c.add("current-epoch", "skip", "current epoch: the record is for an agent other than the one asked for, so the registry was not read");
   if (!client) return c.add("current-epoch", "skip", "current epoch: no client for the identity registry's chain was given, so the registry was not read");
   let registry: CurrentEpoch | null;
   try {
@@ -3214,7 +3217,7 @@ async function checkCurrent(service: Service, c: Checks, report: RecordReport, e
   c.add(
     "current-epoch",
     "ok",
-    `${gives}. The newest entry's build, "${stated}", is BrainChain's own statement of the model it runs this agent on, which the registry does not hold. For such a build the controller alone is compared with the registry, which gives epoch ${short(id)}. ${belong}`,
+    `${gives}. The newest entry's build, "${stated}", is BrainChain's own statement of the model it runs this agent on, which the registry does not hold, so only the controller is compared: epoch ${short(id)}. ${belong}`,
   );
 }
 
@@ -3366,7 +3369,7 @@ async function checkHostEpoch(c: Checks, report: LicencesReport, service: Servic
     return {};
   };
   if (reading === undefined && given === undefined) return {};
-  if (reading !== undefined && reading !== "read" && reading !== "unreadable") return add("fail", `the host's reply says ${JSON.stringify(reading)} of its reading of the registry, where it says read or unreadable`);
+  if (reading !== undefined && reading !== "read" && reading !== "unreadable") return add("fail", `the host's reply gives ${JSON.stringify(reading)} as its reading of the registry, where it gives read or unreadable`);
   if (reading !== undefined) report.registry = reading;
   if (reading === "unreadable") {
     if (given !== null && given !== undefined) return add("fail", "the host says it could not read the identity registry, and gives an epoch for the id all the same");
@@ -3509,11 +3512,11 @@ async function checkLicence(ctx: Context, service: Service, agentId: bigint, ite
     : held
       ? moved
         ? held.epoch
-          ? "the epoch the host's reply gives for the id is another than the one it was earned in"
+          ? "the epoch the host's reply gives for the id is not the one it was earned in"
           : "the host's reply gives no epoch for the id, as no single account controls it"
         : "it has not expired and the epoch the host's reply gives for the id is the one it was earned in"
       : moved
-        ? "the agent's id is in another epoch than the one it was earned in"
+        ? "the agent's id is no longer in the epoch it was earned in"
         : moved === false
           ? "it has not expired and the id is in the epoch it was earned in"
           : house
@@ -3648,7 +3651,7 @@ export async function verifyPapers(ctx: Context, service: Service, agentId: bigi
   c.check("papers-fresh", stale === undefined, `fresh: the papers were signed ${signedAgo(p.at, now)}`, `fresh: the papers are dated ${utc(BigInt(p.at))} UTC, ${stale}`);
 
   if (theirs) await checkPapersEpoch(service, c, report, p);
-  else c.add("papers-epoch", "skip", "epoch: the papers are not the asked agent's, so the registry was not read");
+  else c.add("papers-epoch", "skip", "epoch: the papers are for an agent other than the one asked for, so the registry was not read");
   await checkPapersRecord(ctx, service, c, agentId, p, now);
   return report;
 }

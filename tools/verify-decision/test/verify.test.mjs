@@ -1025,7 +1025,7 @@ describe("evidence and receipts", () => {
     assert.deepEqual(failed(await paid(kept, { ...refunded, serve: redacted(kept) })), []);
     const anchored = await paid(kept, { ...refunded, serve: rebuilt });
     assert.deepEqual(failed(anchored), ["evidence"]);
-    assert.match(check(anchored, "evidence").message, /the checks is 0x\w{4}…\w{4}, and under evidence version 1, which leaves out the panel's rule, the pass level and the checks, it is 0x\w{4}…\w{4}\. Neither is 0x\w{4}…\w{4}, the hash its Recorded event's payloadURI carries$/);
+    assert.match(check(anchored, "evidence").message, /^evidence: the hash rebuilds to 0x\w{4}…\w{4} under evidence version 2 and to 0x\w{4}…\w{4} under version 1, and neither is 0x\w{4}…\w{4}, the hash its Recorded event's payloadURI carries$/);
     const unanchored = await paid(kept, { ...refunded, serve: rebuilt, fragment: "" });
     assert.equal(status(unanchored, "evidence"), "ok");
     assert.deepEqual(failed(unanchored), ["receipt-decision"]);
@@ -1049,7 +1049,7 @@ describe("evidence and receipts", () => {
     assert.deepEqual(failed(mismatch), ["evidence"]);
     // Neither version gives the hash on chain, so the line names what each gives.
     const v1 = sealed(accepted(), [PAYMENT], VERSIONS, undefined, 1).evidence;
-    const both = `evidence: the hash over inputHash, every judge's answer and receipt, the payments, the versions, the panel's rule, the pass level and the checks is ${abbr(record.evidence)}, and under evidence version 1, which leaves out the panel's rule, the pass level and the checks, it is ${abbr(v1)}. Neither is`;
+    const both = `evidence: the hash rebuilds to ${abbr(record.evidence)} under evidence version 2 and to ${abbr(v1)} under version 1, and neither is`;
     assert.equal(check(mismatch, "evidence").message, `${both} 0xe7e7…e7e7, the hash its Recorded event's payloadURI carries`);
     assert.equal(mismatch.evidence, undefined);
     const unanchored = await verify({ ...recorded({ ...record, evidence: other }), offline: true, fragment: "" });
@@ -1293,7 +1293,7 @@ describe("evidence and receipts", () => {
       // A host that signs with another carried set's brain is refused all the same, since a retired key may have been exposed, and the line says whose key it is.
       const retired = { key: "r", release: "3.3.0", fromBlock: 1, board: "0x8888888888888888888888888888888888888888", log: "0x9999999999999999999999999999999999999999", executor: "0x7777777777777777777777777777777777777777" };
       const midSwitch = { sets: [set, retired], brainOn: { [retired.log]: OTHER.address } };
-      const SWITCHING = "payment: the receipt's payment is the record's, but the host signs its network file as set r's brain, while the active set t names a different brain. This usually means BrainChain is switching sets: run it again later";
+      const SWITCHING = `payment: the receipt's payment is the record's, but ${base}/network.json is signed by ${abbr(OTHER.address)}, the brain of set r, not by ${abbr(BRAIN.address)}, the active set t's. BrainChain is probably switching sets: run the command again later`;
       const switching = await paid(record, { receipt, ...midSwitch });
       assert.deepEqual(failed(switching), ["receipt-payment"]);
       assert.equal(check(switching, "receipt-payment").message, SWITCHING);
@@ -1301,7 +1301,7 @@ describe("evidence and receipts", () => {
       serveReceipt(receipt.value);
       const served = await paid(record, midSwitch);
       assert.deepEqual(failed(served), ["receipt-payment"]);
-      assert.equal(check(served, "receipt-payment").message, `${SWITCHING}. --offline checks the decision without its receipt`);
+      assert.equal(check(served, "receipt-payment").message, `${SWITCHING}, or with --offline to check the decision without its receipt`);
       assert.deepEqual(failed(await paid(record, { ...midSwitch, offline: true })), []);
       pages.delete(new URL(RECEIPT_URL()).pathname);
 
@@ -2009,7 +2009,7 @@ describe("records", () => {
     try {
       const ctx = onChain({ sets: [set] });
       // The host answers every address it serves nothing at with the same 404, which is all it gives before agent records are switched on.
-      const UNSWITCHED = "The host serves records, licences and papers once BrainChain switches agent records on, and returns 404 until then";
+      const UNSWITCHED = "The host serves records, licences and papers once BrainChain switches agent records on";
       assert.match(check(await verifyRecord(ctx, brainHost(), 99999999n), "record-fetch").message, new RegExp(`^could not read the record: http:\\S+ answered with status 404: Not found\\. ${UNSWITCHED}$`));
       const said = `answered with status 404: ${UNCONTROLLED.replace(/\.$/, "")}`;
       assert.ok(check(await verifyLicences(ctx, brainHost(), 99999999n), "licences-fetch").message.endsWith(said));
@@ -2134,7 +2134,7 @@ describe("an agent's record", () => {
     assert.equal(check(report, "record-signatures").message, "signatures: each of the 3 entries is signed by the brain it names");
     assert.equal(check(report, "record-head").message, `head: signed by ${key}, the brain it names. It ends at entry 3 with the hash ${abbr(head.head.hash)}, as the entries do`);
     assert.equal(check(report, "record-fresh").message, `fresh: the head was signed ${at(NOW - 30)}, 30 seconds ago`);
-    assert.equal(check(report, "record-brain").message, `brain: ${key} was the brain of ${LOG} when it signed entries 1 to 3; ${key} was the brain of ${LOG}, the active set's, when it signed the head`);
+    assert.equal(check(report, "record-brain").message, `brain: ${key} was the brain of ${LOG}, the active set's, when it signed entries 1 to 3 and the head`);
     assert.deepEqual(report.agent, AGENT);
     assert.deepEqual(report.head, { seq: 3, hash: head.head.hash, brain: BRAIN.address, at: NOW - 30, signedAt: at(NOW - 30), ageSeconds: 30 });
     assert.equal(report.url, recordUrl(brainHost(), 501n));
@@ -2281,7 +2281,7 @@ describe("an agent's record", () => {
     const head = await recordHead(second);
     const report = await served([first, second], head, { chain: { brains } });
     assert.deepEqual(lines(report), WHOLE);
-    assert.equal(check(report, "record-brain").message, `brain: ${abbr(OTHER.address)} was the brain of ${LOG} when it signed entry 1; ${abbr(BRAIN.address)} was the brain of ${LOG} when it signed entry 2; ${abbr(BRAIN.address)} was the brain of ${LOG}, the active set's, when it signed the head`);
+    assert.equal(check(report, "record-brain").message, `brain: ${abbr(OTHER.address)} was the brain of ${LOG} when it signed entry 1; ${abbr(BRAIN.address)} was the brain of ${LOG}, the active set's, when it signed entry 2 and the head`);
 
     // The key the log named before, signing after its time.
     const late = await recordEntry(first, { issuedAt: NOW - 1_000 }, OTHER);
@@ -2358,7 +2358,7 @@ describe("an agent's record", () => {
   it("is an error when the host serves no record, and a mismatch when what it serves is not one", async () => {
     const none = await verifyRecord(onChain({ sets: [set] }), brainHost(), 501n);
     assert.deepEqual(lines(none), ["record-fetch error"]);
-    assert.match(check(none, "record-fetch").message, /^could not read the record: http:\S+\/agents\/4663\/501\/record\?from=1&limit=200 answered with status 404: the host has no agent record at this address\. The host serves records, licences and papers once BrainChain switches agent records on, and returns 404 until then$/);
+    assert.match(check(none, "record-fetch").message, /^could not read the record: http:\S+\/agents\/4663\/501\/record\?from=1&limit=200 answered with status 404: the host has no agent record at this address\. The host serves records, licences and papers once BrainChain switches agent records on$/);
     assert.equal(outcomeOf([none]), "unverified");
     assert.equal(none.entries, 0);
 
@@ -2377,7 +2377,7 @@ describe("an agent's record", () => {
     const [entry] = await recordOf([{}]);
     const extra = await served([{ ...entry, note: "x" }], await recordHead(entry));
     assert.deepEqual(lines(extra), ["record-fetch fail"]);
-    assert.match(check(extra, "record-fetch").message, /lists, in place 1, something other than a record entry as BrainChain signs one$/);
+    assert.match(check(extra, "record-fetch").message, /lists, at position 1, something other than a record entry as BrainChain signs one$/);
     const versioned = await recordOf([{ version: 2 }]);
     assert.deepEqual(lines(await served(versioned, await recordHead(versioned[0]))), ["record-fetch fail"]);
 
@@ -2445,7 +2445,7 @@ describe("an agent's record", () => {
     const worker = await house({ build: "" });
     assert.equal(
       check(worker, "current-epoch").message,
-      `current epoch: the identity registry gives controller ${abbr(HOLDER)} and no build. The newest entry's build, "${MODEL}", is BrainChain's own statement of the model it runs this agent on, which the registry does not hold. For such a build the controller alone is compared with the registry, which gives epoch ${abbr(own)}. 2 of 3 entries belong to it: entries 2 to 3`,
+      `current epoch: the identity registry gives controller ${abbr(HOLDER)} and no build. The newest entry's build, "${MODEL}", is BrainChain's own statement of the model it runs this agent on, which the registry does not hold, so only the controller is compared: epoch ${abbr(own)}. 2 of 3 entries belong to it: entries 2 to 3`,
     );
     assert.deepEqual(worker.current, { id: own, controller: HOLDER, build: MODEL, buildFrom: "record", registryBuild: "", entries: [{ from: 2, to: 3 }] });
     // What the registry's metadata holds for such an id is shown and does not count.
@@ -2454,7 +2454,7 @@ describe("an agent's record", () => {
     assert.deepEqual([labelled.current.registryBuild, labelled.current.entries], ["v2", [{ from: 2, to: 3 }]]);
     // The controller is still the registry's to say: under another, no entry is in the id's epoch.
     const sold = await house({ owner: STRANGER, build: "" });
-    assert.match(check(sold, "current-epoch").message, /which gives epoch 0x\w{4}…\w{4}\. None of the 3 entries belongs to it$/);
+    assert.match(check(sold, "current-epoch").message, /so only the controller is compared: epoch 0x\w{4}…\w{4}\. None of the 3 entries belongs to it$/);
     assert.deepEqual(sold.current.entries, []);
     // The prefix is BrainChain's own: written into the registry's metadata it is cut, so the registry never gives such a build.
     const written = await house({ build: MODEL });
@@ -2550,13 +2550,13 @@ describe("an agent's licences", () => {
     const sold = await held(signed, "lapsed", { registry: { owner: STRANGER } });
     assert.deepEqual(lines(sold), GOOD);
     assert.equal(check(sold, "licence-epoch").message, `epoch: the identity registry gives controller 0x4444…4444 and the build "worker-1" now. The licence was earned under controller ${abbr(HOLDER)} and the build "worker-1", so it has lapsed`);
-    assert.equal(check(sold, "licence-state").message, "state: lapsed, as the host says: the agent's id is in another epoch than the one it was earned in");
+    assert.equal(check(sold, "licence-state").message, "state: lapsed, as the host says: the agent's id is no longer in the epoch it was earned in");
 
     const rebuilt = await held(signed, "valid", { registry: { build: "worker-2" } });
     assert.deepEqual(failed(rebuilt), ["licence-state"]);
     assert.equal(
       check(rebuilt, "licence-state").message,
-      "state: the host says valid, and the checks give lapsed: the agent's id is in another epoch than the one it was earned in. The host reads each id's epoch every ten minutes, so its state can trail the registry by that long",
+      "state: the host says valid, and the checks give lapsed: the agent's id is no longer in the epoch it was earned in. The host reads each id's epoch every ten minutes, so its state can trail the registry by that long",
     );
     assert.equal(rebuilt.state, "lapsed");
     const gone = await held(signed, "lapsed", { registry: { owner: null } });
@@ -2682,7 +2682,7 @@ describe("an agent's licences", () => {
     const [trailing] = (await answered(signed, "valid", { epoch: reads(HOLDER, NEXT), registry: { build: "" } })).licences;
     assert.equal(
       check(trailing, "licence-state").message,
-      "state: the host says valid, and the checks give lapsed: the agent's id is in another epoch than the one it was earned in. The host reads each id's epoch every ten minutes, so its state can trail the registry by that long",
+      "state: the host says valid, and the checks give lapsed: the agent's id is no longer in the epoch it was earned in. The host reads each id's epoch every ten minutes, so its state can trail the registry by that long",
     );
     // BrainChain no longer runs the agent: the id's build is whatever its controller declares.
     const [left] = (await answered(signed, "lapsed", { epoch: reads(HOLDER, ""), registry: { build: "" } })).licences;
@@ -2714,7 +2714,7 @@ describe("an agent's licences", () => {
     const [early] = (await answered(signed, "lapsed", { ...read, epoch: reads() })).licences;
     assert.equal(check(early, "licence-state").message, "state: the host says lapsed, and the checks give valid: it has not expired and the epoch the host's reply gives for the id is the one it was earned in");
     const [late] = (await answered(signed, "valid", { ...read, epoch: reads(STRANGER), registry: { owner: STRANGER } })).licences;
-    assert.equal(check(late, "licence-state").message, "state: the host says valid, and the checks give lapsed: the epoch the host's reply gives for the id is another than the one it was earned in");
+    assert.equal(check(late, "licence-state").message, "state: the host says valid, and the checks give lapsed: the epoch the host's reply gives for the id is not the one it was earned in");
     const nobody = await answered(signed, "lapsed", { ...read, epoch: null, registry: { owner: null } });
     assert.deepEqual([failed(nobody), failed(nobody.licences[0])], [[], []]);
     assert.equal(check(nobody.licences[0], "licence-state").message, "state: lapsed, as the host says: the host's reply gives no epoch for the id, as no single account controls it");
@@ -2758,7 +2758,7 @@ describe("an agent's licences", () => {
     // A reply that contradicts itself, or says something else of its reading.
     assert.deepEqual(failed(await answered(signed, "valid", { reading: "unreadable", epoch: reads() })), ["licences-epoch"]);
     const odd = await answered(signed, "valid", { reading: "cached", epoch: reads() });
-    assert.equal(check(odd, "licences-epoch").message, 'epoch: the host\'s reply says "cached" of its reading of the registry, where it says read or unreadable');
+    assert.equal(check(odd, "licences-epoch").message, 'epoch: the host\'s reply gives "cached" as its reading of the registry, where it gives read or unreadable');
     assert.deepEqual(failed(await answered(signed, "valid", read)), ["licences-epoch"]);
   });
 
@@ -2860,7 +2860,7 @@ describe("an agent's papers", () => {
 
     const theirs = await shown(await papers({ agent: { ...AGENT, id: "502" }, epoch: { id: `0x${"ee".repeat(32)}`, controller: HOLDER, build: "worker-1", number: 1 } }));
     assert.deepEqual(failed(theirs), ["papers-agent"]);
-    assert.equal(check(theirs, "papers-epoch").message, "epoch: the papers are not the asked agent's, so the registry was not read");
+    assert.equal(check(theirs, "papers-epoch").message, "epoch: the papers are for an agent other than the one asked for, so the registry was not read");
     assert.equal(check(theirs, "papers-agent").message, "agent: the papers name agent 502, not agent 501, and an epoch that is not the hash of its agent, controller and build");
 
     const old = await shown(await papers({ at: NOW - 20 * 60 }));
@@ -3456,7 +3456,7 @@ describe("the command line", () => {
         "Not checked",
         "",
       ]);
-      assert.match(record.stdout, new RegExp(`\\n {2}ok {4}brain: ${abbr(BRAIN.address)} was the brain of DecisionLog ${abbr(NETWORKS.mainnet.sets[0].log)} \\(set ${NETWORKS.mainnet.sets[0].key}\\) when it signed entries 1 to 2; `));
+      assert.match(record.stdout, new RegExp(`\\n {2}ok {4}brain: ${abbr(BRAIN.address)} was the brain of DecisionLog ${abbr(NETWORKS.mainnet.sets[0].log)} \\(set ${NETWORKS.mainnet.sets[0].key}\\), the active set's, when it signed entries 1 to 2 and the head\\n`));
       assert.match(record.stdout, / UTC\): task 1 accepted, 1 rejected\. The agent's id is in this epoch now\n/);
       assert.match(record.stdout, /\nVerdict: match\. The record is whole: 2 entries, chained from the first to a head the brain key signed at \S+ \S+ UTC, each signed by a key its DecisionLog named its brain\.\nNot checked: that an entry without a receipt states what the board did, or that the agent runs the build its entries name\. See https:\/\/docs\.usebrainchain\.com\/trust-model\n$/);
 
@@ -3481,7 +3481,7 @@ describe("the command line", () => {
       unserve("/agents/");
       const none = await runAsync("mainnet", "--record", "501", ...host);
       assert.equal(none.code, 1);
-      assert.match(none.stdout, /\n {2}ERROR could not read the record: .* answered with status 404: the host has no agent record at this address\. The host serves records, licences and papers once BrainChain switches agent records on, and returns 404 until then\n\nVerdict: UNVERIFIED\. /);
+      assert.match(none.stdout, /\n {2}ERROR could not read the record: .* answered with status 404: the host has no agent record at this address\. The host serves records, licences and papers once BrainChain switches agent records on\n\nVerdict: UNVERIFIED\. /);
       // The registry's chain is checked before anything is read from it.
       const crossed = await runAsync("mainnet", "--record", "501", "--epoch", ...host, "--registry-rpc", urlOf(brainchain));
       assert.equal(crossed.code, 2);
@@ -3567,7 +3567,7 @@ describe("the command line", () => {
       assert.equal(sold.code, 1);
       assert.deepEqual(sold.stdout.split("\n").map((line) => line.split(":")[0]), shape("stale"));
       assert.match(sold.stdout, new RegExp(`\\n {2}FAIL {2}epoch: the papers state controller ${abbr(HOLDER)} and the build "worker-1", epoch ${abbr(stated.epoch.id)}, and the identity registry gives controller 0x4444…4444 and the build "worker-1" now\\n`));
-      assert.match(sold.stdout, /\nVerdict: STALE\. The papers no longer hold: the agent's id has left the epoch they state, as the epoch line shows\. The host signs papers anew at most once a minute, so run the command again in a minute\.\n/);
+      assert.match(sold.stdout, /\nVerdict: STALE\. The papers no longer hold: the agent's id has left the epoch they state, as the FAIL line shows\. The host signs papers anew at most once a minute, so run the command again in a minute\.\n/);
       const soldJson = JSON.parse((await runAsync("mainnet", "--papers", "501", ...host, ...registry, "--json")).stdout);
       assert.deepEqual([soldJson.verdict, soldJson.failed, soldJson.stale, soldJson.current.controller], ["stale", 1, true, getAddress(STRANGER)]);
       // A stale epoch beside any other failure is a mismatch.

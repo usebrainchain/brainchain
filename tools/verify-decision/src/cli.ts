@@ -103,8 +103,8 @@ about an agent the same way: its record, licences and papers. Needs no keys.
   --offline      fetch no receipt from the brain host
   --set <board>  a retired contract set from 3.0.0 on, by TaskBoard address, by
                  its key on the site (v3-1) or by release (3.1.0), in any case;
-                 without it, the active set, or for a decision or task id the
-                 active set does not hold yet, the newest set that holds it
+                 without it, the active set, or for an id it does not hold yet,
+                 the newest set that does
   --rpc <url>    another RPC for the same chain; records and briefs on private
                  addresses are read only when this is on one too
   --registry-rpc <url>
@@ -485,7 +485,6 @@ async function main(): Promise<void> {
 
   interface Hosted {
     header: string;
-    /** Every check, for the tally and the verdict. */
     checks: Check[];
     /** Decisions whose records were served without the work. */
     withheld?: DecisionReport[];
@@ -661,7 +660,7 @@ async function main(): Promise<void> {
         notChecked: "the licences, counts and ceiling the papers list, which --licence and --record check at their source, or the file's fields outside brainchain, which nothing signs.",
         // Papers the brain key signed before the id left their epoch are stale, not forged. Any other failure still reads as a mismatch.
         ...(r.stale && r.checks.every((c) => c.status !== "fail" || c.name === "papers-epoch")
-          ? { stale: "The papers no longer hold: the agent's id has left the epoch they state, as the epoch line shows. The host signs papers anew at most once a minute, so run the command again in a minute." }
+          ? { stale: "The papers no longer hold: the agent's id has left the epoch they state, as the FAIL line shows. The host signs papers anew at most once a minute, so run the command again in a minute." }
           : {}),
       });
     } catch (error) {
