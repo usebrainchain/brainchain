@@ -297,7 +297,7 @@ With `--entry` or `--agent`, the object holds `registry`, `verdict`, `summary` a
 
 ## 0x quotes
 
-`brainchain-verify/zerox` checks an answer from 0x's Swap API before anything in it is signed. It is a library, with no command of its own; `brainchain-worker buy-stake` uses it. It needs `node:crypto` and viem 2, which it takes as a peer dependency so that your own viem client fits its types, and it reads one contract.
+`brainchain-verify/zerox` checks an answer from 0x's Swap API before anything in it is signed. It is a library, with no command of its own; `brainchain-worker buy-stake` uses it. It needs `node:crypto` and viem 2, which it takes as a peer dependency so that your own viem client fits its types. Its one chain read is 0x's Settler registry.
 
 The examples buy each answer from 0x's keyless gateway. The gateway speaks x402 version 2 and charges 0.01 USDC on Base for each request, paid from your key with a signed USDC authorization, so the key needs a little USDC on Base and no ETH there. A request is charged even when it is refused, and even when it carries no `Accept-Signature`; an answer without 0x's signature cannot be checked, so always send the header. The same request to `https://api.0x.org` with your own 0x API key is free and checks the same way.
 
@@ -353,7 +353,15 @@ console.log(exactOut.decoded?.amount, exactIn.decoded?.minAmountOut);
 
 `body` is the bytes 0x sent, as a `Uint8Array`. Read them once with `new Uint8Array(await response.arrayBuffer())`, or take `response.clone()` first if something else reads the body. Anything else, a parsed or decoded body or a bare `ArrayBuffer`, throws a `TypeError` that says to pass the raw bytes.
 
-An exact-out intent (`buyAmount`) needs `maxSellAmount` and an exact-in intent (`sellAmount`) needs `minBuyAmount`, both from the caller's own price: on exact out the Settler pays the recipient exactly the minimum, so the amount `exec` lets it take is the only bound on what is spent, and on exact in the minimum is the only bound on what comes back. That price is yours to choose: a price feed you trust, an oracle on the chain, or 0x's own price for the same trade (`/swap/allowance-holder/price`, whose `estimatedNetSellAmount` or `buyAmount` you can then hold within a margin). Amounts are bigints in the token's smallest units; a plain number fails `quote-intent`, which says so. `slippageBps` in the intent says what the query asked for, so it must be in the query too, with the same value; give it in both or in neither. `maxGasCost` is optional and holds the quote's `gas` times its `gasPrice` to a limit. Those two are 0x's estimate, and `report.quote.transaction` carries both: send the transaction with fee fields of your own.
+`maxSellAmount` (exact out, with `buyAmount`) and `minBuyAmount` (exact in, with `sellAmount`) are required, both from the caller's own price: on exact out the Settler pays the recipient exactly the minimum, so the amount `exec` lets it take is the only bound on what is spent, and on exact in the minimum is the only bound on what comes back.
+
+That price is yours to choose: a price feed you trust, an oracle on the chain, or 0x's own price for the same trade (`/swap/allowance-holder/price`, whose `estimatedNetSellAmount` or `buyAmount` you can then hold within a margin).
+
+Amounts are bigints in the token's smallest units. A plain number fails `quote-intent`, which says so.
+
+`slippageBps` says what the query asked 0x for, so it must be in the query too, with the same value: give it in both or in neither.
+
+`maxGasCost` is optional and holds the quote's `gas` times its `gasPrice` to a limit. Those two are 0x's estimate, and `report.quote.transaction` carries both: send the transaction with fee fields of your own.
 
 `settlers` is the chain's Settlers, or a function that reads them. `readSettlers(client, chainId)` reads them from 0x's registry and throws when the client is on another chain. When the read throws, as an RPC that does not answer does, the report fails `quote-settler` with its error rather than throwing, so `verifyQuote` throws only for arguments it cannot use: an unknown URL, a body that is not bytes, or missing options.
 

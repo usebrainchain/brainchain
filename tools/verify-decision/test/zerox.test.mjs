@@ -627,7 +627,7 @@ describe("what a caller passes", () => {
     url.search = `?${[parts[1], parts[0], ...parts.slice(2)].join("&")}`;
     const report = await verifyQuote(response(EXACT_OUT_ETH), url.href, intentFor(EXACT_OUT_ETH), options);
     assert.equal(failed(report).name, "zerox-signature");
-    assert.equal(failed(report).message, "0x signed the parameters in a different order; send the query exactly as signed, and pass that URL");
+    assert.equal(failed(report).message, "0x signed the parameters in a different order: pass the exact URL you requested, not one rebuilt from its parameters");
     const other = new URL(EXACT_OUT_ETH.url);
     other.searchParams.set("buyAmount", "1");
     assert.match(failed(await verifyQuote(response(EXACT_OUT_ETH), other.href, intentFor(EXACT_OUT_ETH), options)).message, /the answer was changed, or it answers another request/);

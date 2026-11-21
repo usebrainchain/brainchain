@@ -51,7 +51,7 @@ const GATEWAY_PATHS: Readonly<Record<string, string>> = {
   "swap-allowance-holder-quote": "/swap/allowance-holder/quote",
 };
 const GATEWAY_CHANNELS = new Set(["x402", "x402-testnet", "mpp-tempo", "mpp-tempo-testnet"]);
-const REQUIRED = ["@status", "content-digest", "@method;req", "@authority;req", "@path;req", "@query;req"];
+const REQUIRED_COMPONENTS = ["@status", "content-digest", "@method;req", "@authority;req", "@path;req", "@query;req"];
 
 const allowanceHolderAbi = parseAbi(["function exec(address operator, address token, uint256 amount, address target, bytes data) payable returns (bytes)"]);
 const settlerAbi = parseAbi(["function execute((address recipient, address buyToken, uint256 minAmountOut) slippage, bytes[] actions, bytes32 zid) payable returns (bool)"]);
@@ -120,7 +120,7 @@ export interface SignatureReport {
  * Whether 0x signed this response for this request: a key the caller trusts,
  * Ed25519, made within maxAgeSeconds of now, covering the status, the body's
  * digest and the request's method, authority, path and query. Checks run in
- * order and stop at the first that fails, since the rest rest on it.
+ * order and stop at the first that fails, since each depends on the one before.
  */
 export function verifyResponse(response: SignedResponse, request: SignedRequest, options: SignatureOptions = {}): SignatureReport {
   const keys = options.keys ?? ZEROX_KEYS;
@@ -182,7 +182,7 @@ export function verifyResponse(response: SignedResponse, request: SignedRequest,
   pass("zerox-fresh", `signed ${Math.max(age, 0)} seconds ago, within ${maxAge}`);
 
   const covered = params.components.map((c) => c.name + (c.req ? ";req" : ""));
-  const missing = REQUIRED.filter((name) => !covered.includes(name));
+  const missing = REQUIRED_COMPONENTS.filter((name) => !covered.includes(name));
   if (missing.length > 0) return fail("zerox-covers", `the signature leaves out ${missing.join(", ")}, so it does not bind the answer to this request`, { keyid, created });
   pass("zerox-covers", `covers ${covered.join(", ")}`);
 
@@ -203,7 +203,7 @@ export function verifyResponse(response: SignedResponse, request: SignedRequest,
   const verifies = (query: string) => verifyEd25519(null, Buffer.from(signatureBase(params, { ...request, query }, response)), publicKey, signature);
   if (!verifyEd25519(null, Buffer.from(base), publicKey, signature)) {
     if (reordered(request.query).some(verifies)) {
-      return fail("zerox-signature", "0x signed the parameters in a different order; send the query exactly as signed, and pass that URL", { keyid, created });
+      return fail("zerox-signature", "0x signed the parameters in a different order: pass the exact URL you requested, not one rebuilt from its parameters", { keyid, created });
     }
     return fail(
       "zerox-signature",
@@ -245,8 +245,8 @@ export interface Settlers {
  * chain, throws; a revert means paused.
  */
 export async function readSettlers(client: Pick<PublicClient, "readContract" | "getChainId"> & { chain?: { name?: string } }, chainId: number, featureId = TAKER_SETTLER): Promise<Settlers> {
-  const on = await client.getChainId();
-  if (on !== chainId) throw new Error(`the client reads chain ${on}${client.chain?.name ? ` (${client.chain.name})` : ""}, not chain ${chainId}, which the quote is for`);
+  const clientChainId = await client.getChainId();
+  if (clientChainId !== chainId) throw new Error(`the client reads chain ${clientChainId}${client.chain?.name ? ` (${client.chain.name})` : ""}, not chain ${chainId}, which the quote is for`);
   const read = async (functionName: "ownerOf" | "prev"): Promise<Address | undefined> => {
     try {
       return await client.readContract({ address: SETTLER_REGISTRY, abi: registryAbi, functionName, args: [featureId] });
@@ -409,12 +409,12 @@ function checkBody(body: unknown, intent: QuoteIntent, settlers: Settlers | Erro
     ["issues.allowance.spender", quote.spender],
     ["allowanceTarget", quote.allowanceTarget],
   ].filter((entry): entry is [string, Address] => entry[1] !== undefined);
-  const stranger = named.find(([, address]) => !same(address, holder));
+  const wrongSpender = named.find(([, address]) => !same(address, holder));
   add(
     "quote-spender",
-    stranger === undefined,
-    stranger
-      ? `it names ${stranger[1]} as ${stranger[0]}, not AllowanceHolder ${holder}. Never approve that address`
+    wrongSpender === undefined,
+    wrongSpender
+      ? `it names ${wrongSpender[1]} as ${wrongSpender[0]}, not AllowanceHolder ${holder}. Never approve that address`
       : quote.spender !== undefined
         ? "the approval it asks for is to AllowanceHolder"
         : named.length > 0
