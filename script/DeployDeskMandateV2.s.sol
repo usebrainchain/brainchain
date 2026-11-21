@@ -6,7 +6,7 @@ import {VmSafe} from "forge-std/Vm.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {DeskMandate, IAggregatorV3} from "../src/desks/DeskMandate.sol";
-import {DeskMandateV2, IPriceFeed, ISettlerRegistry} from "../src/desks/DeskMandateV2.sol";
+import {DeskMandateV2, ISettlerRegistry} from "../src/desks/DeskMandateV2.sol";
 
 /// @notice Deploys DeskMandateV2 on Robinhood Chain (chain 4663) with the five models and the seven stock
 /// tokens of the first mandate, each on the Chainlink feed the first mandate prices it by, and starts the
@@ -88,7 +88,7 @@ contract DeployDeskMandateV2 is Script {
             address token = FIRST.tokens(i);
             (, IAggregatorV3 feed, bool live) = FIRST.venues(token);
             if (!live) continue;
-            mandate.setVenue(token, IPriceFeed(address(feed)), true, true);
+            mandate.setVenue(token, feed, true, true);
             require(mandate.price(token) == FIRST.price(token), "a token prices differently from the first mandate");
         }
         // After listing, which prices each token: on a weekend the feeds are older than MAX_FEED_AGE.
@@ -115,9 +115,9 @@ contract DeployDeskMandateV2 is Script {
             address token = FIRST.tokens(i);
             (, IAggregatorV3 firstFeed, bool firstLive) = FIRST.venues(token);
             if (!firstLive) continue;
-            (IPriceFeed feed, bool scaled, bool live) = mandate.venues(token);
+            (IAggregatorV3 feed, bool scaled, bool live) = mandate.venues(token);
             require(
-                mandate.tokens(listed) == token && address(feed) == address(firstFeed) && scaled && live,
+                mandate.tokens(listed) == token && feed == firstFeed && scaled && live,
                 "a venue is not the first mandate's"
             );
             require(mandate.booked(token) == 0, "a desk already holds a token");

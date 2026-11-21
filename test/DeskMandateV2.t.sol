@@ -7,7 +7,8 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-import {DeskMandateV2, IAllowanceHolder, IPriceFeed, ISettlerRegistry} from "../src/desks/DeskMandateV2.sol";
+import {IAggregatorV3} from "../src/desks/DeskMandate.sol";
+import {DeskMandateV2, IAllowanceHolder, ISettlerRegistry} from "../src/desks/DeskMandateV2.sol";
 import {MockERC20} from "./MockERC20.sol";
 import {MockFeed, MockStock, MockWETH} from "./MockVenues.sol";
 import {
@@ -70,8 +71,8 @@ abstract contract DeskV2Setup is Test {
         spy.mint(s, 1_000_000e18);
     }
 
-    function _feed(MockFeed feed) internal pure returns (IPriceFeed) {
-        return IPriceFeed(address(feed));
+    function _feed(MockFeed feed) internal pure returns (IAggregatorV3) {
+        return IAggregatorV3(address(feed));
     }
 
     function _fund(uint8 desk, uint256 amount) internal {
@@ -471,7 +472,7 @@ contract DeskMandateV2Test is DeskV2Setup {
         vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.NotListed.selector, address(usdg)));
         mandate.setVenue(address(usdg), _feed(tslaFeed), false, true);
         vm.expectRevert(DeskMandateV2.ZeroAddress.selector);
-        mandate.setVenue(address(tsla), IPriceFeed(address(0)), true, true);
+        mandate.setVenue(address(tsla), IAggregatorV3(address(0)), true, true);
         vm.expectRevert(DeskMandateV2.ZeroAddress.selector);
         mandate.setVenue(address(0), _feed(tslaFeed), true, false);
         tslaFeed.setDecimals(18);

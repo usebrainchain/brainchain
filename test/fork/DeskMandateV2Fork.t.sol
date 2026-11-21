@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {Test, Vm, console} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {DeskMandate, IAggregatorV3} from "../../src/desks/DeskMandate.sol";
-import {DeskMandateV2, IPriceFeed, ISettlerRegistry} from "../../src/desks/DeskMandateV2.sol";
+import {DeskMandateV2, ISettlerRegistry} from "../../src/desks/DeskMandateV2.sol";
 import {DeployDeskMandateV2} from "../../script/DeployDeskMandateV2.s.sol";
 
 interface IWETH {
@@ -107,7 +107,7 @@ contract DeskMandateV2ForkTest is Test {
         assertEq(address(mandate), TAKER, "the contract sits at the quotes' taker");
         deal(USDG, owner, 500e6);
         vm.startPrank(owner);
-        mandate.setVenue(WETH, IPriceFeed(ETH_FEED), false, true);
+        mandate.setVenue(WETH, IAggregatorV3(ETH_FEED), false, true);
         IERC20(USDG).approve(address(mandate), 500e6);
         for (uint8 i = 0; i < 5; i++) {
             mandate.fund(i, 100e6);
@@ -190,7 +190,7 @@ contract DeskMandateV2ForkTest is Test {
 
     function _listNvda() internal {
         vm.prank(owner);
-        mandate.setVenue(NVDA, IPriceFeed(NVDA_FEED), true, true);
+        mandate.setVenue(NVDA, IAggregatorV3(NVDA_FEED), true, true);
     }
 
     function test_aRealQuoteBuysNvdaForADesk() public onFork {
@@ -289,7 +289,7 @@ contract DeskMandateV2ForkTest is Test {
         for (uint256 i = 0; i < first.tokenCount(); i++) {
             address token = first.tokens(i);
             (, IAggregatorV3 feed,) = first.venues(token);
-            mandate.setVenue(token, IPriceFeed(address(feed)), true, true);
+            mandate.setVenue(token, feed, true, true);
             deal(token, owner, 0.01e18);
             IERC20(token).approve(address(mandate), 0.01e18);
             mandate.fundHolding(0, token, 0.01e18);
@@ -483,7 +483,7 @@ contract DeskMandateV2ForkTest is Test {
             address token = first.tokens(i);
             (, IAggregatorV3 feed,) = first.venues(token);
             vm.prank(owner);
-            mandate.setVenue(token, IPriceFeed(address(feed)), true, true);
+            mandate.setVenue(token, feed, true, true);
             assertEq(mandate.price(token), first.price(token), "same price as the first mandate");
         }
         assertEq(mandate.tokenCount(), 8);
@@ -529,7 +529,7 @@ contract DeskMandateV2StockForkTest is Test {
         deal(USDG, safe, DESK_USDG);
         deal(NVDA, safe, DESK_NVDA);
         vm.startPrank(safe);
-        mandate.setVenue(NVDA, IPriceFeed(NVDA_FEED), true, true);
+        mandate.setVenue(NVDA, IAggregatorV3(NVDA_FEED), true, true);
         IERC20(USDG).approve(address(mandate), DESK_USDG);
         IERC20(NVDA).approve(address(mandate), DESK_NVDA);
         mandate.fund(4, DESK_USDG);
@@ -616,10 +616,10 @@ contract DeskMandateV2StockForkTest is Test {
         mandate.floorOf(4, NVDA, true, 10e6);
 
         vm.warp(effective + 1 hours);
-        (uint80 round, int256 answer,,,) = IPriceFeed(NVDA_FEED).latestRoundData();
+        (uint80 round, int256 answer,,,) = IAggregatorV3(NVDA_FEED).latestRoundData();
         vm.mockCall(
             NVDA_FEED,
-            abi.encodeWithSelector(IPriceFeed.latestRoundData.selector),
+            abi.encodeWithSelector(IAggregatorV3.latestRoundData.selector),
             abi.encode(round + 1, answer / 10, block.timestamp, block.timestamp, round + 1)
         );
         assertApproxEqRel(mandate.floorOf(4, NVDA, true, 10e6), before, 1e12, "the split-adjusted feed");
@@ -686,7 +686,7 @@ contract DeployDeskMandateV2ForkTest is Test {
             script,
             mandate,
             deployer,
-            abi.encodeCall(DeskMandateV2.setVenue, (FIRST.tokens(0), IPriceFeed(address(1)), true, false)),
+            abi.encodeCall(DeskMandateV2.setVenue, (FIRST.tokens(0), IAggregatorV3(address(1)), true, false)),
             "a venue is not the first mandate's"
         );
         _tampered(script, mandate, deployer, abi.encodeCall(DeskMandateV2.setPaused, (true)), "paused");
