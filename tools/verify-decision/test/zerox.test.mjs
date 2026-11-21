@@ -5,21 +5,7 @@ import { describe, it } from "node:test";
 
 import { BaseError, ContractFunctionRevertedError, decodeFunctionData, encodeFunctionData, parseAbi } from "viem";
 
-import {
-  ACCEPT_SIGNATURE,
-  checkQuote,
-  decode,
-  fetchZeroxKeys,
-  keysIn,
-  NATIVE,
-  readSettlers,
-  SETTLER_REGISTRY,
-  signedRequestOf,
-  verifyQuote,
-  verifyResponse,
-  ZEROX_KEYS,
-  ZEROX_KEYS_URL,
-} from "../dist/zerox.js";
+import { ACCEPT_SIGNATURE, checkQuote, decode, NATIVE, readSettlers, SETTLER_REGISTRY, signedRequestOf, verifyQuote, verifyResponse, ZEROX_KEYS } from "../dist/zerox.js";
 
 // Recorded through 0x's keyless gateway on Robinhood Chain on 2026-11-21, for a throwaway taker that holds nothing.
 const fixture = (name) => {
@@ -153,12 +139,12 @@ describe("0x's response signature", () => {
     assert.equal(verifyResponse(response(EXACT_IN_ETH), request, { now: at(EXACT_IN_ETH, 200), maxAgeSeconds: 300 }).ok, true);
   });
 
-  it("picks the key by its id, so a rotated set that still lists the key verifies, and one without it fails with where to look", () => {
+  it("picks the key by its id, so a set that still lists the key verifies, and one without it fails", () => {
     const rotated = [{ keyid: "0x-signing-key-prod-01012027", x: "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo" }, ...ZEROX_KEYS];
     assert.equal(verifyResponse(response(PRICE), signedRequestOf(PRICE.url), { now: at(PRICE), keys: rotated }).ok, true);
     const retired = verifyResponse(response(PRICE), signedRequestOf(PRICE.url), { now: at(PRICE), keys: rotated.slice(0, 1) });
     assert.equal(failed(retired).name, "zerox-key");
-    assert.ok(failed(retired).message.includes(ZEROX_KEYS_URL));
+    assert.match(failed(retired).message, /not among the keys given \(0x-signing-key-prod-01012027\)/);
     // The id is what selects; the right id on the wrong key does not verify.
     const wrong = verifyResponse(response(PRICE), signedRequestOf(PRICE.url), { now: at(PRICE), keys: [{ ...ZEROX_KEYS[0], x: rotated[0].x }] });
     assert.equal(failed(wrong).name, "zerox-signature");
@@ -223,37 +209,15 @@ describe("0x's response signature", () => {
   });
 });
 
-describe("the published keys", () => {
-  const page = [
-    "# Response Signatures",
-    "```json",
-    JSON.stringify({ kty: "OKP", crv: "Ed25519", kid: "0x-signing-key-prod-24092026", x: "19P3C981JsyQsqwVho8Tlabx51rslvdruSH59mGuWn0" }, null, 2),
-    "```",
-    "```json",
-    '{ "message": "Content-Digest does not match the request body" }',
-    "```",
-    "```json",
-    JSON.stringify({ kty: "OKP", crv: "Ed25519", kid: "next", x: "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo" }),
-    "```",
-    "```json",
-    "{ not json",
-    "```",
-  ].join("\n");
-
-  it("reads every Ed25519 key in the docs page's JSON blocks and nothing else", () => {
-    assert.deepEqual(keysIn(page), [ZEROX_KEYS[0], { keyid: "next", x: "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo" }]);
-  });
-
-  it("fetches the page without following a redirect, and refuses one that lists no key", async () => {
-    const asked = [];
-    const fetcher = async (url, init) => {
-      asked.push([url, init.redirect]);
-      return new Response(page);
-    };
-    assert.equal((await fetchZeroxKeys(fetcher)).length, 2);
-    assert.deepEqual(asked, [[ZEROX_KEYS_URL, "error"]]);
-    await assert.rejects(fetchZeroxKeys(async () => new Response("# moved")), /lists no Ed25519 key/);
-    await assert.rejects(fetchZeroxKeys(async () => new Response("", { status: 503 })), /answered 503/);
+describe("the pinned keys", () => {
+  it("are the only keys trusted, and a signature by any other says a newer version of the package is needed", () => {
+    const { privateKey } = generateKeyPairSync("ed25519");
+    const params = `("@status" "content-type" "content-digest" "@method";req "@authority";req "@path";req "@query";req);created=${PRICE.created};keyid="0x-signing-key-next";alg="ed25519";tag="0x-swap-api"`;
+    const signature = sign(null, Buffer.from("anything"), privateKey).toString("base64");
+    const report = verifyResponse(response(PRICE, { headers: { "signature-input": `sig=${params}`, signature: `sig=:${signature}:` } }), signedRequestOf(PRICE.url), { now: at(PRICE) });
+    assert.equal(failed(report).name, "zerox-key");
+    assert.equal(report.keyid, "0x-signing-key-next");
+    assert.match(failed(report).message, /^signed with key 0x-signing-key-next, which this version of brainchain-verify does not carry \(it trusts 0x-signing-key-prod-24092026\)\. .*a newer version of brainchain-verify is needed/);
   });
 });
 

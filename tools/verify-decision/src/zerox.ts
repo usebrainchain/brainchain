@@ -14,11 +14,12 @@ export interface ZeroxKey {
   x: string;
 }
 
-/** 0x's signing keys as its docs listed them when this package was built. 0x rotates them; see fetchZeroxKeys. */
+/**
+ * The only keys this package trusts, picked by keyid. 0x lists a new key on
+ * its docs before it signs with it, and each one ships in a patch release;
+ * nothing is read from the network.
+ */
 export const ZEROX_KEYS: readonly ZeroxKey[] = [{ keyid: "0x-signing-key-prod-24092026", x: "19P3C981JsyQsqwVho8Tlabx51rslvdruSH59mGuWn0" }];
-
-/** The only place 0x publishes its current keys. A new key appears there beside the old one before 0x signs with it. */
-export const ZEROX_KEYS_URL = "https://docs.0x.org/docs/developer-resources/response-signatures.md";
 
 /**
  * The Accept-Signature header to send. It names no key, so 0x signs with
@@ -90,6 +91,7 @@ export function signedRequestOf(url: string | URL, method = "GET"): SignedReques
 }
 
 export interface SignatureOptions {
+  /** Trusted in place of ZEROX_KEYS. */
   keys?: readonly ZeroxKey[];
   /** Milliseconds since the epoch; Date.now unless given. */
   now?: () => number;
@@ -144,10 +146,12 @@ export function verifyResponse(response: SignedResponse, request: SignedRequest,
   if (keyid === undefined) return fail("zerox-key", "the signature names no key");
   const key = keys.find((k) => k.keyid === keyid);
   if (key === undefined) {
+    const known = keys.map((k) => k.keyid).join(", ") || "none";
     return fail(
       "zerox-key",
-      `signed with key ${keyid}, which is not among the keys this check trusts (${keys.map((k) => k.keyid).join(", ") || "none"}). ` +
-        `0x lists its current keys at ${ZEROX_KEYS_URL}: fetchZeroxKeys reads them, and a newer brainchain-verify carries them`,
+      options.keys === undefined
+        ? `signed with key ${keyid}, which this version of brainchain-verify does not carry (it trusts ${known}). 0x has a new signing key, and a newer version of brainchain-verify is needed to check it`
+        : `signed with key ${keyid}, which is not among the keys given (${known})`,
       { keyid },
     );
   }
@@ -189,38 +193,6 @@ export function verifyResponse(response: SignedResponse, request: SignedRequest,
   }
   pass("zerox-signature", `0x signed this answer to ${request.method} ${request.authority}${request.path} with this exact query`);
   return { ok: true, checks, keyid, created };
-}
-
-/**
- * 0x's current signing keys, read from its docs page, which is the one place
- * 0x publishes them. A key 0x retires is taken off the page, so a caller that
- * reads the page trusts no retired key; one that keeps ZEROX_KEYS trusts the
- * keys of its build.
- */
-export async function fetchZeroxKeys(fetcher: typeof fetch = fetch, url = ZEROX_KEYS_URL): Promise<ZeroxKey[]> {
-  const response = await fetcher(url, { redirect: "error", signal: AbortSignal.timeout(15_000) });
-  if (!response.ok) throw new Error(`${url} answered ${response.status}`);
-  const keys = keysIn(await response.text());
-  if (keys.length === 0) throw new Error(`${url} lists no Ed25519 key`);
-  return keys;
-}
-
-/** The Ed25519 JWKs in a page's JSON blocks. */
-export function keysIn(page: string): ZeroxKey[] {
-  const keys: ZeroxKey[] = [];
-  for (const [, block] of page.matchAll(/```json\s*\n([\s\S]*?)```/g)) {
-    let value: unknown;
-    try {
-      value = JSON.parse(block!);
-    } catch {
-      continue;
-    }
-    for (const jwk of Array.isArray(value) ? value : [value]) {
-      const { kty, crv, kid, x } = (jwk ?? {}) as Record<string, unknown>;
-      if (kty === "OKP" && crv === "Ed25519" && typeof kid === "string" && typeof x === "string" && /^[A-Za-z0-9_-]{43}$/.test(x)) keys.push({ keyid: kid, x });
-    }
-  }
-  return keys;
 }
 
 /** The Settler for taker-sent swaps on a chain, and the one before it, which 0x's API can still use for a while after a new one is deployed. */

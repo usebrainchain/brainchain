@@ -341,12 +341,11 @@ The signature checks run in order and stop at the first that fails. The quote's 
 
 ### When 0x changes its key
 
-0x rotates its signing key. It publishes the current keys on [one docs page](https://docs.0x.org/docs/developer-resources/response-signatures.md), lists a new key there beside the old one before it signs with it, and takes a key off the page once it retires it. There is no other key endpoint. So:
+0x rotates its signing key, and lists a new key on [its docs](https://docs.0x.org/docs/developer-resources/response-signatures.md) beside the old one before it signs with it.
 
 - `ACCEPT_SIGNATURE` names no key, and 0x signs with whichever key is active.
-- The key is picked by the signature's `keyid`, never by position.
-- `ZEROX_KEYS` holds the keys the page listed when this package was built. A signature by any other key fails `zerox-key`, and the line names the page.
-- `fetchZeroxKeys()` reads the keys from the page. A caller that gets a `zerox-key` failure can read them and check the same response again within its 60 seconds, as `buy-stake` does, so a rotation needs no new release. A newer release of this package carries the new key.
+- The key is picked by the signature's `keyid`, never by position, from `ZEROX_KEYS`, the keys pinned in this package. Nothing is read from the network.
+- A signature by any other key fails `zerox-key`, and the line says a newer version of this package is needed. Each new key ships in a patch release.
 
 ## Building
 
