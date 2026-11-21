@@ -5,6 +5,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {Ownable, Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
@@ -64,6 +65,13 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
         uint32 orders;
     }
 
+    // An order's feed price, the floor it must clear and the Settler that runs it.
+    struct Fill {
+        uint256 mark;
+        uint256 floor;
+        address settler;
+    }
+
     IERC20 public immutable USDG;
     address public immutable ALLOWANCE_HOLDER;
     ISettlerRegistry public immutable SETTLERS;
@@ -88,6 +96,8 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
         uint256 amountIn,
         uint256 amountOut,
         uint256 feedPrice,
+        uint256 floor,
+        uint256 minOut,
         bytes32 reasoning,
         bytes32 indexed quote,
         address settler
@@ -162,24 +172,21 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
         if (desk >= DESKS) revert NoDesk();
         if (amountIn == 0) revert ZeroAmount();
         if (quote == bytes32(0)) revert NoQuote();
-        uint256 mark;
-        uint256 floor;
+        Fill memory fill;
         {
             Venue memory venue = venues[token];
             if (!venue.live) revert NotListed(token);
             if (block.timestamp < uint256(desks[desk].lastOrderAt) + interval) revert TooSoon(desk);
-            mark = _price(venue, token);
-            floor = _floor(desk, token, buy, amountIn, mark);
-            if (minOut > floor) floor = minOut;
+            fill.mark = _price(venue, token);
+            fill.floor = Math.max(_floor(desk, token, buy, amountIn, fill.mark), minOut);
         }
 
-        address settler;
-        (amountOut, settler) =
+        (amountOut, fill.settler) =
             buy ? _swap(USDG, IERC20(token), amountIn, swap) : _swap(IERC20(token), USDG, amountIn, swap);
-        if (amountOut < floor) revert OffPrice(amountOut, floor);
+        if (amountOut < fill.floor) revert OffPrice(amountOut, fill.floor);
 
         _book(desk, token, buy, amountIn, amountOut);
-        emit Order(desk, token, buy, amountIn, amountOut, mark, reasoning, quote, settler);
+        emit Order(desk, token, buy, amountIn, amountOut, fill.mark, fill.floor, minOut, reasoning, quote, fill.settler);
     }
 
     // Money in and out, the owner's

@@ -119,7 +119,7 @@ contract DeskMandateV2ForkTest is Test {
         return ISettlerRegistry(SETTLERS).ownerOf(2);
     }
 
-    function _assertOrderLog(Quote memory q, uint256 got) internal view {
+    function _assertOrderLog(Quote memory q, uint256 got, uint256 floor) internal view {
         Vm.Log[] memory logs = vm.getRecordedLogs();
         Vm.Log memory order;
         for (uint256 i = 0; i < logs.length; i++) {
@@ -130,12 +130,16 @@ contract DeskMandateV2ForkTest is Test {
         assertEq(order.topics[1], bytes32(uint256(0)));
         assertEq(order.topics[2], bytes32(uint256(uint160(WETH))));
         assertEq(order.topics[3], q.digest, "the order carries the quote's digest");
-        (bool buy, uint256 amountIn, uint256 amountOut, uint256 feedPrice, bytes32 reasoning, address settler) =
-            abi.decode(order.data, (bool, uint256, uint256, uint256, bytes32, address));
+        (bool buy, uint256 amountIn, uint256 amountOut, uint256 feedPrice, uint256 enforced, uint256 minOut,,) =
+            abi.decode(order.data, (bool, uint256, uint256, uint256, uint256, uint256, bytes32, address));
         assertTrue(buy);
         assertEq(amountIn, q.sellAmount);
         assertEq(amountOut, got);
         assertEq(feedPrice, mandate.price(WETH));
+        assertEq(enforced, floor > q.minBuyAmount ? floor : q.minBuyAmount, "the floor the order had to clear");
+        assertEq(minOut, q.minBuyAmount);
+        (,,,,,, bytes32 reasoning, address settler) =
+            abi.decode(order.data, (bool, uint256, uint256, uint256, uint256, uint256, bytes32, address));
         assertEq(reasoning, keccak256(bytes(q.name)));
         assertEq(settler, _settler());
     }
@@ -159,7 +163,7 @@ contract DeskMandateV2ForkTest is Test {
         assertEq(IERC20(USDG).balanceOf(address(mandate)), 500e6 - q.sellAmount);
         assertEq(IERC20(USDG).allowance(address(mandate), ALLOWANCE_HOLDER), 0);
 
-        _assertOrderLog(q, got);
+        _assertOrderLog(q, got, floor);
 
         console.log("buy: 5 USDG for WETH wei", got);
         console.log("  feed floor", floor, "quote minBuyAmount", q.minBuyAmount);

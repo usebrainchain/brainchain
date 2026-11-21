@@ -112,7 +112,9 @@ contract DeskMandateV2Test is DeskV2Setup {
     function test_aBuyAndASellMoveTheLedger() public {
         _fund(0, 1_000e6);
         vm.expectEmit(true, true, true, true, address(mandate));
-        emit DeskMandateV2.Order(0, address(nvda), true, 200e6, 2e18, 100e6, REASONING, QUOTE, address(settler));
+        emit DeskMandateV2.Order(
+            0, address(nvda), true, 200e6, 2e18, 100e6, 1.96e18, 0, REASONING, QUOTE, address(settler)
+        );
         assertEq(_trade(0, address(nvda), true, 200e6, 2e18), 2e18);
         assertEq(mandate.holdings(0, address(nvda)), 2e18);
         (,, uint64 lastOrderAt, uint32 orders) = mandate.desks(0);
@@ -632,7 +634,9 @@ contract DeskMandateV2ZeroExTest is DeskV2Setup {
         );
         vm.prank(operator);
         vm.expectEmit(true, true, true, true, address(mandate));
-        emit DeskMandateV2.Order(0, address(nvda), true, 100e6, 1e18, 100e6, REASONING, QUOTE, address(next));
+        emit DeskMandateV2.Order(
+            0, address(nvda), true, 100e6, 1e18, 100e6, 0.98e18, 0, REASONING, QUOTE, address(next)
+        );
         mandate.trade(0, address(nvda), true, 100e6, 0, REASONING, QUOTE, viaNext);
     }
 
