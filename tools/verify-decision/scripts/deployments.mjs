@@ -32,8 +32,8 @@ for (const name of ["mainnet", "testnet"]) {
     rpc: d.rpc,
     sets: [set(d, file), ...(d.retired ?? []).map((r) => set(r, file))],
   };
-  // --set takes the first set a name matches, so no name may stand for two.
-  const names = networks[name].sets.flatMap((s) => [s.key, s.release, ...(s.aliases ?? [])]);
+  // --set takes the first set a name matches, in any case, so no name may stand for two.
+  const names = networks[name].sets.flatMap((s) => [s.key, s.release, ...(s.aliases ?? [])].map((n) => n.toLowerCase()));
   const twice = names.find((n, i) => names.indexOf(n) !== i);
   if (twice !== undefined) throw new Error(`${file}: ${twice} names more than one set`);
 }

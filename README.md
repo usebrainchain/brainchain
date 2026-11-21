@@ -199,12 +199,14 @@ Each `script/Deploy*.s.sol` lists its inputs in its header. Run a script without
 Every decision is published as a JSON record whose hash is stored on chain with it. `brainchain-verify` reads the decision from `DecisionLog`, fetches the record, recomputes its hashes and confidence, and applies the task's thresholds the way the contracts do. It needs only a public RPC.
 
 ```sh
-npx brainchain-verify mainnet 1
+npx brainchain-verify mainnet 1 --set v3-5
 npx brainchain-verify mainnet --task 11 --set v3-1
 npx brainchain-verify mainnet --entry 20424:7
 ```
 
 A contract set is named by its release or by its key, as decision pages use it: `v3-5` is 3.5.0, `v3-1` is 3.1.0 and `v3` is 3.0.0. `--set` takes either, or the set's `TaskBoard` address; without it, the tool reads the active set.
+
+Each set numbers its decisions from 1. A decision id without `--set` that the active set does not hold yet is read from the newest set that holds it, and the tool says which set it read.
 
 The [tool's README](tools/verify-decision/README.md) lists every check. [docs/decisions.md](docs/decisions.md) describes the record format and how to check a record by hand.
 

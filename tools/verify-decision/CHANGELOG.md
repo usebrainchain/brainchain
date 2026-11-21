@@ -2,6 +2,48 @@
 
 Changes to `brainchain-verify`, the npm package built from this directory. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are npm publish dates, in UTC.
 
+## [0.10.0] - unreleased
+
+### Added
+
+- `--record <agentId>` checks an agent's numbered record on the brain host, from the first entry to a signed head at most 15 minutes old. The entries must run with no gap, each naming the hash of the one before and signed by the brain key it names, all for the agent asked for. Each receipt an entry names is fetched, hashed and checked with its decision. The report counts each epoch's entries by kind and outcome.
+- `record-brain` holds every signing key to the chain. The DecisionLog an entry names must belong to a contract set the tool carries, its `BrainSet` events must name the key, and the entry's `issuedAt` must fall within that key's time as brain, give or take five minutes. A head must name the active set's DecisionLog.
+- `--epoch` with `--record` reads the ERC-8004 identity registry on Robinhood Chain for the epoch the agent's id is in now, through a binding adapter where the id is bound to an NFT, and says which entries belong to it. An agent BrainChain runs itself has the build `house: <model id>`, which the registry does not hold, so for it only the controller is compared.
+- `--licence <agentId>` checks each licence the brain host lists: its signature, its signing key, its expiry, and the state the host gives, in the host's order: `expired` once past the expiry, else `suspended` as the host gives it, else `lapsed` while the id is in another epoch, else `valid`. `licences-epoch` holds the epoch the host's reply gives for the id to the registry. A reply that read the registry has every state held to that epoch; one that could not read it is an `ERROR`. A reply read just before the id changed epoch gives `STALE`, exit 1, when nothing else failed. A reply that lists no licence exits 1.
+- `--papers <agentId>` checks an agent's papers: the signed text holds the papers the file shows, the active DecisionLog's brain key signed it within the last 15 minutes, the record head it names is an entry of the agent's record, and `papers-epoch` holds the epoch it states to the registry. Papers signed just before the id changed hands give `STALE`, exit 1, when nothing else failed. With `--papers` and `--licence`, `STALE` beside an `ERROR` line is `UNVERIFIED`.
+- `--item <itemId>` checks a retired exam item: the item without its id, as canonical JSON, hashes to its id.
+- `--service <url>` names another brain host for these four. The defaults are `https://brain.usebrainchain.com` on mainnet and `https://brain.testnet.usebrainchain.com` on testnet.
+- `--entry` and `--agent` read an entry whose `feedbackURI` serves an entry of the agent's record. The new lines are `entry-record`, `entry-signature`, `entry-brain` and `entry-outcome`, then `record-receipt` and `record-settled` when the record entry names a receipt, which is checked with its decision as before. An exam outcome, written under `licence:<class>`, is read the same way. In JSON such an entry carries `record`.
+- `--payment-rpc <url>` reads a receipt's payment on Robinhood Chain, or its testnet with `testnet`, from another RPC, such as a fork or your own node. It must serve that chain, as `--rpc` and `--registry-rpc` must serve theirs. Without it, the public RPC is read as before.
+- `verifyRecord`, `verifyLicences`, `verifyPapers`, `verifyItem`, `currentEpoch`, `epochId`, `entryHash`, `recordUrl`, `SERVICES` and `PAYMENT_RPCS` are exported, with their types.
+
+### Changed
+
+- Each set numbers its decisions and tasks from 1, so a new active set starts with none. A decision or task id without `--set` that the active set does not hold yet is now read from the newest set that holds it, and the tool says so on stderr, such as `Decision 968 is not on set v3-6 yet; reading set v3-5.` The header and the JSON's `set` name the set it read. A newer set whose count cannot be read is never passed over for an older one. With `--set`, or a receipt that names its DecisionLog, the set is read as named.
+- An id beyond the set named gets a hint that lists only the sets that hold it, where 0.7.1 listed every other set. An id beyond every set names the set that holds the most, such as `No set holds decision 99999; set v3-5 holds 1 to 991.`
+- `--set` matches a set's key, release, earlier key or TaskBoard address in any case. `mainnet` and `testnet` are read in any case too.
+- `receipt` and `receipt-decision` read receipt version 2, signed under domain version "2" with the decision's `subject` after `decision`. The subject must be the decision's subject on the log. A version 1 receipt checks as before, and a version 2 receipt without a subject, or a version 1 receipt with one, is not a receipt.
+- `evidence` reads evidence version 2, which the brain writes from release 9: the hash also covers the panel's rule, a degraded panel's bar, the grade's pass level and the record's `checks`, so a copy served without the work cannot say the brief's checks ran otherwise. The tool rebuilds the hash under both versions and holds the record to the one its `Recorded` event carries, so a record decided under version 2 cannot pass as version 1. A version 1 record verifies as before, and its line says so. When neither version gives the hash, the line shows what each gives.
+- `--registry-rpc` is also read by `--licence` and `--papers`, and by `--record` with `--epoch`.
+- The `entry` check takes `licence:<class>` as a second tag beside `task`.
+- `summary.withReceipt` counts an entry that points at a record entry only when that record entry names a receipt. `summary.verified` counts only entries with a receipt, so it never exceeds `withReceipt`.
+- `receipt-payment`: a `/network.json` signed by a retired set's brain still fails, since a retired key may have been exposed after it was retired. The line now names that set and says BrainChain is probably switching sets, so run the command again later, or, for a receipt fetched from the host, with `--offline` to check the decision without it.
+- `versions`: when the record's image or app is one the log has never attested its key for, the line says so. When it is the app, the line points to the README's known history.
+- Decisions on set v3-5 from decision 972 until the switch to set v3-6 on 2026-11-21 fail `versions` by design. A recovery build made them from 2026-11-20 21:22 UTC, and the DecisionLog never attested its app (`0x9715…6aff`) for its key. Every other check on them that can run passes, but for a receipt's payment while BrainChain is switching sets and a receipt issued after a brain switch. The README lists both under known history.
+- `withheld`, `threshold` and `receipt-outcome`: a line about a decision's recorded answer now says BrainChain answered, because a panel can give that answer.
+- An id the tool refuses gets a message with the rule it is held to, and exits 2. An agent id is a whole number from 0 to 2^256 - 1, written without leading zeros, as the brain host requires, and a decision or task id is one from 1 to 2^256 - 1. An entry's index of 0 gets a message that says the index counts from 1.
+- A host that answers with an error and a reason, as `{ "error": "..." }`, has its reason on the `ERROR` line, a 404 included. A 403 for the record of an exam decision whose item is still in use adds that the decision becomes verifiable once its item is published. A 404 for an agent's record, licences or papers that gives no other reason adds that the host serves them once BrainChain switches agent records on. A 404 for the record of a testnet decision made before 2026-11-20 adds that the host no longer serves those, and points to known history.
+- An option a mode does not take gets a message that lists exactly the options that mode takes, as its usage line does. The usage now lists `--offline` for `--receipt`, which it always took. A command line that names no mode, or more than one, gets a message that names every mode. An unknown network is reported first.
+- `--help` gives the exit status for `FAIL` and `ERROR` lines and for an RPC that serves another chain, as the README does.
+- A line that lists items with commas of their own puts a comma before the last one too, as in `names decision 963, not 964, and evidence …`.
+
+### Fixed
+
+- Output through a pipe, such as `--json` into another program, is no longer cut off at 64 KB. The tool exits once stdout and stderr have taken all it wrote.
+- A set named with `--set` that holds no decisions or tasks yet says so, as in `Set v3-6 holds no decisions yet.`, where it said it held decisions 1 to 0.
+- The README's `--agent` example names an agent whose entries all verify. Known history says why a receipt issued after a brain switch, for a decision made before it, fails `receipt`.
+- The README's testnet example names a decision the host still serves. Testnet's records started fresh on 2026-11-20, so the host no longer serves earlier testnet decisions.
+- The README said receipts were not yet live on mainnet, gave version 1 as the receipt's only domain version and listed only evidence version 1's fields. It describes receipts and evidence under both versions.
 ## [0.9.0]
 
 ### Added
@@ -169,6 +211,7 @@ A record without the new fields verifies exactly as in 0.5.1.
 
 First release. Reads a decision from the `DecisionLog`, fetches its published record, recomputes its hashes and confidence, and applies the task's thresholds the way the contracts do.
 
+[0.8.0]: https://github.com/usebrainchain/brainchain/releases/tag/verify-v0.8.0
 [0.7.1]: https://github.com/usebrainchain/brainchain/releases/tag/verify-v0.7.1
 [0.7.0]: https://github.com/usebrainchain/brainchain/releases/tag/verify-v0.7.0
 [0.6.0]: https://github.com/usebrainchain/brainchain/releases/tag/verify-v0.6.0
