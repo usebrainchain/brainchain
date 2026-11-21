@@ -11,6 +11,24 @@ interface IWETH {
     function deposit() external payable;
 }
 
+interface IRhStock {
+    function adminBurn(address from, uint256 amount) external;
+    function updateMultiplier(uint256 newMultiplier, uint256 effectiveAt) external;
+    function uiMultiplier() external view returns (uint256);
+}
+
+interface IRhRegistry {
+    function hasRole(bytes32 role, address account) external view returns (bool);
+    function isBlocked(address account) external view returns (bool);
+}
+
+// The Settler's `execute` slippage argument.
+struct Slippage {
+    address recipient;
+    address buyToken;
+    uint256 minAmountOut;
+}
+
 // DeskMandateV2 against 0x's live AllowanceHolder, Settler and registry, the real USDG, WETH and NVDA and
 // their Chainlink feeds on a fork of Robinhood Chain (chain 4663), executing firm quotes 0x signed on
 // 2026-11-21 (test/fixtures/zerox). The quotes were bought with `taker` set to the address the contract
@@ -254,6 +272,32 @@ contract DeskMandateV2ForkTest is Test {
         console.log("  gas", gasUsed, "0x's own estimate", q.gas);
     }
 
+    /// A desk's first order of a UTC day prices its whole book to set the day's budget, about 30,000 gas a
+    /// position. With a position in all seven stock tokens and WETH listed too, the NVDA buy stays inside
+    /// the brain's fallback gas limit: 0x's estimate plus 150,000, plus 30,000 for each position held.
+    function test_theDaysFirstOrderOnAFullBookFitsTheBrainsGasLimit() public onFork {
+        Quote memory q = _quote("buy-usdg-nvda");
+        _deployAt(q.blockNumber);
+        DeskMandate first = DeskMandate(FIRST_MANDATE);
+        vm.startPrank(owner);
+        for (uint256 i = 0; i < first.tokenCount(); i++) {
+            address token = first.tokens(i);
+            (, IAggregatorV3 feed,) = first.venues(token);
+            mandate.setVenue(token, IPriceFeed(address(feed)), true, true);
+            deal(token, owner, 0.01e18);
+            IERC20(token).approve(address(mandate), 0.01e18);
+            mandate.fundHolding(0, token, 0.01e18);
+        }
+        vm.stopPrank();
+        (uint256 budget,) = mandate.budgetOf(0);
+        assertEq(budget, mandate.equity(0) / 100, "every position counts");
+
+        _trade(0, NVDA, true, q.sellAmount, q.minBuyAmount, q);
+        uint256 gasUsed = _gasUsed();
+        console.log("day's first NVDA buy on a book of 8 tokens, 7 held: gas", gasUsed);
+        assertLt(gasUsed, q.gas + 150_000 + 7 * 30_000);
+    }
+
     /// The same calldata run straight from the contract's address, to separate 0x's gas from the mandate's.
     function test_theBrainsGasLimitCoversTheOrder() public onFork {
         Quote memory q = _quote("buy-usdg-weth");
@@ -335,6 +379,88 @@ contract DeskMandateV2ForkTest is Test {
         mandate.trade(0, WETH, true, q.sellAmount, 0, bytes32(0), q.digest, q.data);
     }
 
+    /// The desk key edits a real signed quote so 0x's surplus action pays the key everything above the
+    /// mandate's floor. At a 2% premium that kept 1.9% of every fill. At 1% it keeps under 1%, and the
+    /// day's shortfall budget stops such orders once together they have taken 1% of the desk.
+    function test_theDeskKeyKeepsNoMoreThanThePremiumOrTheDaysBudget() public onFork {
+        Quote memory q = _quote("buy-usdg-weth");
+        _deployAt(q.blockNumber);
+        uint256 mark = mandate.price(WETH);
+        uint256 floor = mandate.floorOf(0, WETH, true, q.sellAmount);
+        bytes memory skim = _payKeyAbove(q.data, floor);
+        (uint256 budget,) = mandate.budgetOf(0);
+        assertEq(budget, 1e6, "1% of the desk's 100 USDG");
+
+        vm.prank(operator, operator);
+        uint256 got = mandate.trade(0, WETH, true, q.sellAmount, 0, bytes32(0), q.digest, skim);
+        uint256 kept = IERC20(WETH).balanceOf(operator);
+        assertEq(got, floor);
+        assertGt(kept, 0);
+        assertLt(kept * mark / 1e18, q.sellAmount / 100, "under 1% of the order");
+        uint256 shortfall = q.sellAmount - got * mark / 1e18;
+        (, uint256 used) = mandate.budgetOf(0);
+        assertEq(used, shortfall, "the whole shortfall is charged to the day");
+        console.log("skim: desk got", got, "key kept (WETH wei)", kept);
+        console.log("  key's share of the fill in bps", kept * 10_000 / (got + kept));
+
+        // Replayed in the same block with more money in the desk: today's budget is what the desk opened at.
+        deal(USDG, owner, 1_000e6);
+        vm.startPrank(owner);
+        IERC20(USDG).approve(address(mandate), 1_000e6);
+        mandate.fund(0, 1_000e6);
+        mandate.setBounds(0, 100, 5_000, 3 days, 100);
+        vm.stopPrank();
+        uint256 orders = 1 + _replayUntilOverBudget(q, skim, shortfall);
+        (, used) = mandate.budgetOf(0);
+        kept = IERC20(WETH).balanceOf(operator);
+        assertLe(used, budget);
+        assertLe(kept * mark / 1e18, budget, "all the key kept today is within the budget");
+        assertEq(orders, budget / shortfall);
+        console.log("  orders before the budget stopped them", orders, "key kept in USDG", kept * mark / 1e18);
+    }
+
+    function _replayUntilOverBudget(Quote memory q, bytes memory swap, uint256 shortfall)
+        internal
+        returns (uint256 orders)
+    {
+        while (true) {
+            (uint256 budget, uint256 used) = mandate.budgetOf(0);
+            vm.prank(operator, operator);
+            try mandate.trade(0, WETH, true, q.sellAmount, 0, bytes32(0), q.digest, swap) {
+                orders++;
+            } catch (bytes memory err) {
+                assertEq(err, abi.encodeWithSelector(DeskMandateV2.OverBudget.selector, used + shortfall, budget));
+                return orders;
+            }
+        }
+    }
+
+    /// The quote with its last action, 0x's surplus over `buyAmount`, paid to the desk key instead for
+    /// everything over `floor`, and its final check lowered to `floor`.
+    function _payKeyAbove(bytes memory data, uint256 floor) internal view returns (bytes memory) {
+        (address op, address token, uint256 amount, address target, bytes memory inner) =
+            abi.decode(_tail(data, 4), (address, address, uint256, address, bytes));
+        (Slippage memory slippage, bytes[] memory actions, bytes32 zid) =
+            abi.decode(_tail(inner, 4), (Slippage, bytes[], bytes32));
+        actions[actions.length - 1] = abi.encodeWithSelector(bytes4(0x5f80abae), operator, WETH, floor, 1e6, 1e6);
+        slippage.minAmountOut = floor;
+        return abi.encodeWithSelector(
+            bytes4(0x2213bc0b),
+            op,
+            token,
+            amount,
+            target,
+            abi.encodeWithSelector(bytes4(0x1fff991f), slippage, actions, zid)
+        );
+    }
+
+    function _tail(bytes memory b, uint256 from) internal pure returns (bytes memory out) {
+        out = new bytes(b.length - from);
+        for (uint256 i = 0; i < out.length; i++) {
+            out[i] = b[i + from];
+        }
+    }
+
     /// The stock tokens need no new code: listed with their feeds and `scaled`, they price exactly as the
     /// first mandate prices them today.
     function test_theSevenStockTokensPriceAsTheFirstMandatePricesThem() public onFork {
@@ -362,6 +488,131 @@ contract DeskMandateV2ForkTest is Test {
         uint256 got = first.trade(0, NVDA, true, q.sellAmount, 0, keccak256("gas"));
         console.log("first mandate: 5 USDG for NVDA wei", got, "gas", _gasUsed());
         console.log("  0x quoted", q.buyAmount);
+    }
+}
+
+/// The real NVDA token on a fork of Robinhood Chain: what its issuer can do to a desk's position, and what the
+/// owner can still do about it. Desk 4 holds what DEPLOY.md moves into it, 79.92 USDG and 0.1496 NVDA.
+contract DeskMandateV2StockForkTest is Test {
+    address constant USDG = 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168;
+    address constant ALLOWANCE_HOLDER = 0x0000000000001fF3684f28c67538d4D072C22734;
+    address constant SETTLERS = 0x00000000000004533Fe15556B1E086BB1A72cEae;
+    address constant NVDA = 0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC;
+    address constant NVDA_FEED = 0x379EC4f7C378F34a1B47E4F3cbeBCbAC3E8E9F15;
+    // The stock tokens' beacon and access registry.
+    address constant REGISTRY = 0xe10b6f6B275de231345c20D14Ab812db62151b00;
+    // NVDA's `tokenPaused` flag is byte 0 of this slot.
+    bytes32 constant NVDA_TOKEN_PAUSED = 0x8d25ea8ee309999a79f0af498fbab0e424669497170669bd9e93b81a62babc01;
+    uint256 constant DESK_USDG = 79_922_317;
+    uint256 constant DESK_NVDA = 149589722238654020;
+
+    DeskMandateV2 mandate;
+    address safe = makeAddr("stock fork safe");
+    address operator = makeAddr("stock fork operator");
+    address issuer = makeAddr("stock fork issuer");
+
+    function setUp() public {
+        vm.skip(block.chainid != 4663);
+        vm.rollFork(119514831);
+        bytes32[5] memory models;
+        mandate = new DeskMandateV2(IERC20(USDG), ALLOWANCE_HOLDER, ISettlerRegistry(SETTLERS), safe, operator, models);
+        deal(USDG, safe, DESK_USDG);
+        deal(NVDA, safe, DESK_NVDA);
+        vm.startPrank(safe);
+        mandate.setVenue(NVDA, IPriceFeed(NVDA_FEED), true, true);
+        IERC20(USDG).approve(address(mandate), DESK_USDG);
+        IERC20(NVDA).approve(address(mandate), DESK_NVDA);
+        mandate.fund(4, DESK_USDG);
+        mandate.fundHolding(4, NVDA, DESK_NVDA);
+        vm.stopPrank();
+    }
+
+    function _asIssuer() internal {
+        vm.mockCall(REGISTRY, abi.encodeWithSelector(IRhRegistry.hasRole.selector), abi.encode(true));
+        vm.prank(issuer);
+    }
+
+    function test_aPausedStockTokenHoldsBackOnlyItself() public {
+        bytes32 flags = vm.load(NVDA, NVDA_TOKEN_PAUSED);
+        vm.store(NVDA, NVDA_TOKEN_PAUSED, flags | bytes32(uint256(1)));
+        vm.startPrank(safe);
+        vm.expectRevert();
+        mandate.recallToken(4, NVDA);
+        assertEq(mandate.recallUsdg(4), DESK_USDG);
+        vm.stopPrank();
+        assertEq(IERC20(USDG).balanceOf(safe), DESK_USDG);
+        assertEq(IERC20(USDG).balanceOf(address(mandate)), 0);
+
+        vm.store(NVDA, NVDA_TOKEN_PAUSED, flags);
+        vm.prank(safe);
+        mandate.recallToken(4, NVDA);
+        assertEq(IERC20(NVDA).balanceOf(safe), DESK_NVDA);
+    }
+
+    function test_aBlockedMandateStillBringsItsUsdgHome() public {
+        vm.mockCall(REGISTRY, abi.encodeCall(IRhRegistry.isBlocked, (address(mandate))), abi.encode(true));
+        vm.startPrank(safe);
+        vm.expectRevert();
+        mandate.recallToken(4, NVDA);
+        assertEq(mandate.recallUsdg(4), DESK_USDG);
+        vm.stopPrank();
+        assertEq(mandate.holdings(4, NVDA), DESK_NVDA, "booked until the block lifts or the owner writes it off");
+    }
+
+    /// The issuer burns part of the position: what is left comes home once the burned part is off the books.
+    function test_anIssuerBurnIsWrittenOffAndTheRestComesHome() public {
+        uint256 burned = 0.1e18;
+        _asIssuer();
+        IRhStock(NVDA).adminBurn(address(mandate), burned);
+        vm.clearMockedCalls();
+        assertEq(IERC20(NVDA).balanceOf(address(mandate)), DESK_NVDA - burned);
+
+        vm.startPrank(safe);
+        vm.expectRevert();
+        mandate.recallToken(4, NVDA);
+        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OverCap.selector, burned + 1, burned));
+        mandate.writeOff(4, NVDA, burned + 1);
+        mandate.writeOff(4, NVDA, burned);
+        assertEq(mandate.recallToken(4, NVDA), DESK_NVDA - burned);
+        assertEq(mandate.recallUsdg(4), DESK_USDG);
+        vm.stopPrank();
+        assertEq(mandate.equity(4), 0);
+        assertEq(mandate.booked(NVDA), 0);
+        assertEq(IERC20(NVDA).balanceOf(safe), DESK_NVDA - burned);
+    }
+
+    /// The issuer schedules multiplier changes about ten minutes ahead (each stock token's last one on chain
+    /// was). A 10:1 step on the unmoved per-share feed would cut the buy floor tenfold; instead NVDA takes no
+    /// orders from the schedule until an hour after the step, by when Chainlink has reported the new price.
+    function test_aMultiplierChangeClosesNvdaUntilAnHourAfterItTakesEffect() public {
+        uint256 before = mandate.floorOf(4, NVDA, true, 10e6);
+        uint256 multiplier = IRhStock(NVDA).uiMultiplier();
+        uint256 effective = block.timestamp + 10 minutes;
+        _asIssuer();
+        IRhStock(NVDA).updateMultiplier(multiplier * 10, effective);
+        vm.clearMockedCalls();
+        bytes memory splitting = abi.encodeWithSelector(DeskMandateV2.Splitting.selector, NVDA);
+
+        vm.expectRevert(splitting);
+        mandate.floorOf(4, NVDA, true, 10e6);
+        vm.warp(effective);
+        assertEq(IRhStock(NVDA).uiMultiplier(), multiplier * 10, "in force at effectiveAt");
+        vm.expectRevert(splitting);
+        mandate.floorOf(4, NVDA, true, 10e6);
+        vm.expectRevert(splitting);
+        mandate.price(NVDA);
+        vm.warp(effective + 1 hours - 1);
+        vm.expectRevert(splitting);
+        mandate.floorOf(4, NVDA, true, 10e6);
+
+        vm.warp(effective + 1 hours);
+        (uint80 round, int256 answer,,,) = IPriceFeed(NVDA_FEED).latestRoundData();
+        vm.mockCall(
+            NVDA_FEED,
+            abi.encodeWithSelector(IPriceFeed.latestRoundData.selector),
+            abi.encode(round + 1, answer / 10, block.timestamp, block.timestamp, round + 1)
+        );
+        assertApproxEqRel(mandate.floorOf(4, NVDA, true, 10e6), before, 1e12, "the split-adjusted feed");
     }
 }
 
