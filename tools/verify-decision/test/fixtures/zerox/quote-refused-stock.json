@@ -1,0 +1,14 @@
+{
+ "url": "https://agent.api.0x.org/v1/x402/swap-allowance-holder-quote/?chainId=4663&sellToken=0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168&buyToken=0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC&sellAmount=1000000&taker=0x89261C04A9aEE508ab7091FA12CD417664634a7D",
+ "method": "GET",
+ "acceptSignature": "sig=(\"@status\" \"content-type\" \"content-digest\" \"@method\";req \"@authority\";req \"@path\";req \"@query\";req);tag=\"0x-swap-api\"",
+ "receivedAt": 1795224710337,
+ "status": 422,
+ "headers": {
+  "content-type": "application/json",
+  "content-digest": "sha-256=:diZoqvmnohdT7si6UjNmLrZatKwYqAZK/67fvK2GqgY=:",
+  "signature-input": "sig=(\"@status\" \"content-type\" \"content-digest\" \"@method\";req \"@authority\";req \"@path\";req \"@query\";req);created=1795224710;keyid=\"0x-signing-key-prod-24092026\";alg=\"ed25519\";tag=\"0x-swap-api\"",
+  "signature": "sig=:wyYDu8n3352stYhXQDD4p9hN18rfQTaqDcI9Zh7kSTMnKyfTJPjQtldajzKP/n9AL6Y3FH/icxWG1XnRowqlBg==:"
+ },
+ "body": "eyJuYW1lIjoiQlVZX1RPS0VOX05PVF9BVVRIT1JJWkVEX0ZPUl9UUkFERSIsIm1lc3NhZ2UiOiJUaGUgYnV5IHRva2VuIGlzIG5vdCBhdXRob3JpemVkIGZvciB0cmFkZSBkdWUgdG8gbGVnYWwgcmVzdHJpY3Rpb25zIiwiZGF0YSI6eyJ6aWQiOiIweDU0ZjVhM2Q4ZTliM2IwNDM2Zjc0OTI4ZCJ9fQ=="
+}

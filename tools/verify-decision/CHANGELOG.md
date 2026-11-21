@@ -2,7 +2,7 @@
 
 Changes to `brainchain-verify`, the npm package built from this directory. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are npm publish dates, in UTC.
 
-## [0.8.0] - unreleased
+## [0.10.0] - unreleased
 
 ### Added
 
@@ -44,6 +44,15 @@ Changes to `brainchain-verify`, the npm package built from this directory. The f
 - The README's `--agent` example names an agent whose entries all verify. Known history says why a receipt issued after a brain switch, for a decision made before it, fails `receipt`.
 - The README's testnet example names a decision the host still serves. Testnet's records started fresh on 2026-11-20, so the host no longer serves earlier testnet decisions.
 - The README said receipts were not yet live on mainnet, gave version 1 as the receipt's only domain version and listed only evidence version 1's fields. It describes receipts and evidence under both versions.
+## [0.9.0]
+
+### Added
+
+- `brainchain-verify/zerox` checks an answer from 0x's Swap API before anything in it is signed, including answers bought through 0x's keyless gateway. It verifies 0x's RFC 9421 response signature with the keys pinned in the package: the body's digest and the request's method, host, path and query, signed within 60 seconds. It then decodes the AllowanceHolder transaction and holds it to the caller's intent: the query carries only the trade's own parameters; AllowanceHolder is the target and the only spender; the Settler is the one 0x's registry names; the token, amount and value sold are the caller's; the recipient is the caller's; and the least bought is at or above the caller's floor. An exact-out intent needs `maxSellAmount`, an exact-in intent `minBuyAmount`, and `maxGasCost` can bound the quote's gas. Every report names each check that ran. A signature by a key 0x adds later fails until a patch release pins it. See [0x quotes](README.md#0x-quotes).
+
+### Changed
+
+- `viem` is a peer dependency, `^2`, so your own viem client fits the package's types. Install viem 2 beside `brainchain-verify`; npm 7 and later do so on their own.
 
 ## [0.7.1] - 2026-11-16
 

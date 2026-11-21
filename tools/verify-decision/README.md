@@ -522,6 +522,121 @@ With `--record`, `--licence`, `--papers` or `--item`, the object holds `network`
 - `--papers` adds `agentId` and what the papers state: `at`, `signedAt`, `brain`, `epoch`, `record` and each licence's `class` and `state`. These are the papers' own values, and the checks say whether the brain key signed them. `current` is the epoch the identity registry gives the id now, as its `id`, `controller` and `build`, with `bound` for an id bound to an NFT, or `null` when no single account controls it. Stale papers carry `stale: true`, and their `verdict` is `stale`.
 - `--item` adds the item's `id`, its `title` and `template`, and `retired` with the host's `uses`, `passed` and `retiredAt`.
 
+## 0x quotes
+
+`brainchain-verify/zerox` checks an answer from 0x's Swap API before anything in it is signed. It is a library, with no command of its own; `brainchain-worker buy-stake` uses it. It needs `node:crypto` and viem 2, which it takes as a peer dependency so that your own viem client fits its types. Its one chain read is 0x's Settler registry.
+
+The examples buy each answer from 0x's keyless gateway. The gateway speaks x402 version 2 and charges 0.01 USDC on Base for each request, paid from your key with a signed USDC authorization, so the key needs a little USDC on Base and no ETH there. A request is charged even when it is refused, and even when it carries no `Accept-Signature`; an answer without 0x's signature cannot be checked, so always send the header. The same request to `https://api.0x.org/swap/allowance-holder/quote` with your own 0x API key is free and checks the same way; it needs the headers `0x-api-key: <your key>` and `0x-version: v2` beside `Accept-Signature`.
+
+The examples pay with the x402 client packages, tested with these versions:
+
+```sh
+npm install brainchain-verify viem @x402/fetch@2.30.0 @x402/evm@2.30.0
+```
+
+They read the paying key from a file that only its owner can read, never from the environment or the command line, where other processes and the shell's history can see it.
+
+```ts
+import { readFileSync, statSync } from "node:fs";
+
+import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
+import { ExactEvmScheme } from "@x402/evm/exact/client";
+import { ACCEPT_SIGNATURE, NATIVE, readSettlers, verifyQuote, type QuoteIntent } from "brainchain-verify/zerox";
+import { createPublicClient, http, parseEther, parseUnits, type Hex } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { robinhood } from "viem/chains";
+
+const keyFile = process.env.PAYER_KEY_FILE ?? "payer.key";
+if (process.platform !== "win32" && (statSync(keyFile).mode & 0o077) !== 0) throw new Error(`Other accounts can read ${keyFile}. Run chmod 600 on it first.`);
+const account = privateKeyToAccount(`0x${readFileSync(keyFile, "utf8").trim().replace(/^0x/, "")}` as Hex);
+const client = createPublicClient({ chain: robinhood, transport: http() });
+const BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+const pay = wrapFetchWithPayment(
+  fetch,
+  x402Client.fromConfig({
+    schemes: [{ network: "eip155:8453", client: new ExactEvmScheme(account) }],
+    // Pay only the gateway's own price: 0.01 USDC on Base.
+    policies: [(_version, offers) => offers.filter((o) => o.network === "eip155:8453" && o.asset.toLowerCase() === BASE_USDC.toLowerCase() && BigInt(o.amount) <= 10_000n)],
+  }),
+);
+
+const BRAIN = "0x42b96dbc55e79E930d866c1eE486A342366546BC";
+const USDG = "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168";
+
+async function checkedQuote(query: Record<string, string>, intent: QuoteIntent) {
+  const url = `https://agent.api.0x.org/v1/x402/swap-allowance-holder-quote/?${new URLSearchParams(query)}`;
+  const response = await pay(url, { headers: { "Accept-Signature": ACCEPT_SIGNATURE } });
+  // The signature covers the bytes 0x sent, so keep them before anything reads the body.
+  const received = { status: response.status, headers: response.headers, body: new Uint8Array(await response.arrayBuffer()) };
+  const report = await verifyQuote(received, url, intent, { settlers: () => readSettlers(client, robinhood.id) });
+  if (!report.ok) throw new Error(report.checks.find((c) => c.status === "fail")?.message ?? "the quote was refused");
+  return report;
+}
+
+// Exact out, selling ETH: exactly 312,500 BRAIN, for at most the ETH you set from your own price.
+const stake = 312_500n * 10n ** 18n;
+const exactOut = await checkedQuote(
+  { chainId: "4663", sellToken: NATIVE, buyToken: BRAIN, buyAmount: stake.toString(), taker: account.address },
+  { chainId: 4663, taker: account.address, sellToken: NATIVE, buyToken: BRAIN, buyAmount: stake, maxSellAmount: parseEther("0.05") },
+);
+
+// Exact in, selling an ERC-20: exactly 10 USDG, for at least the BRAIN you set, at the slippage the query names.
+const exactIn = await checkedQuote(
+  { chainId: "4663", sellToken: USDG, buyToken: BRAIN, sellAmount: parseUnits("10", 6).toString(), taker: account.address, slippageBps: "100" },
+  { chainId: 4663, taker: account.address, sellToken: USDG, buyToken: BRAIN, sellAmount: parseUnits("10", 6), minBuyAmount: 45_000n * 10n ** 18n, slippageBps: 100 },
+);
+console.log(exactOut.decoded?.amount, exactIn.decoded?.minAmountOut);
+```
+
+`url` is the URL the request went to: `https://api.0x.org/swap/allowance-holder/quote?...`, or the same request through the gateway, `https://agent.api.0x.org/v1/x402/swap-allowance-holder-quote/?...`. The gateway forwards it to the Swap API, and 0x signs the request it received there, so the check rebuilds that one: host `api.0x.org`, path `/swap/allowance-holder/quote`, and the query exactly as sent. Pass the URL you sent, not one rebuilt from the same parameters: a query in another order fails, and the check says so.
+
+`body` is the bytes 0x sent, as a `Uint8Array`. Read them once with `new Uint8Array(await response.arrayBuffer())`, or take `response.clone()` first if something else reads the body. Anything else, a parsed or decoded body or a bare `ArrayBuffer`, throws a `TypeError` that says to pass the raw bytes.
+
+`maxSellAmount` (exact out, with `buyAmount`) and `minBuyAmount` (exact in, with `sellAmount`) are required, both from the caller's own price: on exact out the Settler pays the recipient exactly the minimum, so the amount `exec` lets it take is the only bound on what is spent, and on exact in the minimum is the only bound on what comes back.
+
+That price is yours to choose: a price feed you trust, an oracle on the chain, or 0x's own price for the same trade (`/swap/allowance-holder/price`, whose `estimatedNetSellAmount` or `buyAmount` you can then hold within a margin).
+
+Amounts are bigints in the token's smallest units. A plain number fails `quote-intent`, which says so.
+
+`slippageBps` says what the query asked 0x for, so it must be in the query too, with the same value: give it in both or in neither.
+
+`maxGasCost` is optional and holds the quote's `gas` times its `gasPrice` to a limit. Those two are 0x's estimate, and `report.quote.transaction` carries both: send the transaction with fee fields of your own.
+
+`settlers` is the chain's Settlers, or a function that reads them. `readSettlers(client, chainId)` reads them from 0x's registry and throws when the client is on another chain. When the read throws, as an RPC that does not answer does, the report fails `quote-settler` with its error rather than throwing, so `verifyQuote` throws only for arguments it cannot use: an unknown URL, a body that is not bytes, or missing options.
+
+The signature checks run in order and stop at the first that fails. The quote's checks run only once the signature holds. A report from `verifyQuote` names every check below that ran, passed or failed; `quote-gas` runs only with `maxGasCost`.
+
+| Check | What passes |
+| --- | --- |
+| `zerox-signed` | The response carries `Signature-Input` and `Signature` (RFC 9421), Ed25519, tagged `0x-swap-api`. |
+| `zerox-key` | The signature names a key this package pins (`ZEROX_KEYS`). |
+| `zerox-fresh` | 0x signed it at most 60 seconds from the caller's clock, either way. A clock or age limit that is not a finite number fails. |
+| `zerox-covers` | It covers the status, `content-digest`, and the request's method, authority, path and query. |
+| `zerox-digest` | The body's SHA-256 is the one in `Content-Digest`. |
+| `zerox-signature` | The signature verifies over the rebuilt signature base. When it would verify with the same parameters in another order, the line says so. |
+| `quote-intent` | The intent is one the checks can hold a quote to: exactly one of `sellAmount` and `buyAmount`, the caller's limit for it, bigint amounts, addresses, and a known AllowanceHolder. |
+| `quote-request` | The query 0x answered asks for this trade and nothing else: `chainId`, `sellToken`, `buyToken`, `taker` and one of `sellAmount` and `buyAmount`, each once with the intent's value, plus `recipient` and `slippageBps` only when the intent names them. Any other parameter, such as a fee, a surplus recipient or `gasPrice`, fails, and so does a percent-encoded part, since 0x decodes it. |
+| `quote-response` | HTTP 200, a route, a transaction, and the mode, tokens and amounts asked for. A refusal names 0x's error. |
+| `quote-target` | The transaction calls AllowanceHolder (`0x0000000000001fF3684f28c67538d4D072C22734` on Ethereum, Base and Robinhood Chain, pinned here; `allowanceHolder` in the intent names it on other chains). |
+| `quote-spender` | `allowanceTarget` is null or AllowanceHolder, and so is the spender in `issues.allowance` when 0x asks for an approval. Never approve the Settler. |
+| `quote-exec` | AllowanceHolder's `exec`, in the standard ABI encoding, lets the Settler take the token sold, and no more than the amount sold, or on an exact-out quote its `maxSellAmount` and at most the caller's. |
+| `quote-settler` | The Settler is the one 0x's registry (`0x00000000000004533Fe15556B1E086BB1A72cEae`) returns for taker-sent swaps, `ownerOf(2)`, or the one before it, `prev(2)`, which 0x's API can still use for a while after a new Settler is deployed. A registry that reverts means 0x paused Settler on that chain, and one that could not be read fails with the reason. |
+| `quote-value` | The transaction sends the amount sold when it sells the native token, and nothing otherwise. |
+| `quote-recipient` | Settler's slippage check pays what is bought to the taker, or to the recipient the caller named. |
+| `quote-buy-token` | That check counts the token the caller buys. |
+| `quote-min-out` | It reverts unless the recipient gets at least the caller's floor: `minBuyAmount`, or `buyAmount` on an exact-out quote. |
+| `quote-gas` | Only with `maxGasCost`: the quote's `gas` times its `gasPrice` is at most that. |
+
+`checkQuote` runs `quote-intent` and the quote's checks on a body already trusted, without `quote-request`, and `verifyResponse` runs the signature's alone, for any Swap API answer.
+
+### When 0x changes its key
+
+0x rotates its signing key, and lists a new key on [its docs](https://docs.0x.org/docs/developer-resources/response-signatures.md) beside the old one before it signs with it.
+
+- `ACCEPT_SIGNATURE` names no key, and 0x signs with whichever key is active.
+- The key is picked by the signature's `keyid`, never by position, from `ZEROX_KEYS`, the keys pinned in this package. Nothing is read from the network.
+- A signature by any other key fails `zerox-key`, and the line says a newer version of this package is needed. Each new key ships in a patch release.
+
 ## Building
 
 ```sh
