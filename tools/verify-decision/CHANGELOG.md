@@ -7,6 +7,7 @@ Changes to `brainchain-verify`, the npm package built from this directory. The f
 ### Added
 
 - `brainchain-verify/zerox` checks an answer from 0x's Swap API before it is signed: 0x's RFC 9421 response signature (key by `keyid`, 60 seconds, the body's digest, the request's method, host, path and query), then the AllowanceHolder transaction, decoded and held to the caller's intent: AllowanceHolder as target, the Settler from 0x's registry, the token and amount sold, the value, the recipient and the least bought. It works for answers bought through 0x's keyless gateway, whose requests 0x signs as the Swap API requests they forward. Tested on answers recorded on Robinhood Chain. See [0x quotes](README.md#0x-quotes).
+- The query 0x signed may carry only the trade's own parameters, each once and unencoded. The intent carries the caller's own limit, `maxSellAmount` on exact out and `minBuyAmount` on exact in, and may hold the quote's gas to `maxGasCost`. The only keys trusted are the ones pinned in the package: a signature by a new 0x key fails until a patch release pins it.
 
 ## [0.7.1] - 2026-11-16
 

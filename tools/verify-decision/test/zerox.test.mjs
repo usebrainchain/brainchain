@@ -7,7 +7,8 @@ import { BaseError, ContractFunctionRevertedError, decodeFunctionData, encodeFun
 
 import { ACCEPT_SIGNATURE, checkQuote, decode, NATIVE, readSettlers, SETTLER_REGISTRY, signedRequestOf, verifyQuote, verifyResponse, ZEROX_KEYS } from "../dist/zerox.js";
 
-// Recorded through 0x's keyless gateway on Robinhood Chain on 2026-11-21, for a throwaway taker that holds nothing.
+// Recorded on Robinhood Chain on 2026-11-21, for a throwaway taker that holds nothing: through 0x's keyless gateway,
+// and the exact-in USDG quotes from the Swap API directly.
 const fixture = (name) => {
   const f = JSON.parse(readFileSync(new URL(`./fixtures/zerox/${name}.json`, import.meta.url), "utf8"));
   const body = Buffer.from(f.body, "base64");
@@ -16,6 +17,8 @@ const fixture = (name) => {
 const EXACT_OUT_ETH = fixture("quote-exact-out-eth");
 const EXACT_OUT_USDG = fixture("quote-exact-out-usdg");
 const EXACT_IN_ETH = fixture("quote-exact-in-eth");
+const EXACT_IN_USDG = fixture("quote-exact-in-usdg");
+const USDG_FOR_ETH = fixture("quote-exact-in-usdg-eth");
 const PRICE = fixture("price-exact-in-usdg");
 const REFUSED = fixture("quote-refused-stock");
 
@@ -23,6 +26,7 @@ const TAKER = "0x89261C04A9aEE508ab7091FA12CD417664634a7D";
 const BRAIN = "0x42b96dbc55e79E930d866c1eE486A342366546BC";
 const USDG = "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168";
 const STRANGER = "0x4444444444444444444444444444444444444444";
+const HOLDER = "0x0000000000001fF3684f28c67538d4D072C22734";
 // The registry's answers on Robinhood Chain when the fixtures were recorded.
 const SETTLERS = { current: "0xE8852602f84e04e284286d8Db01a41Edd0CCEFb0", previous: "0x24A4d86c8A76B00EE9566eD9C9Ff4f0c3Faf0da7" };
 const STAKE = 312_500n * 10n ** 18n;
@@ -30,6 +34,7 @@ const STAKE = 312_500n * 10n ** 18n;
 const at = (f, seconds = 1) => () => (f.created + seconds) * 1000;
 const response = (f, changes = {}) => ({ status: f.status, headers: { ...f.headers, ...changes.headers }, body: changes.body ?? f.body });
 const failed = (report) => report.checks.find((c) => c.status === "fail");
+/** The trade the fixture asked for, held to the quote's own limits unless `extra` says otherwise. */
 const intentFor = (f, extra = {}) => {
   const q = new URL(f.url).searchParams;
   return {
@@ -37,7 +42,9 @@ const intentFor = (f, extra = {}) => {
     taker: q.get("taker"),
     sellToken: q.get("sellToken"),
     buyToken: q.get("buyToken"),
-    ...(q.has("sellAmount") ? { sellAmount: BigInt(q.get("sellAmount")) } : { buyAmount: BigInt(q.get("buyAmount")) }),
+    ...(q.has("sellAmount")
+      ? { sellAmount: BigInt(q.get("sellAmount")), ...(f.json?.minBuyAmount ? { minBuyAmount: BigInt(f.json.minBuyAmount) } : {}) }
+      : { buyAmount: BigInt(q.get("buyAmount")), ...(f.json?.maxSellAmount ? { maxSellAmount: BigInt(f.json.maxSellAmount) } : {}) }),
     ...extra,
   };
 };
@@ -83,7 +90,7 @@ describe("the gateway's request as 0x signs it", () => {
 
 describe("0x's response signature", () => {
   it("verifies every recorded answer, quotes, a price and a refusal, with the key 0x publishes", () => {
-    for (const f of [EXACT_OUT_ETH, EXACT_OUT_USDG, EXACT_IN_ETH, PRICE, REFUSED]) {
+    for (const f of [EXACT_OUT_ETH, EXACT_OUT_USDG, EXACT_IN_ETH, EXACT_IN_USDG, USDG_FOR_ETH, PRICE, REFUSED]) {
       const report = verifyResponse(response(f), signedRequestOf(f.url), { now: at(f) });
       assert.equal(report.ok, true, JSON.stringify(failed(report)));
       assert.equal(report.keyid, "0x-signing-key-prod-24092026");
@@ -96,8 +103,8 @@ describe("0x's response signature", () => {
     assert.equal(verifyResponse(response(EXACT_OUT_ETH), signedRequestOf(api), { now: at(EXACT_OUT_ETH) }).ok, true);
   });
 
-  it("asks for a signature without naming a key, which the refusal above was recorded with", () => {
-    assert.equal(REFUSED.acceptSignature, ACCEPT_SIGNATURE);
+  it("asks for a signature without naming a key, which the refusal and the direct quotes were recorded with", () => {
+    for (const f of [REFUSED, EXACT_IN_USDG, USDG_FOR_ETH]) assert.equal(f.acceptSignature, ACCEPT_SIGNATURE);
     assert.doesNotMatch(ACCEPT_SIGNATURE, /keyid/);
   });
 
@@ -225,7 +232,8 @@ describe("a quote held to the caller's intent", () => {
   it("passes the exact-out ETH quote for the 312,500 BRAIN a worker stakes, and reads what its calldata does", () => {
     const report = checkQuote(EXACT_OUT_ETH.json, intentFor(EXACT_OUT_ETH), SETTLERS);
     assert.equal(report.ok, true, JSON.stringify(failed(report)));
-    assert.deepEqual(report.checks.map((c) => c.name), ["quote-response", "quote-target", "quote-exec", "quote-settler", "quote-value", "quote-recipient", "quote-buy-token", "quote-min-out"]);
+    assert.deepEqual(report.checks.map((c) => c.name), ["quote-response", "quote-target", "quote-spender", "quote-exec", "quote-settler", "quote-value", "quote-recipient", "quote-buy-token", "quote-min-out"]);
+    assert.equal(report.checks[2].message, "it names AllowanceHolder for approvals and asks for none");
     assert.deepEqual(report.decoded, {
       settler: SETTLERS.current,
       token: "0x0000000000000000000000000000000000000000",
@@ -244,6 +252,26 @@ describe("a quote held to the caller's intent", () => {
     assert.ok(report.checks.some((c) => c.name === "quote-spender" && c.status === "ok"));
     assert.equal(report.decoded.token, USDG);
     assert.equal(report.decoded.value, 0n);
+  });
+
+  it("passes an exact-in USDG quote, whose approval and allowance target are AllowanceHolder, and reports 0x's gas price", () => {
+    const report = checkQuote(EXACT_IN_USDG.json, intentFor(EXACT_IN_USDG), SETTLERS);
+    assert.equal(report.ok, true, JSON.stringify(failed(report)));
+    assert.equal(report.checks.find((c) => c.name === "quote-spender").message, "the approval it asks for is to AllowanceHolder");
+    assert.equal(report.quote.allowanceTarget, HOLDER);
+    assert.equal(report.decoded.token, USDG);
+    assert.equal(report.decoded.amount, 10_000_000n);
+    assert.equal(report.decoded.value, 0n);
+    assert.equal(report.decoded.minAmountOut, BigInt(EXACT_IN_USDG.json.minBuyAmount));
+    assert.equal(report.quote.transaction.gasPrice, BigInt(EXACT_IN_USDG.json.transaction.gasPrice));
+  });
+
+  it("passes a quote that buys the native token, which the Settler counts under the Swap API's own name for it", () => {
+    const report = checkQuote(USDG_FOR_ETH.json, intentFor(USDG_FOR_ETH), SETTLERS);
+    assert.equal(report.ok, true, JSON.stringify(failed(report)));
+    assert.equal(report.decoded.buyToken, NATIVE);
+    assert.equal(report.decoded.recipient, TAKER);
+    assert.equal(report.decoded.token, USDG);
   });
 
   it("holds an exact-in quote's floor to the caller's", () => {
@@ -293,7 +321,7 @@ describe("a quote held to the caller's intent", () => {
   });
 
   it("fails a refusal, a price and an answer with no route, saying what 0x said", () => {
-    const refused = checkQuote(REFUSED.json, intentFor(REFUSED), SETTLERS, REFUSED.status);
+    const refused = checkQuote(REFUSED.json, intentFor(REFUSED, { minBuyAmount: 1n }), SETTLERS, REFUSED.status);
     assert.match(failed(refused).message, /^0x answered 422 BUY_TOKEN_NOT_AUTHORIZED_FOR_TRADE: The buy token is not authorized for trade/);
     assert.match(failed(checkQuote(PRICE.json, { ...intentFor(PRICE), taker: TAKER }, SETTLERS)).message, /a price never does/);
     assert.match(failed(checkQuote({ liquidityAvailable: false, zid: "0x1" }, intentFor(EXACT_IN_ETH), SETTLERS)).message, /no route/);
@@ -301,9 +329,15 @@ describe("a quote held to the caller's intent", () => {
 
   it("refuses an intent it cannot hold a quote to", () => {
     const base = intentFor(EXACT_IN_ETH);
+    const out = intentFor(EXACT_OUT_ETH);
     for (const [intent, message] of [
       [{ ...base, buyAmount: 1n }, /exactly one of sellAmount/],
       [{ ...base, maxSellAmount: 1n }, /goes with buyAmount/],
+      [{ ...base, sellAmount: 0n }, /sellAmount must be above zero/],
+      [{ ...base, minBuyAmount: undefined }, /exact-in intent needs minBuyAmount/],
+      [{ ...out, maxSellAmount: undefined }, /exact-out intent needs maxSellAmount/],
+      [{ ...base, slippageBps: 1.5 }, /slippageBps must be a whole number from 0 to 10000/],
+      [{ ...base, maxGasCost: -1n }, /maxGasCost must not be below zero/],
       [{ ...base, buyToken: NATIVE }, /same token/],
       [{ ...base, chainId: 10 }, /does not know AllowanceHolder on chain 10/],
       [{ ...base, taker: "0x12" }, /taker is not an address/],
@@ -330,7 +364,7 @@ describe("verifyQuote", () => {
     const report = await verifyQuote(response(EXACT_OUT_ETH), EXACT_OUT_ETH.url, intentFor(EXACT_OUT_ETH), { settlers, now: at(EXACT_OUT_ETH) });
     assert.equal(report.ok, true, JSON.stringify(failed(report)));
     assert.equal(reads, 1);
-    assert.equal(report.checks.length, 14);
+    assert.equal(report.checks.length, 15);
 
     const stale = await verifyQuote(response(EXACT_OUT_ETH), EXACT_OUT_ETH.url, intentFor(EXACT_OUT_ETH), { settlers, now: at(EXACT_OUT_ETH, 90) });
     assert.equal(failed(stale).name, "zerox-fresh");
@@ -375,6 +409,100 @@ describe("readSettlers", () => {
 });
 
 describe("what a quote may not carry", () => {
+  // 0x signs whatever query it is sent, so a key of the test's own stands in for 0x's to sign any request.
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const keys = [{ keyid: "test", x: publicKey.export({ format: "jwk" }).x }];
+  const created = 1_900_000_000;
+  const options = { keys, now: () => (created + 1) * 1000, settlers: SETTLERS };
+  const answer = (url, json) => {
+    const body = Buffer.from(JSON.stringify(json));
+    const { path, query } = signedRequestOf(url);
+    const params = `("@status" "content-type" "content-digest" "@method";req "@authority";req "@path";req "@query";req);created=${created};keyid="test";alg="ed25519";tag="0x-swap-api"`;
+    const base = [`"@status": 200`, `"content-type": application/json`, `"content-digest": ${digest(body)}`, `"@method";req: GET`, `"@authority";req: api.0x.org`, `"@path";req: ${path}`, `"@query";req: ${query}`, `"@signature-params": ${params}`].join("\n");
+    const signature = sign(null, Buffer.from(base), privateKey).toString("base64");
+    return { status: 200, headers: { "content-type": "application/json", "content-digest": digest(body), "signature-input": `sig=${params}`, signature: `sig=:${signature}:` }, body };
+  };
+  const rewrite = (body, amount) => {
+    const outer = decodeFunctionData({ abi: execAbi, data: body.transaction.data });
+    const data = encodeFunctionData({ abi: execAbi, functionName: "exec", args: [outer.args[0], outer.args[1], amount, outer.args[3], outer.args[4]] });
+    return { ...body, transaction: { ...body.transaction, data } };
+  };
+
+  it("passes the trade's own query signed by the stand-in key, so what follows fails on the query alone", async () => {
+    const report = await verifyQuote(answer(EXACT_IN_ETH.url, EXACT_IN_ETH.json), EXACT_IN_ETH.url, intentFor(EXACT_IN_ETH), options);
+    assert.equal(report.ok, true, JSON.stringify(failed(report)));
+  });
+
+  it("refuses parameters the trade did not ask for: slippage, fees, surplus and gas price for someone else", async () => {
+    const url = `${EXACT_IN_ETH.url}&slippageBps=10000&swapFeeRecipient=${STRANGER}&swapFeeBps=1000&swapFeeToken=${BRAIN}&tradeSurplusRecipient=${STRANGER}&gasPrice=1000000000000000`;
+    const json = { ...withSlippage(EXACT_IN_ETH.json, { minAmountOut: 1n }), minBuyAmount: "1" };
+    const report = await verifyQuote(answer(url, json), url, intentFor(EXACT_IN_ETH), options);
+    assert.equal(failed(report).name, "quote-request");
+    for (const name of ["slippageBps", "swapFeeRecipient", "swapFeeBps", "swapFeeToken", "tradeSurplusRecipient", "gasPrice"]) {
+      assert.ok(failed(report).message.includes(`${name} is not part of this trade`), name);
+    }
+    // Asked for by name, slippageBps passes only at the intent's value, and the caller's floor still holds the calldata.
+    const asked = `${EXACT_IN_ETH.url}&slippageBps=100`;
+    assert.match(failed(await verifyQuote(answer(asked, EXACT_IN_ETH.json), asked, intentFor(EXACT_IN_ETH, { slippageBps: 30 }), options)).message, /slippageBps=100 where 30 was meant/);
+    assert.equal((await verifyQuote(answer(asked, EXACT_IN_ETH.json), asked, intentFor(EXACT_IN_ETH, { slippageBps: 100 }), options)).ok, true);
+    assert.match(failed(await verifyQuote(answer(EXACT_IN_ETH.url, EXACT_IN_ETH.json), EXACT_IN_ETH.url, intentFor(EXACT_IN_ETH, { slippageBps: 100 }), options)).message, /slippageBps=\(none\) where 100 was meant/);
+    const floorless = await verifyQuote(answer(asked, json), asked, intentFor(EXACT_IN_ETH, { slippageBps: 100 }), options);
+    assert.equal(failed(floorless).name, "quote-min-out");
+  });
+
+  it("refuses names that only match once decoded, a name given twice, and an empty part", async () => {
+    const encoded = `${EXACT_IN_ETH.url}&tradeSurplus%52ecipient=${STRANGER}`;
+    assert.match(failed(await verifyQuote(answer(encoded, EXACT_IN_ETH.json), encoded, intentFor(EXACT_IN_ETH), options)).message, /tradeSurplus%52ecipient=0x4444.* is encoded/);
+    const plus = EXACT_IN_ETH.url.replace("taker=", "tak+er=");
+    assert.match(failed(await verifyQuote(answer(plus, EXACT_IN_ETH.json), plus, intentFor(EXACT_IN_ETH), options)).message, /is encoded.*taker=\(none\)/);
+    const twice = `${EXACT_IN_ETH.url}&sellAmount=1&taker=${STRANGER}&chainId=1`;
+    const report = await verifyQuote(answer(twice, EXACT_IN_ETH.json), twice, intentFor(EXACT_IN_ETH), options);
+    for (const name of ["sellAmount", "taker", "chainId"]) assert.ok(failed(report).message.includes(`${name} is given more than once`), name);
+    const empty = `${EXACT_IN_ETH.url}&`;
+    assert.match(failed(await verifyQuote(answer(empty, EXACT_IN_ETH.json), empty, intentFor(EXACT_IN_ETH), options)).message, /an empty name is not part of this trade/);
+  });
+
+  it("asks for a recipient only when it is someone else, and then requires it", async () => {
+    const intent = intentFor(EXACT_IN_ETH, { recipient: STRANGER });
+    assert.match(failed(await verifyQuote(answer(EXACT_IN_ETH.url, EXACT_IN_ETH.json), EXACT_IN_ETH.url, intent, options)).message, /recipient=\(none\) where 0x4444/);
+    const named = `${EXACT_IN_ETH.url}&recipient=${TAKER}`;
+    assert.equal((await verifyQuote(answer(named, EXACT_IN_ETH.json), named, intentFor(EXACT_IN_ETH, { recipient: TAKER }), options)).ok, true);
+    assert.match(failed(await verifyQuote(answer(named, EXACT_IN_ETH.json), named, intentFor(EXACT_IN_ETH), options)).message, /recipient is not part of this trade/);
+  });
+
+  it("refuses an exact-out quote with no ceiling of the caller's, and one over it", () => {
+    const ten = BigInt(EXACT_OUT_ETH.json.maxSellAmount) * 10n;
+    const json = { ...rewrite(EXACT_OUT_ETH.json, ten), maxSellAmount: String(ten) };
+    json.transaction.value = String(ten);
+    assert.match(failed(checkQuote(json, intentFor(EXACT_OUT_ETH, { maxSellAmount: undefined }), SETTLERS)).message, /exact-out intent needs maxSellAmount/);
+    const report = checkQuote(json, intentFor(EXACT_OUT_ETH), SETTLERS);
+    assert.equal(failed(report).name, "quote-exec");
+    assert.match(failed(report).message, new RegExp(`where the caller sells at most ${EXACT_OUT_ETH.json.maxSellAmount}`));
+  });
+
+  it("refuses an allowance target that is not AllowanceHolder, whether or not an approval is asked for", () => {
+    for (const issues of [EXACT_OUT_USDG.json.issues, { ...EXACT_OUT_USDG.json.issues, allowance: null }]) {
+      const report = checkQuote({ ...EXACT_OUT_USDG.json, allowanceTarget: STRANGER, issues }, intentFor(EXACT_OUT_USDG), SETTLERS);
+      assert.equal(failed(report).name, "quote-spender");
+      assert.match(failed(report).message, /names 0x4444444444444444444444444444444444444444 as allowanceTarget, not AllowanceHolder/);
+    }
+    assert.equal(failed(checkQuote({ ...EXACT_OUT_USDG.json, allowanceTarget: "nobody" }, intentFor(EXACT_OUT_USDG), SETTLERS)).name, "quote-response");
+  });
+
+  it("holds the quote's gas cost to the caller's limit when one is given, and reports the gas price", () => {
+    const json = { ...EXACT_IN_ETH.json, transaction: { ...EXACT_IN_ETH.json.transaction, gasPrice: "1000000000000000", gas: "30000000" } };
+    const open = checkQuote(json, intentFor(EXACT_IN_ETH), SETTLERS);
+    assert.equal(open.ok, true);
+    assert.equal(open.quote.transaction.gasPrice, 1_000_000_000_000_000n);
+    const capped = checkQuote(json, intentFor(EXACT_IN_ETH, { maxGasCost: 10n ** 15n }), SETTLERS);
+    assert.equal(failed(capped).name, "quote-gas");
+    assert.match(failed(capped).message, /comes to 30000000000000000000000 wei, over the 1000000000000000 asked for/);
+    const real = BigInt(EXACT_IN_ETH.json.transaction.gas) * BigInt(EXACT_IN_ETH.json.transaction.gasPrice);
+    assert.equal(checkQuote(EXACT_IN_ETH.json, intentFor(EXACT_IN_ETH, { maxGasCost: real }), SETTLERS).ok, true);
+    const { gasPrice: _, ...priceless } = EXACT_IN_ETH.json.transaction;
+    assert.match(failed(checkQuote({ ...EXACT_IN_ETH.json, transaction: priceless }, intentFor(EXACT_IN_ETH, { maxGasCost: real }), SETTLERS)).message, /states no gasPrice/);
+  });
+
   it("refuses a clock or an age limit that is not a finite number, which would pass any signature as fresh", () => {
     const request = signedRequestOf(EXACT_IN_ETH.url);
     for (const options of [{ now: at(EXACT_IN_ETH, 86_400), maxAgeSeconds: Number.NaN }, { now: () => Number.NaN }, { now: at(EXACT_IN_ETH), maxAgeSeconds: Number.POSITIVE_INFINITY }, { now: at(EXACT_IN_ETH), maxAgeSeconds: -1 }]) {
@@ -388,6 +516,13 @@ describe("what a quote may not carry", () => {
     for (const slug of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
       assert.throws(() => signedRequestOf(`https://agent.api.0x.org/v1/x402/${slug}/?a=1`), /not a 0x Swap API/, slug);
     }
+  });
+
+  it("refuses another AllowanceHolder on a chain whose AllowanceHolder is pinned", () => {
+    const json = { ...EXACT_OUT_ETH.json, transaction: { ...EXACT_OUT_ETH.json.transaction, to: STRANGER } };
+    const report = checkQuote(json, intentFor(EXACT_OUT_ETH, { allowanceHolder: STRANGER }), SETTLERS);
+    assert.match(failed(report).message, /AllowanceHolder on chain 4663 is 0x0000000000001fF3684f28c67538d4D072C22734, not the 0x4444/);
+    assert.equal(checkQuote(EXACT_OUT_ETH.json, intentFor(EXACT_OUT_ETH, { allowanceHolder: HOLDER }), SETTLERS).ok, true);
   });
 
   it("refuses calldata the decoder reads but the contracts may not: extra bits in an address word, bytes past the arguments", () => {

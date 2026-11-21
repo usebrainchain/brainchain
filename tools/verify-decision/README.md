@@ -301,6 +301,7 @@ With `--entry` or `--agent`, the object holds `registry`, `verdict`, `summary` a
 
 ```js
 import { ACCEPT_SIGNATURE, readSettlers, verifyQuote } from "brainchain-verify/zerox";
+import { parseEther } from "viem";
 
 const response = await pay(url, { headers: { "Accept-Signature": ACCEPT_SIGNATURE } });
 const received = { status: response.status, headers: response.headers, body: new Uint8Array(await response.arrayBuffer()) };
@@ -310,9 +311,13 @@ const report = await verifyQuote(received, url, {
   sellToken: "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
   buyToken: brain,
   buyAmount: 312_500n * 10n ** 18n,
+  maxSellAmount: parseEther("0.05"), // the most you will pay, from your own price
+  slippageBps: 100, // only if the query asked for it
 }, { settlers: () => readSettlers(robinhoodChainClient) });
 if (!report.ok) throw new Error(report.checks.find((c) => c.status === "fail").message);
 ```
+
+An exact-out intent (`buyAmount`) needs `maxSellAmount` and an exact-in intent (`sellAmount`) needs `minBuyAmount`, both from the caller's own price: on exact out the Settler pays the recipient exactly the minimum, so the amount `exec` lets it take is the only bound on what is spent, and on exact in the minimum is the only bound on what comes back. `maxGasCost` is optional and holds the quote's `gas` times its `gasPrice` to a limit. Those two are 0x's estimate, and `report.quote.transaction` carries both: send the transaction with fee fields of your own.
 
 `url` is the URL the request went to: `https://api.0x.org/swap/allowance-holder/quote?...`, or the same request through 0x's keyless gateway, `https://agent.api.0x.org/v1/x402/swap-allowance-holder-quote/?...`. The gateway forwards it to the Swap API, and 0x signs the request it received there, so the check rebuilds that one: host `api.0x.org`, path `/swap/allowance-holder/quote`, and the query exactly as sent.
 
@@ -321,21 +326,22 @@ The signature checks run in order and stop at the first that fails. The quote's 
 | Check | What passes |
 | --- | --- |
 | `zerox-signed` | The response carries `Signature-Input` and `Signature` (RFC 9421), Ed25519, tagged `0x-swap-api`. |
-| `zerox-key` | The signature names a key the caller trusts. |
-| `zerox-fresh` | 0x signed it at most 60 seconds from the caller's clock, either way. |
+| `zerox-key` | The signature names a key this package pins (`ZEROX_KEYS`). |
+| `zerox-fresh` | 0x signed it at most 60 seconds from the caller's clock, either way. A clock or age limit that is not a finite number fails. |
 | `zerox-covers` | It covers the status, `content-digest`, and the request's method, authority, path and query. |
 | `zerox-digest` | The body's SHA-256 is the one in `Content-Digest`. |
 | `zerox-signature` | The signature verifies over the rebuilt signature base. |
-| `quote-request` | The query 0x answered asks for this trade: chain, tokens, taker and amount. |
+| `quote-request` | The query 0x answered asks for this trade and nothing else: `chainId`, `sellToken`, `buyToken`, `taker` and one of `sellAmount` and `buyAmount`, each once with the intent's value, plus `recipient` and `slippageBps` only when the intent names them. Any other parameter, such as a fee, a surplus recipient or `gasPrice`, fails, and so does a percent-encoded part, since 0x decodes it. |
 | `quote-response` | HTTP 200, a route, a transaction, and the mode, tokens and amounts asked for. A refusal names 0x's error. |
-| `quote-target` | The transaction calls AllowanceHolder (`0x0000000000001fF3684f28c67538d4D072C22734` on Ethereum, Base and Robinhood Chain). |
-| `quote-spender` | When the sold token needs an approval, the spender 0x names is AllowanceHolder. Never approve the Settler. |
-| `quote-exec` | AllowanceHolder's `exec` lets the Settler take the token sold, and no more than the amount sold, or on an exact-out quote its `maxSellAmount` and at most the caller's ceiling. |
+| `quote-target` | The transaction calls AllowanceHolder (`0x0000000000001fF3684f28c67538d4D072C22734` on Ethereum, Base and Robinhood Chain, pinned here; `allowanceHolder` in the intent names it on other chains). |
+| `quote-spender` | `allowanceTarget` is null or AllowanceHolder, and so is the spender in `issues.allowance` when 0x asks for an approval. Never approve the Settler. |
+| `quote-exec` | AllowanceHolder's `exec`, in the standard ABI encoding, lets the Settler take the token sold, and no more than the amount sold, or on an exact-out quote its `maxSellAmount` and at most the caller's. |
 | `quote-settler` | The Settler is the one 0x's registry (`0x00000000000004533Fe15556B1E086BB1A72cEae`) returns for taker-sent swaps, `ownerOf(2)`, or the one before it, `prev(2)`, which 0x's API can still use for a while after a new Settler is deployed. A registry that reverts means 0x paused Settler on that chain. |
 | `quote-value` | The transaction sends the amount sold when it sells the native token, and nothing otherwise. |
 | `quote-recipient` | Settler's slippage check pays what is bought to the taker, or to the recipient the caller named. |
 | `quote-buy-token` | That check counts the token the caller buys. |
 | `quote-min-out` | It reverts unless the recipient gets at least the caller's floor: `buyAmount` on an exact-out quote. |
+| `quote-gas` | Only with `maxGasCost`: the quote's `gas` times its `gasPrice` is at most that. |
 
 `checkQuote` runs the quote's checks alone on a body already trusted, and `verifyResponse` the signature's alone, for any Swap API answer.
 

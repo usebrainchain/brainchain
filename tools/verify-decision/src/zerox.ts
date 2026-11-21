@@ -221,11 +221,15 @@ export async function readSettlers(client: Pick<PublicClient, "readContract">, f
   return { ...(current ? { current } : {}), ...(previous && previous !== zeroAddress ? { previous } : {}) };
 }
 
-/** What the caller wants from a quote. Exactly one of sellAmount and buyAmount. */
+/**
+ * What the caller wants from a quote: exactly one of sellAmount and buyAmount,
+ * with the caller's own limit for it, since the quote's are 0x's.
+ */
 export interface QuoteIntent {
   chainId: number;
   /** Sends the transaction and, unless recipient says otherwise, gets what it buys. */
   taker: Address;
+  /** Asked for in the query when given. */
   recipient?: Address;
   /** NATIVE for the chain's own token. */
   sellToken: Address;
@@ -234,11 +238,15 @@ export interface QuoteIntent {
   sellAmount?: bigint;
   /** Exact out: the amount bought. */
   buyAmount?: bigint;
-  /** Exact out: the most the caller sells for it. */
+  /** Exact out, required: the most the caller sells for it. */
   maxSellAmount?: bigint;
-  /** The least the caller takes; on exact out, never below buyAmount. */
+  /** Exact in, required: the least the caller takes. On exact out it may be given, and is never below buyAmount. */
   minBuyAmount?: bigint;
-  /** For a chain not in ALLOWANCE_HOLDER. */
+  /** The slippageBps the query asked 0x for; the query may carry it only when this names it. */
+  slippageBps?: number;
+  /** The most the quote's gas times its gasPrice may come to. */
+  maxGasCost?: bigint;
+  /** For a chain not in ALLOWANCE_HOLDER; on a chain in it, only that address. */
   allowanceHolder?: Address;
 }
 
@@ -256,9 +264,12 @@ export interface Quote {
   buyAmount: bigint;
   /** Exact in: the least the swap gives before it reverts. */
   minBuyAmount?: bigint;
-  transaction: { to: Address; data: Hex; value: bigint; gas?: bigint };
+  /** 0x's estimate. The caller sends with fee fields of its own. */
+  transaction: { to: Address; data: Hex; value: bigint; gas?: bigint; gasPrice?: bigint };
   /** The spender 0x asks the taker to approve, when the sold token needs an approval. */
   spender?: Address;
+  /** The contract 0x names for approvals, when it names one. */
+  allowanceTarget?: Address;
   zid?: string;
 }
 
@@ -289,10 +300,11 @@ const short = (value: string) => `${value.slice(0, 6)}…${value.slice(-4)}`;
 /**
  * Holds a quote's body and its transaction to the caller's intent. Every check
  * reads the calldata where it can, since the calldata is what gets signed:
- * the target is AllowanceHolder, which lets the Settler take at most the sold
- * token and amount; the Settler is the registry's current or previous one;
- * the value pays only a native sale; and Settler's own slippage check sends
- * the bought token to the caller's recipient, at least the caller's floor.
+ * the target is AllowanceHolder, and so is any spender the quote names; it
+ * lets the Settler take at most the sold token and the caller's amount; the
+ * Settler is the registry's current or previous one; the value pays only a
+ * native sale; and Settler's own slippage check sends the bought token to the
+ * caller's recipient, at least the caller's floor.
  */
 export function checkQuote(body: unknown, intent: QuoteIntent, settlers: Settlers, status = 200): QuoteReport {
   const checks: Check[] = [];
@@ -333,7 +345,7 @@ export function checkQuote(body: unknown, intent: QuoteIntent, settlers: Settler
         : `an ${quote.mode} quote selling ${short(quote.sellToken)} for ${short(quote.buyToken)}`,
   );
 
-  const holder = intent.allowanceHolder ?? ALLOWANCE_HOLDER[intent.chainId]!;
+  const holder = holderOf(intent)!;
   add(
     "quote-target",
     same(quote.transaction.to, holder),
@@ -341,13 +353,22 @@ export function checkQuote(body: unknown, intent: QuoteIntent, settlers: Settler
       ? `the transaction calls AllowanceHolder ${short(holder)}`
       : `the transaction calls ${quote.transaction.to}, not AllowanceHolder ${holder}. Never send it, and never approve that address`,
   );
-  if (quote.spender !== undefined) {
-    add(
-      "quote-spender",
-      same(quote.spender, holder),
-      same(quote.spender, holder) ? `the approval it asks for is to AllowanceHolder` : `it asks for an approval to ${quote.spender}, not AllowanceHolder ${holder}. Never approve that address`,
-    );
-  }
+  const named = [
+    ["issues.allowance.spender", quote.spender],
+    ["allowanceTarget", quote.allowanceTarget],
+  ].filter((entry): entry is [string, Address] => entry[1] !== undefined);
+  const stranger = named.find(([, address]) => !same(address, holder));
+  add(
+    "quote-spender",
+    stranger === undefined,
+    stranger
+      ? `it names ${stranger[1]} as ${stranger[0]}, not AllowanceHolder ${holder}. Never approve that address`
+      : quote.spender !== undefined
+        ? "the approval it asks for is to AllowanceHolder"
+        : named.length > 0
+          ? "it names AllowanceHolder for approvals and asks for none"
+          : "it asks for no approval",
+  );
 
   let decoded: Decoded;
   try {
@@ -358,7 +379,7 @@ export function checkQuote(body: unknown, intent: QuoteIntent, settlers: Settler
   }
   const native = same(intent.sellToken, NATIVE);
   const soldToken = native ? zeroAddress : intent.sellToken;
-  const ceiling = exactOut ? (intent.maxSellAmount ?? quote.maxSellAmount!) : intent.sellAmount!;
+  const ceiling = exactOut ? intent.maxSellAmount! : intent.sellAmount!;
   const sells = exactOut ? `at most ${ceiling}` : `${ceiling}`;
   const execOk = same(decoded.token, soldToken) && (exactOut ? decoded.amount <= ceiling && decoded.amount === quote.maxSellAmount : decoded.amount === ceiling);
   add(
@@ -418,6 +439,19 @@ export function checkQuote(body: unknown, intent: QuoteIntent, settlers: Settler
         ? `the Settler accepts as little as ${decoded.minAmountOut}, under the ${floor} asked for`
         : `the Settler accepts as little as ${decoded.minAmountOut}, under the ${stated} the quote states`,
   );
+  if (intent.maxGasCost !== undefined) {
+    const { gas, gasPrice } = quote.transaction;
+    const cost = gas !== undefined && gasPrice !== undefined ? gas * gasPrice : undefined;
+    add(
+      "quote-gas",
+      cost !== undefined && cost <= intent.maxGasCost,
+      cost === undefined
+        ? `the quote states no ${gas === undefined ? "gas" : "gasPrice"}, so its gas cost cannot be held to the ${intent.maxGasCost} wei asked for`
+        : cost <= intent.maxGasCost
+          ? `its gas, ${gas} at ${gasPrice} wei, comes to ${cost} wei, within the ${intent.maxGasCost} asked for`
+          : `its gas, ${gas} at ${gasPrice} wei, comes to ${cost} wei, over the ${intent.maxGasCost} asked for`,
+    );
+  }
   return done({ quote, decoded });
 }
 
@@ -452,35 +486,73 @@ export async function verifyQuote(response: SignedResponse, url: string | URL, i
   return { ...report, ok: report.ok, checks: [...signature.checks, ...report.checks], signature };
 }
 
-/** Where the query 0x signed differs from the intent: the signature binds the answer to that query, so it must ask for this trade. */
+/**
+ * Where the query 0x signed asks for more than, or other than, this trade. The
+ * signature binds the answer to the query, and 0x reads every parameter in
+ * it, so only the trade's own names pass: each once, with the intent's value.
+ */
 function queryProblem(query: string, intent: QuoteIntent): string | undefined {
-  const q = new URLSearchParams(query);
-  const wrong: string[] = [];
-  const expect = (name: string, value: string | undefined, compare = (a: string, b: string) => a === b) => {
-    const got = q.get(name) ?? undefined;
-    if (value === undefined ? got !== undefined : got === undefined || !compare(got, value)) wrong.push(`${name}=${got ?? "(none)"} where ${value ?? "none"} was meant`);
-  };
   const address = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
-  expect("chainId", String(intent.chainId));
-  expect("sellToken", intent.sellToken, address);
-  expect("buyToken", intent.buyToken, address);
-  expect("taker", intent.taker, address);
-  expect("sellAmount", intent.sellAmount?.toString());
-  expect("buyAmount", intent.buyAmount?.toString());
-  if (intent.recipient !== undefined && !same(intent.recipient, intent.taker)) expect("recipient", intent.recipient, address);
+  const exact = (a: string, b: string) => a === b;
+  const wanted = new Map<string, { value: string; compare: (a: string, b: string) => boolean; required: boolean }>();
+  const want = (name: string, value: string, compare = exact, required = true) => void wanted.set(name, { value, compare, required });
+  want("chainId", String(intent.chainId));
+  want("sellToken", intent.sellToken, address);
+  want("buyToken", intent.buyToken, address);
+  want("taker", intent.taker, address);
+  if (intent.sellAmount !== undefined) want("sellAmount", intent.sellAmount.toString());
+  if (intent.buyAmount !== undefined) want("buyAmount", intent.buyAmount.toString());
+  // Without a recipient 0x pays the taker, so the query needs one only for someone else.
+  if (intent.recipient !== undefined) want("recipient", intent.recipient, address, !same(intent.recipient, intent.taker));
+  if (intent.slippageBps !== undefined) want("slippageBps", String(intent.slippageBps));
+
+  const wrong: string[] = [];
+  const seen = new Set<string>();
+  const raw = query.startsWith("?") ? query.slice(1) : query;
+  for (const part of raw === "" ? [] : raw.split("&")) {
+    const at = part.indexOf("=");
+    const name = at < 0 ? part : part.slice(0, at);
+    const value = at < 0 ? undefined : part.slice(at + 1);
+    // 0x decodes %XX and + before it reads a parameter, so an encoded part could name one this check would not see.
+    if (/[%+]/.test(part)) wrong.push(`${clip(part)} is encoded, which this check does not decode`);
+    else if (!wanted.has(name)) wrong.push(`${clip(name) || "an empty name"} is not part of this trade`);
+    else if (seen.has(name)) wrong.push(`${name} is given more than once`);
+    else {
+      seen.add(name);
+      const { value: meant, compare } = wanted.get(name)!;
+      if (value === undefined || !compare(value, meant)) wrong.push(`${name}=${clip(value ?? "")} where ${meant} was meant`);
+    }
+  }
+  for (const [name, { value, required }] of wanted) if (required && !seen.has(name)) wrong.push(`${name}=(none) where ${value} was meant`);
   return wrong.length > 0 ? `the request 0x answered is not this trade: ${wrong.join("; ")}` : undefined;
 }
 
+/** The AllowanceHolder the quote must call: the pinned one, or the intent's on a chain with none pinned. */
+function holderOf(intent: QuoteIntent): Address | undefined {
+  return Object.hasOwn(ALLOWANCE_HOLDER, intent.chainId) ? ALLOWANCE_HOLDER[intent.chainId] : intent.allowanceHolder;
+}
+
 function intentProblem(intent: QuoteIntent): string | undefined {
-  if ((intent.sellAmount === undefined) === (intent.buyAmount === undefined)) return "the intent needs exactly one of sellAmount (exact in) and buyAmount (exact out)";
-  if (intent.maxSellAmount !== undefined && intent.buyAmount === undefined) return "maxSellAmount goes with buyAmount, on an exact-out quote";
+  const exactOut = intent.buyAmount !== undefined;
+  if ((intent.sellAmount === undefined) === !exactOut) return "the intent needs exactly one of sellAmount (exact in) and buyAmount (exact out)";
+  if ((intent.sellAmount ?? intent.buyAmount)! <= 0n) return `the intent's ${exactOut ? "buyAmount" : "sellAmount"} must be above zero`;
+  if (!exactOut && intent.maxSellAmount !== undefined) return "maxSellAmount goes with buyAmount, on an exact-out quote";
+  // Settler pays the recipient exactly the minimum on exact out, so what AllowanceHolder lets it take is all that bounds the spend.
+  if (exactOut && intent.maxSellAmount === undefined) return "an exact-out intent needs maxSellAmount, the most the caller sells, since the quote's own ceiling is 0x's";
+  if (!exactOut && intent.minBuyAmount === undefined) return "an exact-in intent needs minBuyAmount, the least the caller takes, since the quote's own floor is 0x's";
+  if (intent.slippageBps !== undefined && !(Number.isInteger(intent.slippageBps) && intent.slippageBps >= 0 && intent.slippageBps <= 10_000)) {
+    return "the intent's slippageBps must be a whole number from 0 to 10000";
+  }
+  if (intent.maxGasCost !== undefined && intent.maxGasCost < 0n) return "the intent's maxGasCost must not be below zero";
   for (const [name, value] of [["taker", intent.taker], ["recipient", intent.recipient], ["sellToken", intent.sellToken], ["buyToken", intent.buyToken], ["allowanceHolder", intent.allowanceHolder]] as const) {
     if (value !== undefined && !isAddress(value, { strict: false })) return `the intent's ${name} is not an address`;
   }
   if (same(intent.sellToken, intent.buyToken)) return "the intent sells and buys the same token";
-  if (intent.allowanceHolder === undefined && ALLOWANCE_HOLDER[intent.chainId] === undefined) {
-    return `this check does not know AllowanceHolder on chain ${intent.chainId}; pass allowanceHolder from 0x's contracts page`;
+  const pinned = Object.hasOwn(ALLOWANCE_HOLDER, intent.chainId) ? ALLOWANCE_HOLDER[intent.chainId] : undefined;
+  if (pinned !== undefined && intent.allowanceHolder !== undefined && !same(pinned, intent.allowanceHolder)) {
+    return `AllowanceHolder on chain ${intent.chainId} is ${pinned}, not the ${intent.allowanceHolder} the intent names`;
   }
+  if (holderOf(intent) === undefined) return `this check does not know AllowanceHolder on chain ${intent.chainId}; pass allowanceHolder from 0x's contracts page`;
   return undefined;
 }
 
@@ -506,6 +578,7 @@ function readQuote(record: Record<string, unknown>): Quote {
   };
   const issues = record.issues as { allowance?: { spender?: unknown } | null } | undefined;
   const spender = issues?.allowance?.spender;
+  const target = record.allowanceTarget;
   const exactOut = mode === "exact-out";
   return {
     mode,
@@ -519,8 +592,10 @@ function readQuote(record: Record<string, unknown>): Quote {
       data: tx.data as Hex,
       value: whole(tx.value ?? "0", "value"),
       ...(tx.gas !== undefined && tx.gas !== null ? { gas: whole(tx.gas, "gas") } : {}),
+      ...(tx.gasPrice !== undefined && tx.gasPrice !== null ? { gasPrice: whole(tx.gasPrice, "gasPrice") } : {}),
     },
     ...(spender !== undefined && spender !== null ? { spender: address(spender, "issues.allowance.spender") } : {}),
+    ...(target !== undefined && target !== null ? { allowanceTarget: address(target, "allowanceTarget") } : {}),
     ...(typeof record.zid === "string" ? { zid: record.zid } : {}),
   };
 }
