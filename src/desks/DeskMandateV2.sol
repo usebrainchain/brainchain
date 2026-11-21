@@ -76,7 +76,7 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
         uint64 dayShortfall;
     }
 
-    // An order's feed price, the floor it must clear and the Settler that runs it.
+    // Kept in one struct so trade stays under the stack limit.
     struct Fill {
         uint256 mark;
         uint256 floor;
@@ -135,7 +135,9 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
     error BadFeed(address feed);
     error ZeroPrice(address token);
     error Splitting(address token);
-    error BadDecimals(address token);
+    error UsdgNotAVenue();
+    error ListFull();
+    error BadDecimals(address token, address feed);
     error OffPrice(uint256 amountOut, uint256 floor);
     error OverBudget(uint256 dayShortfall, uint256 budget);
     error NoQuote();
@@ -143,7 +145,7 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
     error NotExec(bytes4 selector);
     error WrongSell(address token, uint256 amount);
     error NotSettler(address operator, address target);
-    error Spent(uint256 spent, uint256 amountIn);
+    error WrongSpend(uint256 spent, uint256 amountIn);
     error NoRenounce();
     error ZeroAddress();
     error ZeroAmount();
@@ -262,11 +264,11 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
         uint256 total = _booked(token);
         uint256 balance = IERC20(token).balanceOf(address(this));
         uint256 missing = total > balance ? total - balance : 0;
-        bool usdg = token == address(USDG);
-        uint256 held = usdg ? desks[desk].usdg : holdings[desk][token];
+        bool isUsdg = token == address(USDG);
+        uint256 held = isUsdg ? desks[desk].usdg : holdings[desk][token];
         uint256 cap = Math.min(missing, held);
         if (amount > cap) revert OverCap(amount, cap);
-        if (usdg) desks[desk].usdg = held - amount;
+        if (isUsdg) desks[desk].usdg = held - amount;
         else holdings[desk][token] = held - amount;
         emit WrittenOff(desk, token, amount);
     }
@@ -289,15 +291,17 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
     /// the token's `uiMultiplier` into its price, as the Robinhood stock tokens need.
     function setVenue(address token, IAggregatorV3 feed, bool scaled, bool live) external onlyOwner {
         if (token == address(0)) revert ZeroAddress();
-        if (token == address(USDG)) revert NotListed(token);
+        if (token == address(USDG)) revert UsdgNotAVenue();
         Venue memory venue = Venue({feed: feed, scaled: scaled, live: live});
         if (live) {
             if (address(feed) == address(0)) revert ZeroAddress();
             // `_price` and `_floor` assume an 18-decimal token priced by an 8-decimal feed.
-            if (feed.decimals() != 8 || IERC20Metadata(token).decimals() != 18) revert BadDecimals(token);
+            if (feed.decimals() != 8 || IERC20Metadata(token).decimals() != 18) {
+                revert BadDecimals(token, address(feed));
+            }
             _price(venue, token);
             if (!_seen[token]) {
-                if (tokens.length == MAX_TOKENS) revert OverCap(MAX_TOKENS + 1, MAX_TOKENS);
+                if (tokens.length == MAX_TOKENS) revert ListFull();
                 _seen[token] = true;
                 tokens.push(token);
             }
@@ -409,7 +413,7 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
         sold.forceApprove(ALLOWANCE_HOLDER, 0);
 
         uint256 spent = soldBefore - sold.balanceOf(address(this));
-        if (spent != amountIn) revert Spent(spent, amountIn);
+        if (spent != amountIn) revert WrongSpend(spent, amountIn);
         amountOut = bought.balanceOf(address(this)) - boughtBefore;
         settler = target;
     }
@@ -470,16 +474,16 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
             address token = tokens[i];
             uint256 held = holdings[desk][token];
             if (held == 0) continue;
-            (bool priced, bytes memory mark) = address(this).staticcall(abi.encodeCall(this.price, (token)));
-            if (priced) total += held * abi.decode(mark, (uint256)) / 1e18;
+            (bool priced, bytes memory ret) = address(this).staticcall(abi.encodeCall(this.price, (token)));
+            if (priced) total += held * abi.decode(ret, (uint256)) / 1e18;
         }
         if (total > type(uint64).max) total = type(uint64).max;
     }
 
     function _booked(address token) private view returns (uint256 total) {
-        bool usdg = token == address(USDG);
+        bool isUsdg = token == address(USDG);
         for (uint8 i = 0; i < DESKS; i++) {
-            total += usdg ? desks[i].usdg : holdings[i][token];
+            total += isUsdg ? desks[i].usdg : holdings[i][token];
         }
     }
 
@@ -508,9 +512,9 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
         if (venue.scaled) {
             // A split or dividend steps the multiplier at `effectiveAt`, while the per-share feed moves only
             // when Chainlink next reports. Until both have settled, the mark can be off by the whole ratio.
-            IStockToken scaled = IStockToken(token);
-            multiplier = scaled.uiMultiplier();
-            if (scaled.newUIMultiplier() != multiplier || block.timestamp < scaled.effectiveAt() + SPLIT_GUARD) {
+            IStockToken stock = IStockToken(token);
+            multiplier = stock.uiMultiplier();
+            if (stock.newUIMultiplier() != multiplier || block.timestamp < stock.effectiveAt() + SPLIT_GUARD) {
                 revert Splitting(token);
             }
         }

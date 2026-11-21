@@ -380,7 +380,7 @@ contract DeskMandateV2Test is DeskV2Setup {
         mandate.setVenue(address(spy), _feed(spyFeed), true, false);
         assertEq(mandate.recallToken(0, address(spy)), 0.8e18);
 
-        // Nothing left to move is a mistake, not a silent success.
+        // A recall with nothing to move reverts.
         vm.expectRevert(DeskMandateV2.ZeroAmount.selector);
         mandate.recallUsdg(0);
         vm.expectRevert(DeskMandateV2.ZeroAmount.selector);
@@ -469,18 +469,20 @@ contract DeskMandateV2Test is DeskV2Setup {
         MockStock tsla = new MockStock("TSLA");
         MockFeed tslaFeed = new MockFeed(300e8);
         vm.startPrank(owner);
-        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.NotListed.selector, address(usdg)));
+        vm.expectRevert(DeskMandateV2.UsdgNotAVenue.selector);
         mandate.setVenue(address(usdg), _feed(tslaFeed), false, true);
         vm.expectRevert(DeskMandateV2.ZeroAddress.selector);
         mandate.setVenue(address(tsla), IAggregatorV3(address(0)), true, true);
         vm.expectRevert(DeskMandateV2.ZeroAddress.selector);
         mandate.setVenue(address(0), _feed(tslaFeed), true, false);
         tslaFeed.setDecimals(18);
-        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.BadDecimals.selector, address(tsla)));
+        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.BadDecimals.selector, address(tsla), address(tslaFeed)));
         mandate.setVenue(address(tsla), _feed(tslaFeed), true, true);
         tslaFeed.setDecimals(8);
         MockERC20 sixDecimals = new MockERC20();
-        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.BadDecimals.selector, address(sixDecimals)));
+        vm.expectRevert(
+            abi.encodeWithSelector(DeskMandateV2.BadDecimals.selector, address(sixDecimals), address(tslaFeed))
+        );
         mandate.setVenue(address(sixDecimals), _feed(tslaFeed), false, true);
         vm.expectEmit(true, false, false, true, address(mandate));
         emit DeskMandateV2.VenueSet(address(tsla), address(tslaFeed), true, true);
@@ -678,7 +680,7 @@ contract DeskMandateV2Test is DeskV2Setup {
             mandate.setVenue(address(new MockStock("X")), _feed(feed), false, true);
         }
         address extra = address(new MockStock("X"));
-        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OverCap.selector, 17, 16));
+        vm.expectRevert(DeskMandateV2.ListFull.selector);
         mandate.setVenue(extra, _feed(feed), false, true);
         // Delisting and relisting a token already counted still works.
         mandate.setVenue(address(nvda), _feed(nvdaFeed), true, false);
@@ -703,12 +705,12 @@ contract DeskMandateV2Test is DeskV2Setup {
             uint256 out;
             if (buy) {
                 amountIn = 1 + (r >> 32) % (_usdgOf(desk) / 2 + 1);
-                out = amountIn * 1e12 / 100 * fillBps / 10_000;
+                out = amountIn * 1e12 / 100 * fillBps / mandate.BPS();
             } else {
                 uint256 held = mandate.holdings(desk, address(nvda));
                 if (held == 0) continue;
                 amountIn = 1 + (r >> 32) % held;
-                out = amountIn / 1e10 * fillBps / 10_000;
+                out = amountIn / 1e10 * fillBps / mandate.BPS();
             }
             bytes memory swap = buy
                 ? _swap(address(usdg), amountIn, address(nvda), out)
@@ -726,7 +728,7 @@ contract DeskMandateV2Test is DeskV2Setup {
             assertEq(ledgerUsdg, usdg.balanceOf(address(mandate)));
             assertEq(ledgerNvda, nvda.balanceOf(address(mandate)));
             (,,,,, uint64 dayEquity, uint64 dayShortfall) = mandate.desks(desk);
-            assertLe(dayShortfall, uint256(dayEquity) * mandate.budgetBps() / 10_000, "never over the budget");
+            assertLe(dayShortfall, uint256(dayEquity) * mandate.budgetBps() / mandate.BPS(), "never over the budget");
             assertEq(usdg.allowance(address(mandate), ALLOWANCE_HOLDER), 0);
             assertEq(nvda.allowance(address(mandate), ALLOWANCE_HOLDER), 0);
         }
@@ -910,7 +912,7 @@ contract DeskMandateV2ZeroExTest is DeskV2Setup {
             100e6,
             abi.encodeCall(MockSettler.fill, (address(usdg), 100e6 - 1, address(nvda), 1e18, address(mandate)))
         );
-        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.Spent.selector, 100e6 - 1, 100e6));
+        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.WrongSpend.selector, 100e6 - 1, 100e6));
         _attempt(0, address(nvda), true, 100e6, short);
     }
 
@@ -1006,7 +1008,7 @@ contract DeskMandateV2ZeroExTest is DeskV2Setup {
 
         fee.setFee(100, true);
         bytes memory swap = _swap(address(fee), 10e18, address(usdg), 10e6);
-        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.Spent.selector, 10.1e18, 10e18));
+        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.WrongSpend.selector, 10.1e18, 10e18));
         _attempt(0, address(fee), false, 10e18, swap);
     }
 }
