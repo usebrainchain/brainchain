@@ -659,7 +659,7 @@ contract DeployDeskMandateV2ForkTest is Test {
         vm.setEnv("SAFE", vm.toString(makeAddr("owner-key")));
         vm.setEnv("EXPECT", vm.toString(address(0)));
         DeployDeskMandateV2 script = new DeployDeskMandateV2();
-        vm.expectRevert(bytes("SAFE has no code: it should be the treasury Safe"));
+        vm.expectRevert(bytes("SAFE has no code: pass the treasury Safe"));
         script.run();
 
         vm.setEnv("SAFE", vm.toString(SAFE));
@@ -706,7 +706,7 @@ contract DeployDeskMandateV2ForkTest is Test {
             abi.encodeCall(DeskMandateV2.setVenue, (FIRST.tokens(0), IAggregatorV3(address(1)), true, false)),
             "a venue is not the first mandate's"
         );
-        _tampered(script, mandate, deployer, abi.encodeCall(DeskMandateV2.setPaused, (true)), "paused");
+        _tampered(script, mandate, deployer, abi.encodeCall(DeskMandateV2.setPaused, (true)), "the mandate is paused");
 
         vm.prank(SAFE);
         mandate.acceptOwnership();

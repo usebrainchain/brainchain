@@ -14,11 +14,11 @@ import {DeskMandateV2, ISettlerRegistry} from "../src/desks/DeskMandateV2.sol";
 ///
 /// A plain run only simulates the deployment and prints the address:
 ///
-///   SAFE=<treasury Safe> OPERATOR=<desk key> forge script script/DeployDeskMandateV2.s.sol --rpc-url https://rpc.mainnet.chain.robinhood.com
+///   SAFE=<treasury Safe> OPERATOR=<desk key> forge script script/DeployDeskMandateV2.s.sol --rpc-url https://rpc.mainnet.chain.robinhood.com --sender <deployer>
 ///
-/// It refuses `--broadcast` unless DEPLOY_DESK_MANDATE_V2=true is set as well. With EXPECT set, it refuses
-/// unless the contract lands there: deployed by a fresh key as its first transaction, the address is
-/// known before the brain release that names it is built.
+/// It refuses `--broadcast` unless DEPLOY_DESK_MANDATE_V2=true is set as well. A fresh key's first transaction
+/// lands at an address known in advance, so the brain release can name it before the deploy; with EXPECT set
+/// to that address, the script refuses to deploy anywhere else.
 ///
 /// After the Safe accepts, and before anything is funded, `check` reads back everything the deployer could
 /// have changed while it was the owner and compares it with what this script set:
@@ -31,6 +31,8 @@ contract DeployDeskMandateV2 is Script {
     address constant ALLOWANCE_HOLDER = 0x0000000000001fF3684f28c67538d4D072C22734;
     ISettlerRegistry constant SETTLERS = ISettlerRegistry(0x00000000000004533Fe15556B1E086BB1A72cEae);
     DeskMandate constant FIRST = DeskMandate(0xA76916D1b75a82776779fb9d7EB156A4E4a55099);
+    uint8 constant DESKS = 5;
+    uint256 constant STOCK_TOKENS = 7;
 
     // One order an hour, a 1% premium, half the desk's USDG per buy, and 1% of the desk a day in shortfall.
     // The stock feeds report at least once every 24 hours on weekdays and not from Friday night to Sunday
@@ -51,7 +53,7 @@ contract DeployDeskMandateV2 is Script {
         );
         address safe = vm.envAddress("SAFE");
         address operator = vm.envAddress("OPERATOR");
-        require(safe.code.length > 0, "SAFE has no code: it should be the treasury Safe");
+        require(safe.code.length > 0, "SAFE has no code: pass the treasury Safe");
         require(ALLOWANCE_HOLDER.code.length > 0 && address(SETTLERS).code.length > 0, "0x is not deployed here");
 
         vm.startBroadcast();
@@ -79,8 +81,8 @@ contract DeployDeskMandateV2 is Script {
     }
 
     function _deploy(address deployer, address safe, address operator) internal returns (DeskMandateV2 mandate) {
-        bytes32[5] memory models;
-        for (uint8 i = 0; i < 5; i++) {
+        bytes32[DESKS] memory models;
+        for (uint8 i = 0; i < DESKS; i++) {
             (models[i],,,) = FIRST.desks(i);
         }
         mandate = new DeskMandateV2(USDG, ALLOWANCE_HOLDER, SETTLERS, deployer, operator, models);
@@ -104,7 +106,7 @@ contract DeployDeskMandateV2 is Script {
             "USDG or 0x is not the deploy's"
         );
         require(mandate.operator() == operator, "the operator is not OPERATOR");
-        require(!mandate.paused(), "paused");
+        require(!mandate.paused(), "the mandate is paused");
         require(
             mandate.interval() == INTERVAL && mandate.premiumBps() == PREMIUM_BPS && mandate.maxBuyBps() == MAX_BUY_BPS
                 && mandate.maxFeedAge() == MAX_FEED_AGE && mandate.budgetBps() == BUDGET_BPS,
@@ -123,9 +125,11 @@ contract DeployDeskMandateV2 is Script {
             require(mandate.booked(token) == 0, "a desk already holds a token");
             listed++;
         }
-        require(listed == 7 && mandate.tokenCount() == listed, "the listed tokens are not the seven stock tokens");
+        require(
+            listed == STOCK_TOKENS && mandate.tokenCount() == listed, "the listed tokens are not the seven stock tokens"
+        );
         require(mandate.booked(address(USDG)) == 0, "a desk already holds USDG");
-        for (uint8 i = 0; i < 5; i++) {
+        for (uint8 i = 0; i < DESKS; i++) {
             (bytes32 model,,,) = FIRST.desks(i);
             (bytes32 copied,,, uint32 orders,,,) = mandate.desks(i);
             require(copied == model && orders == 0, "a desk is not the first mandate's or has traded");
