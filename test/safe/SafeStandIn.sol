@@ -16,6 +16,15 @@ contract SafeStandIn {
         isModuleEnabled[module] = false;
     }
 
+    function execTransactionFromModule(address to, uint256 value, bytes memory data, uint8 operation)
+        external
+        returns (bool success)
+    {
+        require(isModuleEnabled[msg.sender], "GS104");
+        if (operation == 1) (success,) = to.delegatecall(data);
+        else (success,) = to.call{value: value}(data);
+    }
+
     function execTransactionFromModuleReturnData(address to, uint256 value, bytes memory data, uint8 operation)
         external
         returns (bool success, bytes memory returnData)
@@ -24,4 +33,6 @@ contract SafeStandIn {
         if (operation == 1) (success, returnData) = to.delegatecall(data);
         else (success, returnData) = to.call{value: value}(data);
     }
+
+    receive() external payable {}
 }
