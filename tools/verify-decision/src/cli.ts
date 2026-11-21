@@ -128,6 +128,8 @@ const BEFORE_3 = /^(v2(-|$)|2\.|0x83b31d99fa31a9e5257955a737ef34c40f1c57bf$)/i;
 const AGENT_ID = "An agent id is a whole number from 0 to 2^256 - 1, written without leading zeros";
 // As agentIdOf in epoch.ts: one spelling for each id, within uint256.
 const isAgentId = (text: string): boolean => /^(0|[1-9]\d{0,77})$/.test(text) && BigInt(text) >> 256n === 0n;
+// The contracts count decisions and tasks from 1 in a uint256.
+const isId = (text: string): boolean => text !== "0" && isAgentId(text);
 
 /** Thrown once the run is over, so that nothing after the call that ended it runs while its output drains. */
 class Ended {}
@@ -204,8 +206,8 @@ async function main(): Promise<void> {
 
   const [networkArg, idArg, ...extra] = args;
   if (networkArg === undefined) usage("Name a network: mainnet, testnet or a chain id");
-  const foundNetwork = Object.hasOwn(NETWORKS, networkArg)
-    ? NETWORKS[networkArg as keyof typeof NETWORKS]
+  const foundNetwork = Object.hasOwn(NETWORKS, networkArg.toLowerCase())
+    ? NETWORKS[networkArg.toLowerCase() as keyof typeof NETWORKS]
     : Object.values(NETWORKS).find((n) => String(n.chainId) === networkArg);
   if (!foundNetwork) fail(`Unknown network "${networkArg}": use mainnet, testnet, 274663 or 274630`, 2);
   const network = foundNetwork;
@@ -237,7 +239,7 @@ async function main(): Promise<void> {
   // The registry says which epoch an id is in now: a licence's state and the papers turn on it, and a record reads it only when asked.
   const readsRegistry = licenceArg !== undefined || papersArg !== undefined || (recordArg !== undefined && epoch);
   const given = taskArg ?? idArg;
-  if (given !== undefined && !/^[1-9]\d*$/.test(given)) fail(`${taskArg === undefined ? "A decision" : "A task"} id is a whole number from 1, written without leading zeros`, 2);
+  if (given !== undefined && !isId(given)) fail(`${taskArg === undefined ? "A decision" : "A task"} id is a whole number from 1 to 2^256 - 1, written without leading zeros`, 2);
 
   const client = createPublicClient({ transport: rpcTransport("BrainChain", rpcArg ?? network.rpc) });
   // BrainChain settles on the chain its registries are on, so a receipt's own network is that one: Robinhood Chain, or its testnet.
@@ -259,7 +261,7 @@ async function main(): Promise<void> {
   if (receipt && !isReceipt(receipt.value)) fail(`${receipt.from} is not a receipt as BrainChain or the x402 extension signs one`);
   const named = receipt && receiptDecision(receipt.value);
   const target = given ?? named?.decision;
-  if (target === undefined || !/^[1-9]\d*$/.test(target)) fail("The receipt names no decision; give the decision's id", 2);
+  if (target === undefined || !isId(target)) fail("The receipt names no decision; give the decision's id", 2);
   // A receipt names its log, so it opens a retired set on its own.
   const receiptSet = named && network.sets.find((s) => s.log.toLowerCase() === named.decisionLog.toLowerCase());
 
@@ -701,7 +703,8 @@ async function main(): Promise<void> {
       // Only a hint, so a contract the RPC cannot read is left out of it.
       const sets = others.filter((_, i) => holds(i)).map((s) => s.key);
       const where = what === "task" ? `TaskBoard ${set.board}` : `DecisionLog ${set.log}`;
-      fail(`${where} (set ${set.key}) holds ${what}s 1 to ${held}.${sets.length > 0 ? ` Each set numbers its own ${what}s; try --set ${sets.join(" or ")}.` : ""}`);
+      const has = held === 0n ? `Set ${set.key} holds no ${what}s yet.` : `${where} (set ${set.key}) holds ${what}s 1 to ${held}.`;
+      fail(`${has}${sets.length > 0 ? ` Each set numbers its own ${what}s; try --set ${sets.join(" or ")}.` : ""}`);
     }
     // The sets run newest first, so an older set is chosen only once each newer one is known to stop short of the id.
     const at = counts.findIndex((read, i) => read.status === "rejected" || holds(i));

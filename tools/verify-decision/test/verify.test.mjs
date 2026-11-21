@@ -1998,6 +1998,24 @@ describe("records", () => {
     assert.doesNotMatch(check(down, "fetch").message, /exam/);
   });
 
+  it("point a testnet record from before its fresh start to known history", async () => {
+    const ctx = onChain({ code: 404, serve: { error: "Not found" } });
+    const testnet = { ...ctx, network: { ...ctx.network, chainId: 274630 } };
+    assert.match(
+      check(await verifyDecision(testnet, 1n), "fetch").message,
+      /answered with status 404: Not found\. The host no longer serves testnet decisions made before 2026-11-20: see https:\/\/github\.com\/usebrainchain\/brainchain\/tree\/main\/tools\/verify-decision#known-history$/,
+    );
+    // A later testnet decision, or one on mainnet, gets the host's answer alone.
+    const get = ctx.client.readContract;
+    const recordedLater = async (call) => {
+      const read = await get(call);
+      return call.functionName === "get" && call.address === set.log ? { ...read, recordedAt: BigInt(Date.UTC(2026, 10, 20, 21, 8) / 1000) } : read;
+    };
+    const later = { ...testnet, client: { ...ctx.client, readContract: recordedLater } };
+    assert.match(check(await verifyDecision(later, 1n), "fetch").message, /answered with status 404: Not found$/);
+    assert.match(check(await verifyDecision(ctx, 1n), "fetch").message, /answered with status 404: Not found$/);
+  });
+
   it("carry the host's reason on a 404 wherever the brain host is read, and say what was missing where it sends none", async () => {
     // records.ts for a hash it does not serve.
     const unknown = await verify({ code: 404, serve: { error: "No public record with that hash." } });
@@ -3044,7 +3062,7 @@ describe("the command line", () => {
       for (const name of ["v4", "V4", "V3-4", "0x8385bb4b8990411ccdd8e851b2676da1a4c1f3c4"]) {
         const { code, stderr } = await runAsync("mainnet", "1", "--set", name, "--rpc", urlOf(rpc));
         assert.equal(code, 1, name);
-        assert.match(stderr, /^DecisionLog 0xFdFEDb376c9632A4D6F15a1697E2b6853f12B4d7 \(set v3-4\) holds decisions 1 to 0/, name);
+        assert.match(stderr, /^Set v3-4 holds no decisions yet\./, name);
       }
     } finally {
       rpc.close();
@@ -3127,7 +3145,7 @@ describe("the command line", () => {
     try {
       const { code, stderr } = await runAsync("mainnet", "--receipt", join(dir, "receipt.json"), "--rpc", urlOf(rpc));
       assert.equal(code, 1);
-      assert.match(stderr, /^DecisionLog 0xFdFEDb376c9632A4D6F15a1697E2b6853f12B4d7 \(set v3-4\) holds decisions 1 to 0/);
+      assert.match(stderr, /^Set v3-4 holds no decisions yet\./);
     } finally {
       rpc.close();
     }
@@ -3380,7 +3398,11 @@ describe("the command line", () => {
     assert.equal(run("mainnet", "--entry", "20424:0").stderr, "An entry's index counts from 1 for each agent and writer, so the first is 20424:1\n");
     assert.equal(run("mainnet", "--entry", `20424:${STRANGER}:00`).stderr, `An entry's index counts from 1 for each agent and writer, so the first is 20424:${STRANGER}:1\n`);
     assert.equal(run("mainnet", "--entry", "20424:07").stderr, "An entry's index is a whole number from 1, written without leading zeros\n");
-    assert.equal(run("mainnet", "01").stderr, "A decision id is a whole number from 1, written without leading zeros\n");
+    // A decision or task id is held to the same uint256 as an agent id, counted from 1, and a network is named in any case.
+    for (const id of ["01", "0", beyond]) {
+      assert.deepEqual([run("mainnet", id).status, run("MainNet", id).stderr], [2, "A decision id is a whole number from 1 to 2^256 - 1, written without leading zeros\n"], id);
+      assert.deepEqual([run("TESTNET", "--task", id).status, run("testnet", "--task", id).stderr], [2, "A task id is a whole number from 1 to 2^256 - 1, written without leading zeros\n"], id);
+    }
     assert.equal(run("mainnet", "--item", "0x12").stderr, "An item id is 0x and 64 hex digits\n");
     assert.equal(run("mainnet", "--record", "1", "--registry-rpc", "https://x.invalid").stderr, "With --record, --registry-rpc is read only with --epoch\n");
     assert.match(run("--help").stdout, /brainchain-verify <mainnet\|testnet\|chainId> --record <agentId> \[--epoch\] \[--service <url>\] \[--rpc <url>\] \[--registry-rpc <url>\] \[--payment-rpc <url>\] \[--json\]\n/);
@@ -3710,7 +3732,10 @@ describe("the command line", () => {
       const named = await runAsync("mainnet", "7", "--set", newest.key, "--rpc", urlOf(rpc));
       assert.deepEqual([named.code, named.stderr], [1, `DecisionLog ${newest.log} (set ${newest.key}) holds decisions 1 to 5. Each set numbers its own decisions; try --set ${older.key}.\n`]);
       const activeNamed = await runAsync("mainnet", "3", "--set", active.key, "--rpc", urlOf(rpc));
-      assert.equal(activeNamed.stderr, `DecisionLog ${active.log} (set ${active.key}) holds decisions 1 to 0. Each set numbers its own decisions; try --set ${newest.key} or ${older.key}.\n`);
+      // A set that holds none yet says so, where 1 to 0 would read as a count.
+      assert.equal(activeNamed.stderr, `Set ${active.key} holds no decisions yet. Each set numbers its own decisions; try --set ${newest.key} or ${older.key}.\n`);
+      const noTasks = await runAsync("mainnet", "--task", "3", "--set", active.key, "--rpc", urlOf(rpc));
+      assert.equal(noTasks.stderr, `Set ${active.key} holds no tasks yet. Each set numbers its own tasks; try --set ${NETWORKS.mainnet.sets.slice(1).map((s) => s.key).join(" or ")}.\n`);
 
       // A newer set whose count cannot be read is never passed over for an older one.
       lagging = true;

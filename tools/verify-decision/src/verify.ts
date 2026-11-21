@@ -728,6 +728,10 @@ export async function decisionsOf({ client, network, set }: Context, task: bigin
   return events.map((e) => e.args.id).sort((a, b) => (a < b ? -1 : 1));
 }
 
+const HISTORY = "https://github.com/usebrainchain/brainchain/tree/main/tools/verify-decision#known-history";
+// Testnet's records started fresh when its brain was replaced on 2026-11-20, so the host serves none from before that day.
+const TESTNET = { chainId: 274630, freshFrom: BigInt(Date.UTC(2026, 10, 20) / 1000) };
+
 /** `receipt` is one the caller kept. Without it, the receipt of a paid grade or ruling is fetched from the host that serves its record, unless the context is offline. */
 export async function verifyDecision(ctx: Context, id: bigint, receipt?: GivenReceipt): Promise<DecisionReport> {
   const { client, network, set } = ctx;
@@ -774,8 +778,13 @@ export async function verifyDecision(ctx: Context, id: bigint, receipt?: GivenRe
   try {
     fetched = await fetchBytes(location, { what: "record", limit: MAX_RECORD_BYTES, allowPrivate: await allowsPrivate(client) });
   } catch (error) {
-    const sealed = error instanceof Forbidden ? ". An exam decision becomes verifiable once its item is published" : "";
-    c.add("fetch", "error", `could not fetch the record: ${errorMessage(error)}${sealed}`);
+    const why =
+      error instanceof Forbidden
+        ? ". An exam decision becomes verifiable once its item is published"
+        : error instanceof NotFound && network.chainId === TESTNET.chainId && decision.recordedAt < TESTNET.freshFrom
+          ? `. The host no longer serves testnet decisions made before 2026-11-20: see ${HISTORY}`
+          : "";
+    c.add("fetch", "error", `could not fetch the record: ${errorMessage(error)}${why}`);
     return report;
   }
   const text = decodeText(fetched.bytes);
@@ -1493,7 +1502,7 @@ async function unattested(client: PublicClient, set: ContractSet, brain: Address
 }
 
 // A decision made by a build whose app the log never attested fails versions for good, so the line points to where the README lists such decisions.
-const KNOWN_HISTORY = "Some decisions fail this check by design: see https://github.com/usebrainchain/brainchain/tree/main/tools/verify-decision#known-history";
+const KNOWN_HISTORY = `Some decisions fail this check by design: see ${HISTORY}`;
 
 /** The key that sent the Recorded transaction, and the image and app of its latest attestation on the log at the decision's block, or none for a key the owner named. */
 async function checkVersions({ client, set }: Context, c: Checks, versions: unknown, sender: Address, block: bigint): Promise<void> {
