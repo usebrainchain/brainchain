@@ -69,7 +69,18 @@ export interface SignedRequest {
 export interface SignedResponse {
   status: number;
   headers: Headers | Readonly<Record<string, string | undefined>>;
-  body: Uint8Array;
+  /** The bytes 0x sent, kept before anything reads the body, such as new Uint8Array(await response.clone().arrayBuffer()). */
+  body: Uint8Array | ArrayBuffer;
+}
+
+/** The body as bytes; a parsed or decoded body cannot be held to 0x's digest. */
+function bytesOf(body: unknown): Uint8Array {
+  if (body instanceof Uint8Array) return body;
+  if (body instanceof ArrayBuffer) return new Uint8Array(body);
+  throw new TypeError(
+    `the response body is ${body === null ? "null" : typeof body === "object" ? "an object" : `a ${typeof body}`}: pass the raw response bytes 0x sent, a Uint8Array or ArrayBuffer, ` +
+      "such as new Uint8Array(await response.clone().arrayBuffer()) taken before the body is read",
+  );
 }
 
 /**
@@ -124,6 +135,7 @@ export function verifyResponse(response: SignedResponse, request: SignedRequest,
     return { ok: false, checks, ...extra };
   };
   const header = (name: string) => headerOf(response.headers, name);
+  const body = bytesOf(response.body);
 
   const input = header("signature-input");
   const signatureField = header("signature");
@@ -177,7 +189,7 @@ export function verifyResponse(response: SignedResponse, request: SignedRequest,
 
   const digest = header("content-digest");
   const sha256 = digest === undefined ? undefined : sha256Of(digest);
-  const actual = createHash("sha256").update(response.body).digest("base64");
+  const actual = createHash("sha256").update(body).digest("base64");
   if (sha256 === undefined) return fail("zerox-digest", "the response has no sha-256 Content-Digest", { keyid, created });
   if (sha256 !== actual) return fail("zerox-digest", "the body's sha-256 is not the one in Content-Digest: the body changed after 0x signed it", { keyid, created });
   pass("zerox-digest", "the body's sha-256 matches Content-Digest");
@@ -189,7 +201,11 @@ export function verifyResponse(response: SignedResponse, request: SignedRequest,
     return fail("zerox-signature", (error as Error).message, { keyid, created });
   }
   const publicKey = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: key.x }, format: "jwk" });
+  const verifies = (query: string) => verifyEd25519(null, Buffer.from(signatureBase(params, { ...request, query }, response)), publicKey, signature);
   if (!verifyEd25519(null, Buffer.from(base), publicKey, signature)) {
+    if (reordered(request.query).some(verifies)) {
+      return fail("zerox-signature", "0x signed the parameters in a different order; send the query exactly as signed, and pass that URL", { keyid, created });
+    }
     return fail(
       "zerox-signature",
       `0x's signature does not verify for ${request.method} ${request.authority}${request.path} with this query: the answer was changed, or it answers another request`,
@@ -200,6 +216,23 @@ export function verifyResponse(response: SignedResponse, request: SignedRequest,
   return { ok: true, checks, keyid, created };
 }
 
+/**
+ * The query with its parameters in every other order, for a query of up to
+ * seven: a URL rebuilt from the same parameters is the common reason a true
+ * answer fails, and saying so beats calling it changed.
+ */
+function reordered(query: string): string[] {
+  const parts = query.replace(/^\?/, "").split("&");
+  if (parts.length < 2 || parts.length > 7) return [];
+  const orders: string[][] = [];
+  const permute = (left: string[], taken: string[]) => {
+    if (left.length === 0) return void orders.push(taken);
+    left.forEach((part, i) => permute([...left.slice(0, i), ...left.slice(i + 1)], [...taken, part]));
+  };
+  permute(parts, []);
+  return orders.map((order) => `?${order.join("&")}`).filter((other) => other !== query);
+}
+
 /** The Settler for taker-sent swaps on a chain, and the one before it, which 0x's API can still use for a while after a new one is deployed. */
 export interface Settlers {
   /** Undefined when 0x has paused Settler there, which the registry says by reverting. */
@@ -207,8 +240,14 @@ export interface Settlers {
   previous?: Address;
 }
 
-/** Reads the chain's Settlers from 0x's registry. An RPC that does not answer throws; a revert means paused. */
-export async function readSettlers(client: Pick<PublicClient, "readContract">, featureId = TAKER_SETTLER): Promise<Settlers> {
+/**
+ * Reads the Settlers on `chainId` from 0x's registry, through a client that
+ * must be on that chain. An RPC that does not answer, or a client on another
+ * chain, throws; a revert means paused.
+ */
+export async function readSettlers(client: Pick<PublicClient, "readContract" | "getChainId"> & { chain?: { name?: string } }, chainId: number, featureId = TAKER_SETTLER): Promise<Settlers> {
+  const on = await client.getChainId();
+  if (on !== chainId) throw new Error(`the client reads chain ${on}${client.chain?.name ? ` (${client.chain.name})` : ""}, not chain ${chainId}, which the quote is for`);
   const read = async (functionName: "ownerOf" | "prev"): Promise<Address | undefined> => {
     try {
       return await client.readContract({ address: SETTLER_REGISTRY, abi: registryAbi, functionName, args: [featureId] });
@@ -307,15 +346,29 @@ const short = (value: string) => `${value.slice(0, 6)}…${value.slice(-4)}`;
  * caller's recipient, at least the caller's floor.
  */
 export function checkQuote(body: unknown, intent: QuoteIntent, settlers: Settlers, status = 200): QuoteReport {
+  const intended = intentCheck(intent);
+  if (intended.status === "fail") return { ok: false, checks: [intended] };
+  const report = checkBody(body, intent, settlers, status);
+  return { ...report, checks: [intended, ...report.checks] };
+}
+
+/** The quote-intent check, which passes only for an intent the rest can hold a quote to. */
+function intentCheck(intent: QuoteIntent): Check {
+  const problem = intentProblem(intent);
+  if (problem) return { name: "quote-intent", status: "fail", message: problem };
+  const limit =
+    intent.buyAmount !== undefined
+      ? `buys exactly ${intent.buyAmount} for at most ${intent.maxSellAmount}`
+      : `sells exactly ${intent.sellAmount} for at least ${intent.minBuyAmount}`;
+  return { name: "quote-intent", status: "ok", message: `the intent ${limit} on chain ${intent.chainId}` };
+}
+
+/** The quote's own checks, for an intent quote-intent has passed; a Settlers read that failed fails quote-settler. */
+function checkBody(body: unknown, intent: QuoteIntent, settlers: Settlers | Error, status: number): QuoteReport {
   const checks: Check[] = [];
   const add = (name: string, ok: boolean, message: string) => void checks.push({ name, status: ok ? "ok" : "fail", message });
   const done = (extra: Omit<QuoteReport, "ok" | "checks"> = {}): QuoteReport => ({ ok: checks.every((c) => c.status === "ok"), checks, ...extra });
 
-  const problem = intentProblem(intent);
-  if (problem) {
-    add("quote-intent", false, problem);
-    return done();
-  }
   const record = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
   if (status !== 200) {
     const name = typeof record.name === "string" ? record.name : undefined;
@@ -394,16 +447,20 @@ export function checkQuote(body: unknown, intent: QuoteIntent, settlers: Settler
           : `the calldata lets the Settler take ${decoded.amount}, where the caller sells ${sells}`,
   );
 
-  const genuine = same(decoded.settler, settlers.current) || same(decoded.settler, settlers.previous);
-  add(
-    "quote-settler",
-    genuine,
-    genuine
-      ? `Settler ${short(decoded.settler)} is the registry's ${same(decoded.settler, settlers.current) ? "current" : "previous"} Settler on chain ${intent.chainId}`
-      : settlers.current === undefined
-        ? `0x's registry ${SETTLER_REGISTRY} reverts for Settler ${TAKER_SETTLER} on chain ${intent.chainId}, which means 0x has paused it. Do not trade until it answers`
-        : `Settler ${decoded.settler} is neither the registry's current Settler (${settlers.current}) nor the previous one${settlers.previous ? ` (${settlers.previous})` : ""} on chain ${intent.chainId}`,
-  );
+  if (settlers instanceof Error) {
+    add("quote-settler", false, `0x's registry ${SETTLER_REGISTRY} could not be read on chain ${intent.chainId}, so Settler ${decoded.settler} was not checked: ${clip(settlers.message)}`);
+  } else {
+    const genuine = same(decoded.settler, settlers.current) || same(decoded.settler, settlers.previous);
+    add(
+      "quote-settler",
+      genuine,
+      genuine
+        ? `Settler ${short(decoded.settler)} is the registry's ${same(decoded.settler, settlers.current) ? "current" : "previous"} Settler on chain ${intent.chainId}`
+        : settlers.current === undefined
+          ? `0x's registry ${SETTLER_REGISTRY} reverts for Settler ${TAKER_SETTLER} on chain ${intent.chainId}, which means 0x has paused it. Do not trade until it answers`
+          : `Settler ${decoded.settler} is neither the registry's current Settler (${settlers.current}) nor the previous one${settlers.previous ? ` (${settlers.previous})` : ""} on chain ${intent.chainId}`,
+    );
+  }
 
   const value = native ? decoded.amount : 0n;
   add(
@@ -456,7 +513,10 @@ export function checkQuote(body: unknown, intent: QuoteIntent, settlers: Settler
 }
 
 export interface VerifyQuoteOptions extends SignatureOptions {
-  /** The chain's Settlers, or a reader for them; readSettlers over a client for the quote's chain. */
+  /**
+   * The chain's Settlers, or a reader for them, such as () => readSettlers(client, 4663).
+   * A reader that throws fails quote-settler with its error.
+   */
   settlers: Settlers | (() => Promise<Settlers>);
 }
 
@@ -466,24 +526,37 @@ export interface VerifyQuoteOptions extends SignatureOptions {
  * the signature holds, since an unsigned body is anyone's word.
  */
 export async function verifyQuote(response: SignedResponse, url: string | URL, intent: QuoteIntent, options: VerifyQuoteOptions): Promise<QuoteReport & { signature: SignatureReport }> {
+  if (typeof options !== "object" || options === null || options.settlers === undefined) {
+    throw new TypeError("verifyQuote needs options with settlers: the chain's Settlers, or a function that reads them, such as () => readSettlers(client, intent.chainId)");
+  }
   const request = signedRequestOf(url);
   const signature = verifyResponse(response, request, options);
-  if (!signature.ok) return { ok: false, checks: signature.checks, signature };
+  const refuse = (...more: Check[]) => ({ ok: false, checks: [...signature.checks, ...more], signature });
+  if (!signature.ok) return refuse();
   if (request.path !== GATEWAY_PATHS["swap-allowance-holder-quote"]) {
-    const checks: Check[] = [...signature.checks, { name: "quote-response", status: "fail", message: `${request.path} gives a price, which carries no transaction; ask ${GATEWAY_PATHS["swap-allowance-holder-quote"]}` }];
-    return { ok: false, checks, signature };
+    return refuse({ name: "quote-response", status: "fail", message: `${request.path} gives a price, which carries no transaction; ask ${GATEWAY_PATHS["swap-allowance-holder-quote"]}` });
   }
+  const intended = intentCheck(intent);
+  if (intended.status === "fail") return refuse(intended);
   const queried = queryProblem(request.query, intent);
-  if (queried) return { ok: false, checks: [...signature.checks, { name: "quote-request", status: "fail", message: queried }], signature };
+  const requested: Check = queried
+    ? { name: "quote-request", status: "fail", message: queried }
+    : { name: "quote-request", status: "ok", message: "the query 0x answered asks for this trade and nothing else" };
+  if (queried) return refuse(intended, requested);
   let body: unknown;
   try {
-    body = JSON.parse(Buffer.from(response.body).toString("utf8"));
+    body = JSON.parse(Buffer.from(bytesOf(response.body)).toString("utf8"));
   } catch {
-    return { ok: false, checks: [...signature.checks, { name: "quote-response", status: "fail", message: "the body 0x signed is not JSON" }], signature };
+    return refuse(intended, requested, { name: "quote-response", status: "fail", message: "the body 0x signed is not JSON" });
   }
-  const settlers = typeof options.settlers === "function" ? await options.settlers() : options.settlers;
-  const report = checkQuote(body, intent, settlers, response.status);
-  return { ...report, ok: report.ok, checks: [...signature.checks, ...report.checks], signature };
+  let settlers: Settlers | Error;
+  try {
+    settlers = typeof options.settlers === "function" ? await options.settlers() : options.settlers;
+  } catch (error) {
+    settlers = error instanceof Error ? error : new Error(String(error));
+  }
+  const report = checkBody(body, intent, settlers, response.status);
+  return { ...report, checks: [...signature.checks, intended, requested, ...report.checks], signature };
 }
 
 /**
@@ -533,6 +606,13 @@ function holderOf(intent: QuoteIntent): Address | undefined {
 }
 
 function intentProblem(intent: QuoteIntent): string | undefined {
+  if (typeof intent !== "object" || intent === null) return "the intent is not an object";
+  for (const name of ["sellAmount", "buyAmount", "maxSellAmount", "minBuyAmount", "maxGasCost"] as const) {
+    const value: unknown = intent[name];
+    if (value !== undefined && typeof value !== "bigint") return `the intent's ${name} must be a bigint, such as ${typeof value === "number" && Number.isSafeInteger(value) ? `${value}n` : "312500000000000000000000n"}, not a ${typeof value}`;
+  }
+  if (!Number.isSafeInteger(intent.chainId) || intent.chainId <= 0) return "the intent's chainId must be a positive whole number, such as 4663";
+  if (intent.slippageBps !== undefined && typeof intent.slippageBps !== "number") return "the intent's slippageBps must be a number";
   const exactOut = intent.buyAmount !== undefined;
   if ((intent.sellAmount === undefined) === !exactOut) return "the intent needs exactly one of sellAmount (exact in) and buyAmount (exact out)";
   if ((intent.sellAmount ?? intent.buyAmount)! <= 0n) return `the intent's ${exactOut ? "buyAmount" : "sellAmount"} must be above zero`;

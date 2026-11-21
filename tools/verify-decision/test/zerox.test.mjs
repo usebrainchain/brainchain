@@ -232,8 +232,9 @@ describe("a quote held to the caller's intent", () => {
   it("passes the exact-out ETH quote for the 312,500 BRAIN a worker stakes, and reads what its calldata does", () => {
     const report = checkQuote(EXACT_OUT_ETH.json, intentFor(EXACT_OUT_ETH), SETTLERS);
     assert.equal(report.ok, true, JSON.stringify(failed(report)));
-    assert.deepEqual(report.checks.map((c) => c.name), ["quote-response", "quote-target", "quote-spender", "quote-exec", "quote-settler", "quote-value", "quote-recipient", "quote-buy-token", "quote-min-out"]);
-    assert.equal(report.checks[2].message, "it names AllowanceHolder for approvals and asks for none");
+    assert.deepEqual(report.checks.map((c) => c.name), ["quote-intent", "quote-response", "quote-target", "quote-spender", "quote-exec", "quote-settler", "quote-value", "quote-recipient", "quote-buy-token", "quote-min-out"]);
+    assert.equal(report.checks[0].message, `the intent buys exactly ${STAKE} for at most ${EXACT_OUT_ETH.json.maxSellAmount} on chain 4663`);
+    assert.equal(report.checks[3].message, "it names AllowanceHolder for approvals and asks for none");
     assert.deepEqual(report.decoded, {
       settler: SETTLERS.current,
       token: "0x0000000000000000000000000000000000000000",
@@ -364,7 +365,8 @@ describe("verifyQuote", () => {
     const report = await verifyQuote(response(EXACT_OUT_ETH), EXACT_OUT_ETH.url, intentFor(EXACT_OUT_ETH), { settlers, now: at(EXACT_OUT_ETH) });
     assert.equal(report.ok, true, JSON.stringify(failed(report)));
     assert.equal(reads, 1);
-    assert.equal(report.checks.length, 15);
+    assert.deepEqual(report.checks.slice(6, 8).map((c) => [c.name, c.status]), [["quote-intent", "ok"], ["quote-request", "ok"]]);
+    assert.equal(report.checks.length, 17);
 
     const stale = await verifyQuote(response(EXACT_OUT_ETH), EXACT_OUT_ETH.url, intentFor(EXACT_OUT_ETH), { settlers, now: at(EXACT_OUT_ETH, 90) });
     assert.equal(failed(stale).name, "zerox-fresh");
@@ -386,7 +388,11 @@ describe("verifyQuote", () => {
 });
 
 describe("readSettlers", () => {
-  const client = (answers) => ({
+  const client = (answers, chainId = 4663) => ({
+    chain: { name: chainId === 4663 ? "Robinhood Chain" : "Base" },
+    async getChainId() {
+      return chainId;
+    },
     async readContract({ address, functionName, args }) {
       assert.equal(address, SETTLER_REGISTRY);
       assert.equal(args[0], 2n);
@@ -398,13 +404,17 @@ describe("readSettlers", () => {
   const revert = () => new BaseError("reverted", { cause: new ContractFunctionRevertedError({ abi: [], functionName: "ownerOf" }) });
 
   it("reads the current and previous Settler for taker-sent swaps", async () => {
-    assert.deepEqual(await readSettlers(client({ ownerOf: SETTLERS.current, prev: SETTLERS.previous })), SETTLERS);
-    assert.deepEqual(await readSettlers(client({ ownerOf: SETTLERS.current, prev: "0x0000000000000000000000000000000000000000" })), { current: SETTLERS.current });
+    assert.deepEqual(await readSettlers(client({ ownerOf: SETTLERS.current, prev: SETTLERS.previous }), 4663), SETTLERS);
+    assert.deepEqual(await readSettlers(client({ ownerOf: SETTLERS.current, prev: "0x0000000000000000000000000000000000000000" }), 4663), { current: SETTLERS.current });
   });
 
   it("takes a revert as paused and lets an RPC failure throw", async () => {
-    assert.deepEqual(await readSettlers(client({ ownerOf: revert(), prev: SETTLERS.previous })), { previous: SETTLERS.previous });
-    await assert.rejects(readSettlers(client({ ownerOf: new Error("fetch failed"), prev: SETTLERS.previous })), /fetch failed/);
+    assert.deepEqual(await readSettlers(client({ ownerOf: revert(), prev: SETTLERS.previous }), 4663), { previous: SETTLERS.previous });
+    await assert.rejects(readSettlers(client({ ownerOf: new Error("fetch failed"), prev: SETTLERS.previous }), 4663), /fetch failed/);
+  });
+
+  it("refuses a client on another chain than the quote's, naming both", async () => {
+    await assert.rejects(readSettlers(client({ ownerOf: SETTLERS.current, prev: SETTLERS.previous }, 8453), 4663), /^Error: the client reads chain 8453 \(Base\), not chain 4663, which the quote is for$/);
   });
 });
 
@@ -568,8 +578,58 @@ describe("what a quote may not carry", () => {
     const revert = () => {
       throw new BaseError("reverted", { cause: new ContractFunctionRevertedError({ abi: [], functionName: "ownerOf" }) });
     };
-    const settlers = await readSettlers({ readContract: async () => revert() }, 77n);
+    const settlers = await readSettlers({ getChainId: async () => 4663, readContract: async () => revert() }, 4663, 77n);
     assert.deepEqual(settlers, {});
     assert.match(failed(checkQuote(EXACT_OUT_ETH.json, intentFor(EXACT_OUT_ETH), settlers)).message, /0x has paused it/);
+  });
+});
+
+describe("what a caller passes", () => {
+  const options = { settlers: SETTLERS, now: at(EXACT_OUT_ETH) };
+
+  it("takes the body as the bytes 0x sent, a Uint8Array or an ArrayBuffer, and refuses anything parsed or decoded", async () => {
+    const buffer = EXACT_OUT_ETH.body.buffer.slice(EXACT_OUT_ETH.body.byteOffset, EXACT_OUT_ETH.body.byteOffset + EXACT_OUT_ETH.body.byteLength);
+    assert.equal((await verifyQuote({ ...response(EXACT_OUT_ETH), body: buffer }, EXACT_OUT_ETH.url, intentFor(EXACT_OUT_ETH), options)).ok, true);
+    for (const body of [EXACT_OUT_ETH.json, EXACT_OUT_ETH.body.toString("utf8"), null]) {
+      await assert.rejects(verifyQuote({ ...response(EXACT_OUT_ETH), body }, EXACT_OUT_ETH.url, intentFor(EXACT_OUT_ETH), options), (error) => {
+        assert.ok(error instanceof TypeError);
+        assert.match(error.message, /pass the raw response bytes 0x sent, a Uint8Array or ArrayBuffer, such as new Uint8Array\(await response\.clone\(\)\.arrayBuffer\(\)\)/);
+        return true;
+      });
+    }
+  });
+
+  it("says which intent field must be a bigint, rather than comparing a number", async () => {
+    const report = await verifyQuote(response(EXACT_OUT_ETH), EXACT_OUT_ETH.url, intentFor(EXACT_OUT_ETH, { maxSellAmount: 84362251006626774 }), options);
+    assert.equal(failed(report).name, "quote-intent");
+    assert.equal(failed(report).message, "the intent's maxSellAmount must be a bigint, such as 312500000000000000000000n, not a number");
+    assert.match(failed(checkQuote(EXACT_IN_ETH.json, intentFor(EXACT_IN_ETH, { sellAmount: 10_000_000 }), SETTLERS)).message, /^the intent's sellAmount must be a bigint, such as 10000000n, not a number$/);
+    assert.match(failed(checkQuote(EXACT_IN_ETH.json, intentFor(EXACT_IN_ETH, { chainId: "4663" }), SETTLERS)).message, /chainId must be a positive whole number/);
+    assert.deepEqual(report.checks.map((c) => c.name).slice(-1), ["quote-intent"]);
+  });
+
+  it("throws a clear error without options, and fails quote-settler with the cause when the Settlers cannot be read", async () => {
+    await assert.rejects(verifyQuote(response(EXACT_OUT_ETH), EXACT_OUT_ETH.url, intentFor(EXACT_OUT_ETH)), /^TypeError: verifyQuote needs options with settlers/);
+    const report = await verifyQuote(response(EXACT_OUT_ETH), EXACT_OUT_ETH.url, intentFor(EXACT_OUT_ETH), {
+      now: at(EXACT_OUT_ETH),
+      settlers: async () => {
+        throw new Error("HTTP request failed. Status: 503");
+      },
+    });
+    assert.equal(failed(report).name, "quote-settler");
+    assert.match(failed(report).message, /could not be read on chain 4663, so Settler 0xE8852602f84e04e284286d8Db01a41Edd0CCEFb0 was not checked: HTTP request failed\. Status: 503$/);
+    assert.equal(report.checks.filter((c) => c.status === "fail").length, 1);
+  });
+
+  it("says when 0x signed the same parameters in another order, rather than calling the answer changed", async () => {
+    const url = new URL(EXACT_OUT_ETH.url);
+    const parts = url.search.slice(1).split("&");
+    url.search = `?${[parts[1], parts[0], ...parts.slice(2)].join("&")}`;
+    const report = await verifyQuote(response(EXACT_OUT_ETH), url.href, intentFor(EXACT_OUT_ETH), options);
+    assert.equal(failed(report).name, "zerox-signature");
+    assert.equal(failed(report).message, "0x signed the parameters in a different order; send the query exactly as signed, and pass that URL");
+    const other = new URL(EXACT_OUT_ETH.url);
+    other.searchParams.set("buyAmount", "1");
+    assert.match(failed(await verifyQuote(response(EXACT_OUT_ETH), other.href, intentFor(EXACT_OUT_ETH), options)).message, /the answer was changed, or it answers another request/);
   });
 });
