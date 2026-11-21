@@ -136,7 +136,7 @@ A record made since BrainChain kept evidence has three more fields. `versions` n
 
 The chain holds the hash too. A decision's `payloadURI` in its `Recorded` event ends in `#evidence=` and the hash, written in the same transaction as the decision. The rebuilt hash and the record's `evidence` must both equal it, and a `payloadURI` with any other fragment fails. The tool fetches the record without the fragment, as every HTTP client does, so the location names the same file. A decision recorded before the hash went on chain has no fragment, and its rebuilt hash is held to the record's own field.
 
-`versions.brain` must be the account that sent the decision's `Recorded` transaction. Only the log's brain can record, so that is the key that recorded it. Its image and app must be the ones in the latest `BrainAttested` event for that key at or before the decision's block. A key the owner named with `setBrain` has no such event, and its records name no image or app. `versions.prompt` is shown. It is the version of the questions on [How Jev is asked](https://docs.usebrainchain.com/how-jev-is-asked), which nothing on chain records.
+`versions.brain` must be the account that sent the decision's `Recorded` transaction. Only the log's brain can record, so that is the key that recorded it. Its image and app must be the ones in the latest `BrainAttested` event for that key at or before the decision's block. A key the owner named with `setBrain` has no such event, and its records name no image or app. `versions.prompt` is shown. It is the version of the questions on [How Jev is asked](https://docs.usebrainchain.com/how-jev-is-asked), which nothing on chain records. A `versions` FAIL from `brainchain-verify mainnet <id>` means the record names an enclave build the decision log has not attested.
 
 ### Receipts
 
@@ -299,9 +299,19 @@ With `--entry` or `--agent`, the object holds `registry`, `verdict`, `summary` a
 
 `brainchain-verify/zerox` checks an answer from 0x's Swap API before anything in it is signed. It is a library, with no command of its own; `brainchain-worker buy-stake` uses it. It needs `node:crypto` and viem 2, which it takes as a peer dependency so that your own viem client fits its types. Its one chain read is 0x's Settler registry.
 
-The examples buy each answer from 0x's keyless gateway. The gateway speaks x402 version 2 and charges 0.01 USDC on Base for each request, paid from your key with a signed USDC authorization, so the key needs a little USDC on Base and no ETH there. A request is charged even when it is refused, and even when it carries no `Accept-Signature`; an answer without 0x's signature cannot be checked, so always send the header. The same request to `https://api.0x.org` with your own 0x API key is free and checks the same way.
+The examples buy each answer from 0x's keyless gateway. The gateway speaks x402 version 2 and charges 0.01 USDC on Base for each request, paid from your key with a signed USDC authorization, so the key needs a little USDC on Base and no ETH there. A request is charged even when it is refused, and even when it carries no `Accept-Signature`; an answer without 0x's signature cannot be checked, so always send the header. The same request to `https://api.0x.org/swap/allowance-holder/quote` with your own 0x API key is free and checks the same way; it needs the headers `0x-api-key: <your key>` and `0x-version: v2` beside `Accept-Signature`.
+
+The examples pay with the x402 client packages, tested with these versions:
+
+```sh
+npm install brainchain-verify viem @x402/fetch@2.30.0 @x402/evm@2.30.0
+```
+
+They read the paying key from a file that only its owner can read, never from the environment or the command line, where other processes and the shell's history can see it.
 
 ```ts
+import { readFileSync, statSync } from "node:fs";
+
 import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
 import { ExactEvmScheme } from "@x402/evm/exact/client";
 import { ACCEPT_SIGNATURE, NATIVE, readSettlers, verifyQuote, type QuoteIntent } from "brainchain-verify/zerox";
@@ -309,7 +319,9 @@ import { createPublicClient, http, parseEther, parseUnits, type Hex } from "viem
 import { privateKeyToAccount } from "viem/accounts";
 import { robinhood } from "viem/chains";
 
-const account = privateKeyToAccount(process.env.PRIVATE_KEY as Hex);
+const keyFile = process.env.PAYER_KEY_FILE ?? "payer.key";
+if (process.platform !== "win32" && (statSync(keyFile).mode & 0o077) !== 0) throw new Error(`Other accounts can read ${keyFile}. Run chmod 600 on it first.`);
+const account = privateKeyToAccount(`0x${readFileSync(keyFile, "utf8").trim().replace(/^0x/, "")}` as Hex);
 const client = createPublicClient({ chain: robinhood, transport: http() });
 const BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 const pay = wrapFetchWithPayment(

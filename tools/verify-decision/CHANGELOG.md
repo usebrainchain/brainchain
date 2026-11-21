@@ -2,7 +2,7 @@
 
 Changes to `brainchain-verify`, the npm package built from this directory. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are npm publish dates, in UTC.
 
-## [Unreleased]
+## [0.9.0]
 
 ### Added
 
