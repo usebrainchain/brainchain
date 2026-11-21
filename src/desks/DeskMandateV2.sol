@@ -425,6 +425,7 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
         if (total > type(uint64).max) total = type(uint64).max;
     }
 
+    // Rounded up, so no order is let through for less than the feed allows, dust included.
     function _floor(uint8 desk, address token, bool buy, uint256 amountIn, uint256 mark)
         private
         view
@@ -434,11 +435,11 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
             uint256 cap = desks[desk].usdg * maxBuyBps / BPS;
             if (amountIn > cap) revert OverCap(amountIn, cap);
             // Tokens the feed says this much USDG buys, less the premium allowed.
-            return amountIn * 1e18 / mark * (BPS - premiumBps) / BPS;
+            return Math.mulDiv(amountIn, 1e18 * (BPS - premiumBps), mark * BPS, Math.Rounding.Ceil);
         }
         uint256 held = holdings[desk][token];
         if (amountIn > held) revert Short(amountIn, held);
-        return amountIn * mark / 1e18 * (BPS - premiumBps) / BPS;
+        return Math.mulDiv(amountIn, mark * (BPS - premiumBps), 1e18 * BPS, Math.Rounding.Ceil);
     }
 
     function _price(Venue memory venue, address token) private view returns (uint256) {

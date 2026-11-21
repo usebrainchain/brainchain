@@ -485,6 +485,19 @@ contract DeskMandateV2Test is DeskV2Setup {
         assertEq(mandate.floorOf(0, address(nvda), false, 1e18), 99e6);
     }
 
+    /// The floor rounds up, so even a sell too small to be worth one USDG unit must receive one.
+    function test_aDustSellMustReceiveSomething() public {
+        _fund(0, 1_000e6);
+        _trade(0, address(nvda), true, 100e6, 1e18);
+        vm.warp(block.timestamp + 1 hours);
+        uint256 dust = 1e10 - 1;
+        assertEq(mandate.floorOf(0, address(nvda), false, dust), 1);
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OffPrice.selector, 0, 1));
+        mandate.trade(0, address(nvda), false, dust, 0, REASONING, QUOTE, _swap(address(nvda), dust, address(usdg), 0));
+        assertEq(_trade(0, address(nvda), false, dust, 1), 1);
+    }
+
     function test_theTokenListStopsAtItsCap() public {
         MockFeed feed = new MockFeed(1e8);
         vm.startPrank(owner);
