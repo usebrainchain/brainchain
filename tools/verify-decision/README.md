@@ -38,7 +38,7 @@ brainchain-verify <mainnet|testnet|chainId> --item <itemId> [--service <url>] [-
 
 | Argument | Meaning |
 | --- | --- |
-| `mainnet`, `testnet` or a chain id | `mainnet` is chain 274663 at `https://rpc.usebrainchain.com`; `testnet` is chain 274630 at `https://rpc.testnet.usebrainchain.com`. |
+| `mainnet`, `testnet` or a chain id | `mainnet` is chain 274663 at `https://rpc.usebrainchain.com`; `testnet` is chain 274630 at `https://rpc.testnet.usebrainchain.com`. Either name is read in any case. |
 | `<decisionId>` | The decision's number in its `DecisionLog`, from 1. |
 | `--task <id>` | Check every decision about one task, oldest first. A task id the active set does not hold yet is read from the newest set that holds it, as a decision id is. |
 | `--set <TaskBoard>` | A retired contract set from 3.0.0 on, by its TaskBoard address, by the key a decision page uses (`?set=v3-1`, or an older one the site still opens, such as `v4` for `v3-4`) or by release (`3.1.0`), in any case. Without it, the active set, or for an id the active set does not hold yet, the newest set that does. Each set numbers its tasks and decisions from 1. The `v2` set is not supported: its board named tasks by id alone, which the subject check does not read. |
@@ -60,7 +60,7 @@ brainchain-verify <mainnet|testnet|chainId> --item <itemId> [--service <url>] [-
 
 The package carries the active and retired contract sets from [`deployments/`](https://github.com/usebrainchain/brainchain/tree/main/deployments) as they stood when it was built. An unknown `--set` lists them.
 
-Each set numbers its decisions and tasks from 1, so a new active set starts with none. A decision or task id without `--set` that the active set does not hold yet is read from the newest set that holds it. The tool says so in one line on stderr, such as `Decision 968 is not on set v3-6 yet; reading set v3-5.`, and the header names the set it read. For an id beyond every set, the tool names the set that holds the most, such as `No set holds decision 99999; set v3-5 holds 1 to 991.` With `--set`, the set is read as named. To read an older decision, name its set.
+Each set numbers its decisions and tasks from 1, so a new active set starts with none. A decision or task id without `--set` that the active set does not hold yet is read from the newest set that holds it. The tool says so in one line on stderr, such as `Decision 968 is not on set v3-6 yet; reading set v3-5.`, and the header names the set it read. For an id beyond every set, the tool names the set that holds the most, such as `No set holds decision 99999; set v3-5 holds 1 to 991.` With `--set`, the set is read as named, and a set that holds none yet says so, such as `Set v3-6 holds no decisions yet.` To read an older decision, name its set.
 
 ## Output
 
@@ -269,14 +269,14 @@ An entry that points at a record entry with no receipt is a `match` when its che
 `--agent` gives one line per entry: its verdict, its name and what it is about. Below an entry go the lines of any check that failed or could not run. The last line counts the entries, those with a receipt, those whose receipt and decision fully matched, those withheld, and those that failed. A withheld entry is never counted as verified. `--entry` with a name from the list shows every check.
 
 ```text
-$ npx brainchain-verify mainnet --agent 20425
-Agent 20425 in the ERC-8004 reputation registry on Robinhood Chain (0x8004BAa17C55a88189AE136b182e5fdA19dE9b63): 8 entries BrainChain wrote
+$ npx brainchain-verify mainnet --agent 20426
+Agent 20426 in the ERC-8004 reputation registry on Robinhood Chain (0x8004BAa17C55a88189AE136b182e5fdA19dE9b63): 10 entries BrainChain wrote
 
-  no receipt 20425:0xafB0C4Ef895D4895040cdC6435B96D3EE8350c6E:1  value 100, task 1
-  no receipt 20425:0xafB0C4Ef895D4895040cdC6435B96D3EE8350c6E:4  value 100, task 22 in set v3-5
-  no receipt 20425:2  value 100, task 41 in set v3-5
+  no receipt 20426:0xafB0C4Ef895D4895040cdC6435B96D3EE8350c6E:1  value 100, task 8
+  no receipt 20426:0xafB0C4Ef895D4895040cdC6435B96D3EE8350c6E:2  value 100, task 53 in set v3-4
+  no receipt 20426:1  value 0, task 38 in set v3-5
 
-8 entries, 0 with a receipt, 0 verified, 0 failed.
+10 entries, 0 with a receipt, 0 verified, 0 failed.
 ```
 
 Trimmed to three entries.
@@ -456,9 +456,13 @@ For an agent's record, licences and papers, the tool shows whose key signed and 
 
 ## Known history
 
-On set v3-5, decision 972 and every decision after it until the switch to set v3-6 on 2026-11-21 fail `versions` by design. A recovery build made them from 2026-11-20 21:22 UTC, and its app, `0x97156bc84458d1c54427f217c4211ff0d66b43f6d6e42a243d26086946046aff`, is one the DecisionLog never attested for its key. Every other check on them that can run passes. The `versions` line points here whenever a record names an app the log never attested for its key.
+On set v3-5, decision 972 and every decision after it until the switch to set v3-6 on 2026-11-21 fail `versions` by design. A recovery build made them from 2026-11-20 21:22 UTC, and its app, `0x97156bc84458d1c54427f217c4211ff0d66b43f6d6e42a243d26086946046aff`, is one the DecisionLog never attested for its key. Every other check on them that can run passes, but for the two receipt cases below. The `versions` line points here whenever a record names an app the log never attested for its key.
 
-Testnet's brain was replaced on 2026-11-20 and its records started fresh, so the host no longer serves the records of testnet decisions made before that day.
+While BrainChain is switching sets, `receipt-payment` fails until the switch completes. The host's `/network.json` is then signed by a brain other than the active set's, as [receipts](#receipts) describes.
+
+The host signs a receipt with the brain key that is live when it issues the receipt, and the tool holds a receipt to the key that recorded its decision. So a receipt issued after a brain switch, for a decision made before it, is signed by the newer key and fails `receipt`. Outside a switch of sets, the decision itself and its payment still verify. Entry 20425:9 is one: `0xeEA7b082103A9018FD5fC6ac820553a3FdE4B772` recorded decision 689 on set v3-5, and its receipt is signed by `0x95C7AfD81973F0c24b4AEAC75E4A6FFD8cC31C76`, the brain from 2026-11-18 13:46 UTC. A future release will accept a receipt signed by the brain that was live when it was issued.
+
+Testnet's brain was replaced on 2026-11-20 and its records started fresh, so the host no longer serves the records of testnet decisions made before that day. The `fetch` line on such a decision points here.
 
 ## Exit status
 
