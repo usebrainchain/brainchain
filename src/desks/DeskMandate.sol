@@ -19,16 +19,11 @@ interface IUniswapV3PoolLike {
 }
 
 interface IAggregatorV3 {
-    function decimals() external view returns (uint8);
     function latestRoundData() external view returns (uint80, int256 answer, uint256, uint256 updatedAt, uint80);
 }
 
-/// @dev A Robinhood stock token's share multiplier. The issuer schedules a change as `newUIMultiplier` from
-/// `effectiveAt`, which may not be in the past; `uiMultiplier` returns the new value from that second on.
 interface IStockToken {
     function uiMultiplier() external view returns (uint256);
-    function newUIMultiplier() external view returns (uint256);
-    function effectiveAt() external view returns (uint256);
 }
 
 interface IWETH9 {

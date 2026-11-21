@@ -11,6 +11,17 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 
 import {IAggregatorV3, IStockToken} from "./DeskMandate.sol";
 
+interface IPriceFeed is IAggregatorV3 {
+    function decimals() external view returns (uint8);
+}
+
+/// @dev A Robinhood stock token's share multiplier. The issuer schedules a change as `newUIMultiplier` from
+/// `effectiveAt`, which may not be in the past; `uiMultiplier` returns the new value from that second on.
+interface IStockTokenScaled is IStockToken {
+    function newUIMultiplier() external view returns (uint256);
+    function effectiveAt() external view returns (uint256);
+}
+
 interface IAllowanceHolder {
     function exec(address operator, address token, uint256 amount, address payable target, bytes calldata data)
         external
@@ -58,7 +69,7 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
     uint128 public constant TAKER_SETTLER = 2;
 
     struct Venue {
-        IAggregatorV3 feed;
+        IPriceFeed feed;
         bool scaled;
         bool live;
     }
@@ -289,7 +300,7 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
 
     /// @notice Lists or delists a token. `feed` is a Chainlink USD feed with 8 decimals; `scaled` reads
     /// the token's `uiMultiplier` into its price, as the Robinhood stock tokens need.
-    function setVenue(address token, IAggregatorV3 feed, bool scaled, bool live) external onlyOwner {
+    function setVenue(address token, IPriceFeed feed, bool scaled, bool live) external onlyOwner {
         if (token == address(0)) revert ZeroAddress();
         if (token == address(USDG)) revert UsdgNotAVenue();
         Venue memory venue = Venue({feed: feed, scaled: scaled, live: live});
@@ -512,7 +523,7 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
         if (venue.scaled) {
             // A split or dividend steps the multiplier at `effectiveAt`, while the per-share feed moves only
             // when Chainlink next reports. Until both have settled, the mark can be off by the whole ratio.
-            IStockToken stock = IStockToken(token);
+            IStockTokenScaled stock = IStockTokenScaled(token);
             multiplier = stock.uiMultiplier();
             if (stock.newUIMultiplier() != multiplier || block.timestamp < stock.effectiveAt() + SPLIT_GUARD) {
                 revert Splitting(token);
