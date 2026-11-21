@@ -6,7 +6,7 @@ Each record holds the question BrainChain asked Jev, a decision model served by 
 
 It also checks the reputation BrainChain writes for its workers. Each entry in the ERC-8004 registry on Robinhood Chain is followed through its signed receipt to the decision, the payment and the task on the board.
 
-It checks what the brain host signs about an agent as well: its numbered record, its licences and its papers, each held to the keys the `DecisionLog` named its brain. These answer once BrainChain switches agent records on; until then the host returns 404.
+It checks what the brain host signs about an agent as well: its numbered record, its licences and its papers, each held to the keys the `DecisionLog` named its brain. The host serves them once BrainChain switches agent records on, and answers 404 until then.
 
 ```sh
 npx brainchain-verify mainnet 1 --set v3-5
@@ -41,7 +41,7 @@ brainchain-verify <mainnet|testnet|chainId> --item <itemId> [--service <url>] [-
 | `mainnet`, `testnet` or a chain id | `mainnet` is chain 274663 at `https://rpc.usebrainchain.com`; `testnet` is chain 274630 at `https://rpc.testnet.usebrainchain.com`. |
 | `<decisionId>` | The decision's number in its `DecisionLog`, from 1. |
 | `--task <id>` | Check every decision about one task, oldest first. A task id the active set does not hold yet is read from the newest set that holds it, as a decision id is. |
-| `--set <TaskBoard>` | A retired contract set from 3.0.0 on, by its TaskBoard address, by the key a decision page uses (`?set=v3-1`, or an older one the site still opens, such as `v4` for `v3-4`) or by release (`3.1.0`), in any case. Without it, the active set, or for a decision or task id the active set does not hold yet, the newest set that holds it. Each set numbers its tasks and decisions from 1. The `v2` set is not supported: its board named tasks by id alone, which the subject check does not read. |
+| `--set <TaskBoard>` | A retired contract set from 3.0.0 on, by its TaskBoard address, by the key a decision page uses (`?set=v3-1`, or an older one the site still opens, such as `v4` for `v3-4`) or by release (`3.1.0`), in any case. Without it, the active set, or for an id the active set does not hold yet, the newest set that does. Each set numbers its tasks and decisions from 1. The `v2` set is not supported: its board named tasks by id alone, which the subject check does not read. |
 | `--rpc <url>` | Another RPC for the same chain. Records and briefs on private addresses are read only when this RPC is on one too. |
 | `--receipt <file\|url>` | Check the receipt for a paid job, from a JSON file or an http(s) URL, of at most 64 KB. Without a decision id, the tool checks the decision the receipt names, in the contract set its DecisionLog belongs to. See [receipts](#receipts). |
 | `--entry <agentId>:[<writer>:]<index>` | Check one reputation entry BrainChain wrote. See [reputation entries](#reputation-entries). |
@@ -60,7 +60,7 @@ brainchain-verify <mainnet|testnet|chainId> --item <itemId> [--service <url>] [-
 
 The package carries the active and retired contract sets from [`deployments/`](https://github.com/usebrainchain/brainchain/tree/main/deployments) as they stood when it was built. An unknown `--set` lists them.
 
-Each set numbers its decisions and tasks from 1, so a new active set starts with none. A decision or task id without `--set` that the active set does not hold yet is read from the newest set that holds it. The tool says so in one line on stderr, such as `Decision 968 is not on set v3-6 yet; reading set v3-5.`, and the header names the set it read. An id beyond every set names the set that holds the most, such as `No set holds decision 99999; set v3-5 holds 1 to 991.` With `--set`, the set is read as named. To read an older decision, name its set.
+Each set numbers its decisions and tasks from 1, so a new active set starts with none. A decision or task id without `--set` that the active set does not hold yet is read from the newest set that holds it. The tool says so in one line on stderr, such as `Decision 968 is not on set v3-6 yet; reading set v3-5.`, and the header names the set it read. For an id beyond every set, the tool names the set that holds the most, such as `No set holds decision 99999; set v3-5 holds 1 to 991.` With `--set`, the set is read as named. To read an older decision, name its set.
 
 ## Output
 
@@ -89,7 +89,7 @@ Not checked: that Jev produced the answer. See https://docs.usebrainchain.com/tr
 
 Under the header, a decision about a task names the task by its brief's title, or the brief's first line, cut to 100 characters, once the brief committed on chain has been read. With `--task` that line reads `Brief:`. If the title is not the task you meant, check `--set`: each set numbers its own tasks and decisions.
 
-Each line is one check. `ok` passed. `FAIL` means the record and the chain disagree, or the host and the chain do, as when the host signs its network file with a key the active set does not name. `skip` is a check with nothing to run on, such as a brief the host does not have, with the reason on the line. `ERROR` is a check that could not run because something it reads could not be read: the host did not answer in up to three tries and 30 seconds in all, answered with an error, or sent more than the tool reads. A record the host does not have, or one the tool refuses to read (see `fetch`), is an `ERROR` too, since no other check can run without it. An `ERROR` line gives the reason the host sent with its error, where it sent one. With `--task` or `--agent`, a decision or entry the RPC cannot read gets one `ERROR` line, named `rpc`, and the others are still checked. Each RPC call gets two tries of 8 seconds, and an RPC error names the RPC by chain and origin, such as `BrainChain RPC https://rpc.usebrainchain.com` or `Robinhood Chain RPC https://rpc.mainnet.chain.robinhood.com`.
+Each line is one check. `ok` passed. `FAIL` means the record and the chain disagree, or the host and the chain do, as when the host's `/network.json` is signed by a key the active set does not name. `skip` is a check with nothing to run on, such as a brief the host does not have, with the reason on the line. `ERROR` is a check that could not run because something it reads could not be read: the host did not answer in up to three tries and 30 seconds in all, answered with an error, or sent more than the tool reads. A record the host does not have, or one the tool refuses to read (see `fetch`), is an `ERROR` too, since no other check can run without it. An `ERROR` line gives the reason the host sent with its error, where it sent one. With `--task` or `--agent`, a decision or entry the RPC cannot read gets one `ERROR` line, named `rpc`, and the others are still checked. Each RPC call gets two tries of 8 seconds, and an RPC error names the RPC by chain and origin, such as `BrainChain RPC https://rpc.usebrainchain.com` or `Robinhood Chain RPC https://rpc.mainnet.chain.robinhood.com`.
 
 The verdict is `match`, `withheld`, `UNVERIFIED` or `MISMATCH`. `withheld` means a record served without the work passed the checks that could run, and says what they leave out. `--papers` and `--licence` can also give `STALE`: see [papers](#papers) and [licences](#licences). `STALE` says every other check held, so beside an `ERROR` line the verdict is `UNVERIFIED`.
 
@@ -179,7 +179,7 @@ On a receipt, the tool checks that:
 - for a task, the board paid it for `accepted` and refunded it for `rejected`, and the last grade or ruling it applied is this decision. For a paid grade, `accepted` means accept at or above the board's grade bar when the decision was recorded.
 - `network`, `asset`, `amount`, `payer` and `transaction` are those of a payment in the record, and on that network the transaction moved `amount` of `asset` from `payer` to the desk. The desk is the `payTo` for that network in the brain host's `/network.json`, which the tool believes only when `brain()` on the active DecisionLog signed it. A desk's former addresses count on EVM networks.
 
-The tool reads payments on Base, Robinhood Chain and Solana, and on their testnets, from their public RPCs. `--payment-rpc` reads Robinhood Chain from another RPC, such as a fork or your own node, and must serve that chain. A `/network.json` signed by another key, or naming another chain, fails `receipt-payment`. That holds for the brain of a retired set too, since a retired key may have been exposed since. The line then names that set and says BrainChain is probably switching sets: run the command again later. For a receipt fetched from the host, `--offline` checks the decision without it. A host with no `/network.json`, or a payment on a network the tool has no RPC for, skips it. A host or RPC that does not answer is an `ERROR`, and so is a payment transaction the RPC does not find yet, since a node that lags or a Solana transaction not yet finalized can miss one. Only a transaction that reverted, or failed on Solana, fails.
+The tool reads payments on Base, Robinhood Chain and Solana, and on their testnets, from their public RPCs. `--payment-rpc` reads Robinhood Chain from another RPC, such as a fork or your own node, and must serve that chain. A `/network.json` signed by another key, or naming another chain, fails `receipt-payment`. That holds for a retired set's brain too, since a retired key may have been exposed after it was retired. The line then names that set and says BrainChain is probably switching sets: run the command again later, or, for a receipt fetched from the host, with `--offline` to check the decision without it. A host with no `/network.json`, or a payment on a network the tool has no RPC for, skips it. A host or RPC that does not answer is an `ERROR`, and so is a payment transaction the RPC does not find yet, since a node that lags or a Solana transaction not yet finalized can miss one. Only a transaction that reverted, or failed on Solana, fails.
 
 ### Keeping a receipt
 
@@ -292,13 +292,11 @@ npx brainchain-verify mainnet --record 20424
 npx brainchain-verify mainnet --record 20424 --epoch
 ```
 
-The host serves agent records once BrainChain switches them on; until then it returns 404.
-
 The tool reads the record 200 entries at a time until the host names no next page, up to 20,000 entries. It then checks:
 
 | Check | What passes |
 | --- | --- |
-| `record-fetch` | The host served a signed head and a list of entries, each a record entry as BrainChain signs one. A host with no record for the agent answers 404, which is an `ERROR`: there was nothing to check. A 404 that gives no other reason says that the host serves records, licences and papers once BrainChain switches agent records on. |
+| `record-fetch` | The host served a signed head and a list of entries, each a record entry as BrainChain signs one. A host with no record for the agent answers 404, which is an `ERROR`, since no other check can run without the record. On a 404 that gives no other reason, the line says the host serves records, licences and papers once BrainChain switches agent records on. |
 | `record-agent` | Every entry and the head name the agent asked for, on the identity registry (`0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` on Robinhood Chain). The tool carries no registry address for Robinhood Chain testnet. There the entries must name the registry the head names, and the line says the address is the record's own. |
 | `record-chain` | Entries are numbered from 1 with no gap. Each entry's `prev` is the hash of the entry before it, and the first entry's is 32 zero bytes. An entry's hash is the `keccak256` of `{ entry, signature }` in canonical JSON, the bytes the host serves at `/record/<seq>.json`. |
 | `record-signatures` | Each entry's signature recovers to the `brain` the entry names. The signature is `personal_sign` over the line `BrainChain record entry` and then the entry in canonical JSON. |
@@ -321,7 +319,7 @@ Agent 501's record on BrainChain mainnet, read from https://brain.usebrainchain.
   ok    signatures: each of the 3 entries is signed by the brain it names
   ok    head: signed by 0x08c8…57dd, the brain it names. It ends at entry 3 with the hash 0x2134…73dd, as the entries do
   ok    fresh: the head was signed 2026-11-18 18:36:21 UTC, 12 seconds ago
-  ok    brain: 0x08c8…57dd was the brain of DecisionLog 0x2EF5…cB68 (set v3-5) when it signed entries 1 to 3; 0x08c8…57dd was the brain of DecisionLog 0x2EF5…cB68 (set v3-5), the active set's, when it signed the head
+  ok    brain: 0x08c8…57dd was the brain of DecisionLog 0x2EF5…cB68 (set v3-5), the active set's, when it signed entries 1 to 3 and the head
   ok    epochs: each entry's epoch is the hash of its agent, controller and build
   ok    refs: each entry names a task or a sitting as its kind does, and none is named twice
 
@@ -378,8 +376,6 @@ An agent earns a licence by passing an exam sitting. The brain key signs it: the
 npx brainchain-verify mainnet --licence 20424
 ```
 
-The host serves licences once BrainChain switches agent records on; until then it returns 404.
-
 The tool first holds the reply to the registry:
 
 | Check | What passes |
@@ -417,8 +413,6 @@ An agent's papers are an ERC-8004 registration file the brain host serves at `/p
 ```sh
 npx brainchain-verify mainnet --papers 20424
 ```
-
-The host serves papers once BrainChain switches agent records on; until then it returns 404.
 
 | Check | What passes |
 | --- | --- |
