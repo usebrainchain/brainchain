@@ -4,7 +4,7 @@
 
 import { createHash, createPublicKey, verify as verifyEd25519 } from "node:crypto";
 
-import { BaseError, ContractFunctionRevertedError, decodeFunctionData, getAddress, isAddress, parseAbi, zeroAddress, type Address, type Hex, type PublicClient } from "viem";
+import { BaseError, ContractFunctionRevertedError, decodeFunctionData, encodeFunctionData, getAddress, isAddress, parseAbi, zeroAddress, type Address, type Hex, type PublicClient } from "viem";
 
 import type { Check } from "./verify.js";
 
@@ -83,7 +83,7 @@ export function signedRequestOf(url: string | URL, method = "GET"): SignedReques
   if (u.protocol !== "https:") throw new Error(`${u.origin} is not https`);
   if (u.host === API_AUTHORITY) return { method: method.toUpperCase(), authority: API_AUTHORITY, path: u.pathname, query };
   const [, version, channel, slug, ...rest] = u.pathname.split("/");
-  const path = slug === undefined ? undefined : GATEWAY_PATHS[slug];
+  const path = slug !== undefined && Object.hasOwn(GATEWAY_PATHS, slug) ? GATEWAY_PATHS[slug] : undefined;
   if (u.host !== "agent.api.0x.org" || version !== "v1" || !GATEWAY_CHANNELS.has(channel ?? "") || path === undefined || rest.some((part) => part !== "")) {
     throw new Error(`${u.origin}${u.pathname} is not a 0x Swap API price or quote endpoint`);
   }
@@ -115,7 +115,8 @@ export interface SignatureReport {
 export function verifyResponse(response: SignedResponse, request: SignedRequest, options: SignatureOptions = {}): SignatureReport {
   const keys = options.keys ?? ZEROX_KEYS;
   const maxAge = options.maxAgeSeconds ?? MAX_AGE_SECONDS;
-  const now = Math.floor((options.now ?? Date.now)() / 1000);
+  const clock = (options.now ?? Date.now)();
+  const now = Math.floor(clock / 1000);
   const checks: Check[] = [];
   const pass = (name: string, message: string) => void checks.push({ name, status: "ok", message });
   const fail = (name: string, message: string, extra: Partial<SignatureReport> = {}): SignatureReport => {
@@ -157,6 +158,10 @@ export function verifyResponse(response: SignedResponse, request: SignedRequest,
   }
   pass("zerox-key", `key ${keyid}`);
 
+  // NaN compares false with everything, so a clock or limit that is not a number would pass any signature as fresh.
+  if (!Number.isFinite(clock) || !Number.isFinite(maxAge) || maxAge < 0) {
+    return fail("zerox-fresh", `the clock reads ${clock} and the age limit is ${maxAge} seconds: both must be finite numbers, the limit at least 0`, { keyid });
+  }
   if (created === undefined) return fail("zerox-fresh", "the signature has no created time", { keyid });
   const age = now - created;
   if (Math.abs(age) > maxAge || (expires !== undefined && expires < now)) {
@@ -523,9 +528,16 @@ function readQuote(record: Record<string, unknown>): Quote {
 /** AllowanceHolder's exec, and inside it the Settler's execute, as the transaction would run them. */
 export function decode(transaction: Pick<Quote["transaction"], "data" | "value">): Decoded {
   const outer = decodeFunctionData({ abi: allowanceHolderAbi, data: transaction.data });
+  // The decoder ignores bytes past the arguments and the unused high bytes of an address, and the contracts may not.
+  if (!same(encodeFunctionData({ abi: allowanceHolderAbi, functionName: "exec", args: outer.args }), transaction.data)) {
+    throw new Error("exec's arguments are not in the standard encoding: an address word carries extra bits, or bytes follow the arguments");
+  }
   const [operator, token, amount, target, data] = outer.args;
   if (!same(operator, target)) throw new Error(`exec names ${operator} as operator and ${target} as target, where both are the Settler`);
   const inner = decodeFunctionData({ abi: settlerAbi, data });
+  if (!same(encodeFunctionData({ abi: settlerAbi, functionName: "execute", args: inner.args }), data)) {
+    throw new Error("execute's arguments are not in the standard encoding: an address word carries extra bits, or bytes follow the arguments");
+  }
   const [slippage] = inner.args;
   return {
     settler: getAddress(target),

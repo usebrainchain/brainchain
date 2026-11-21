@@ -373,3 +373,68 @@ describe("readSettlers", () => {
     await assert.rejects(readSettlers(client({ ownerOf: new Error("fetch failed"), prev: SETTLERS.previous })), /fetch failed/);
   });
 });
+
+describe("what a quote may not carry", () => {
+  it("refuses a clock or an age limit that is not a finite number, which would pass any signature as fresh", () => {
+    const request = signedRequestOf(EXACT_IN_ETH.url);
+    for (const options of [{ now: at(EXACT_IN_ETH, 86_400), maxAgeSeconds: Number.NaN }, { now: () => Number.NaN }, { now: at(EXACT_IN_ETH), maxAgeSeconds: Number.POSITIVE_INFINITY }, { now: at(EXACT_IN_ETH), maxAgeSeconds: -1 }]) {
+      const report = verifyResponse(response(EXACT_IN_ETH), request, options);
+      assert.equal(failed(report).name, "zerox-fresh");
+      assert.match(failed(report).message, /must be finite numbers/);
+    }
+  });
+
+  it("maps no gateway slug that is a property of every object", () => {
+    for (const slug of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+      assert.throws(() => signedRequestOf(`https://agent.api.0x.org/v1/x402/${slug}/?a=1`), /not a 0x Swap API/, slug);
+    }
+  });
+
+  it("refuses calldata the decoder reads but the contracts may not: extra bits in an address word, bytes past the arguments", () => {
+    const data = EXACT_IN_ETH.json.transaction.data;
+    const dirty = `${data.slice(0, 10)}ff${data.slice(12)}`;
+    for (const changed of [dirty, `${data}deadbeef`]) {
+      assert.throws(() => decode({ data: changed, value: 0n }), /not in the standard encoding/);
+      const report = checkQuote({ ...EXACT_IN_ETH.json, transaction: { ...EXACT_IN_ETH.json.transaction, data: changed } }, intentFor(EXACT_IN_ETH), SETTLERS);
+      assert.equal(failed(report).name, "quote-exec");
+    }
+    const outer = decodeFunctionData({ abi: execAbi, data });
+    const inner = `${outer.args[4]}00`;
+    const padded = encodeFunctionData({ abi: execAbi, functionName: "exec", args: [...outer.args.slice(0, 4), inner] });
+    assert.throws(() => decode({ data: padded, value: 0n }), /execute's arguments are not in the standard encoding/);
+  });
+
+  it("refuses an Ed25519 signature whose S is past the group order", () => {
+    const sig = Buffer.from(/sig=:(.*):/.exec(EXACT_IN_ETH.headers.signature)[1], "base64");
+    const L = 2n ** 252n + 27742317777372353535851937790883648493n;
+    let s = 0n;
+    for (let i = 63; i >= 32; i--) s = (s << 8n) | BigInt(sig[i]);
+    s += L;
+    const malleated = Buffer.from(sig);
+    for (let i = 32; i < 64; i++) {
+      malleated[i] = Number(s & 0xffn);
+      s >>= 8n;
+    }
+    const report = verifyResponse(response(EXACT_IN_ETH, { headers: { signature: `sig=:${malleated.toString("base64")}:` } }), signedRequestOf(EXACT_IN_ETH.url), { now: at(EXACT_IN_ETH) });
+    assert.equal(failed(report).name, "zerox-signature");
+  });
+
+  it("refuses an answer a proxy added a second signature label or digest to", () => {
+    const request = signedRequestOf(EXACT_IN_ETH.url);
+    const forged = new Headers(EXACT_IN_ETH.headers);
+    forged.append("signature-input", 'sig=("@status");created=1;keyid="x";alg="ed25519";tag="0x-swap-api"');
+    assert.equal(failed(verifyResponse({ status: 200, headers: forged, body: EXACT_IN_ETH.body }, request, { now: at(EXACT_IN_ETH) })).name, "zerox-key");
+    const digests = new Headers(EXACT_IN_ETH.headers);
+    digests.append("content-digest", "sha-256=:AAAA:");
+    assert.equal(failed(verifyResponse({ status: 200, headers: digests, body: EXACT_IN_ETH.body }, request, { now: at(EXACT_IN_ETH) })).name, "zerox-digest");
+  });
+
+  it("refuses a quote on a chain whose registry reverts for the Settler, as one with no such feature does", async () => {
+    const revert = () => {
+      throw new BaseError("reverted", { cause: new ContractFunctionRevertedError({ abi: [], functionName: "ownerOf" }) });
+    };
+    const settlers = await readSettlers({ readContract: async () => revert() }, 77n);
+    assert.deepEqual(settlers, {});
+    assert.match(failed(checkQuote(EXACT_OUT_ETH.json, intentFor(EXACT_OUT_ETH), settlers)).message, /0x has paused it/);
+  });
+});
