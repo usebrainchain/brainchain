@@ -14,8 +14,12 @@ interface IPriceFeed {
     function latestRoundData() external view returns (uint80, int256 answer, uint256, uint256 updatedAt, uint80);
 }
 
+/// @dev A Robinhood stock token's share multiplier. The issuer schedules a change as `newUIMultiplier` from
+/// `effectiveAt`, which may not be in the past; `uiMultiplier` returns the new value from that second on.
 interface IScaledToken {
     function uiMultiplier() external view returns (uint256);
+    function newUIMultiplier() external view returns (uint256);
+    function effectiveAt() external view returns (uint256);
 }
 
 interface IAllowanceHolder {
@@ -42,8 +46,9 @@ interface ISettlerRegistry {
 /// `premiumBps`. What orders receive under the feed value of what they give is also summed per desk
 /// per UTC day, and may not pass `budgetBps` of the desk's value at the day's first order. A desk
 /// never borrows and never shorts, one order per desk per `interval`, a buy spends at most
-/// `maxBuyBps` of the desk's USDG. Each order carries the hash of the model's reasoning and the
-/// SHA-256 of 0x's signed quote body.
+/// `maxBuyBps` of the desk's USDG, and a stock token is not traded while its share multiplier is
+/// changing. Each order carries the hash of the model's reasoning and the SHA-256 of 0x's signed
+/// quote body.
 ///
 /// The owner (the treasury Safe) funds, pauses, tunes the bounds and keeps the allowlist. It brings
 /// a desk's USDG and each of its positions home one at a time, so a token that refuses to move holds
@@ -58,6 +63,8 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
     uint16 public constant MAX_BUDGET_BPS = 500;
     /// @notice The most tokens ever listed. It bounds every walk over the list.
     uint256 public constant MAX_TOKENS = 16;
+    /// @notice How long after a share multiplier change takes effect its token stays closed to orders.
+    uint256 public constant SPLIT_GUARD = 1 hours;
     /// @notice The registry's feature id for the Settler that takes taker-submitted (AllowanceHolder) calls.
     uint128 public constant TAKER_SETTLER = 2;
 
@@ -137,6 +144,7 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
     error StaleFeed(address feed, uint256 updatedAt);
     error BadFeed(address feed);
     error ZeroPrice(address token);
+    error Splitting(address token);
     error BadDecimals(address token);
     error OffPrice(uint256 amountOut, uint256 floor);
     error OverBudget(uint256 dayShortfall, uint256 budget);
@@ -370,7 +378,8 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
         return tokens.length;
     }
 
-    /// @notice USDG (6 decimals) per whole token: the feed's USD price, times the share multiplier for a scaled token.
+    /// @notice USDG (6 decimals) per whole token: the feed's USD price, times the share multiplier for a
+    /// scaled token. Reverts with `Splitting` while that multiplier is changing.
     function price(address token) external view returns (uint256) {
         Venue memory venue = venues[token];
         if (!venue.live) revert NotListed(token);
@@ -459,8 +468,8 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
     }
 
     // The desk's USDG plus its holdings at the feeds, capped to fit its slot. A holding the contract cannot
-    // price now (a stale or broken feed, a delisted token) counts as nothing, so the budget can come out smaller
-    // than the desk but never larger, and one bad feed stops no other order.
+    // price now (a stale or broken feed, a multiplier mid-change, a delisted token) counts as nothing, so the
+    // budget can come out smaller than the desk but never larger, and one bad feed stops no other order.
     function _openingEquity(uint8 desk) private view returns (uint256 total) {
         total = desks[desk].usdg;
         uint256 count = tokens.length;
@@ -502,7 +511,16 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
         (, int256 answer,, uint256 updatedAt,) = venue.feed.latestRoundData();
         if (answer <= 0) revert BadFeed(address(venue.feed));
         if (block.timestamp - updatedAt > maxFeedAge) revert StaleFeed(address(venue.feed), updatedAt);
-        uint256 multiplier = venue.scaled ? IScaledToken(token).uiMultiplier() : 1e18;
+        uint256 multiplier = 1e18;
+        if (venue.scaled) {
+            // A split or dividend steps the multiplier at `effectiveAt`, while the per-share feed moves only
+            // when Chainlink next reports. Until both have settled, the mark can be off by the whole ratio.
+            IScaledToken scaled = IScaledToken(token);
+            multiplier = scaled.uiMultiplier();
+            if (scaled.newUIMultiplier() != multiplier || block.timestamp < scaled.effectiveAt() + SPLIT_GUARD) {
+                revert Splitting(token);
+            }
+        }
         // 8-decimal USD per share × 18-decimal shares per token, to 6-decimal USDG per token.
         mark = uint256(answer) * multiplier / 1e20;
         if (mark == 0) revert ZeroPrice(token);

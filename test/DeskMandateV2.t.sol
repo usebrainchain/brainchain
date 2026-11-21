@@ -258,7 +258,9 @@ contract DeskMandateV2Test is DeskV2Setup {
 
     function test_aScaledTokenIsPricedAtTheFeedTimesItsMultiplierAnUnscaledOneAtTheFeed() public {
         assertEq(mandate.price(address(nvda)), 100e6);
-        nvda.setMultiplier(1.5e18);
+        nvda.updateMultiplier(1.5e18, block.timestamp);
+        vm.warp(block.timestamp + 1 hours);
+        nvdaFeed.set(100e8, block.timestamp);
         assertEq(mandate.price(address(nvda)), 150e6);
 
         MockWETH weth = new MockWETH();
@@ -523,6 +525,65 @@ contract DeskMandateV2Test is DeskV2Setup {
         mandate.floorOf(5, address(nvda), true, 1);
         _trade(0, address(nvda), true, 100e6, 1e18);
         assertEq(mandate.floorOf(0, address(nvda), false, 1e18), 99e6);
+    }
+
+    /// A 10:1 split on NVDA ($100 a token, one share each). The issuer schedules the multiplier ten minutes
+    /// ahead and the per-share feed follows when Chainlink next reports. Until both have moved, the mark is
+    /// off by the ratio, so the token takes no orders from the schedule until an hour after the step.
+    function test_aMultiplierChangeClosesTheTokenUntilAnHourAfterItTakesEffect() public {
+        _fund(0, 1_000e6);
+        uint256 effective = block.timestamp + 10 minutes;
+        nvda.updateMultiplier(10e18, effective);
+        bytes memory splitting = abi.encodeWithSelector(DeskMandateV2.Splitting.selector, address(nvda));
+        // A tenth of the fair amount less the premium: what the stepped multiplier on the old feed would pass.
+        bytes memory tenth = _swap(address(usdg), 100e6, address(nvda), 0.099e18);
+        vm.expectRevert(splitting);
+        mandate.price(address(nvda));
+
+        vm.warp(effective);
+        assertEq(nvda.uiMultiplier(), 10e18, "in force, with the feed still at $100 a share");
+        vm.prank(operator);
+        vm.expectRevert(splitting);
+        mandate.trade(0, address(nvda), true, 100e6, 0, REASONING, QUOTE, tenth);
+        vm.expectRevert(splitting);
+        mandate.floorOf(0, address(nvda), true, 100e6);
+        _trade(0, address(spy), true, 100e6, 0.2e18);
+
+        vm.warp(effective + 20 minutes);
+        nvdaFeed.set(10e8, block.timestamp);
+        vm.warp(effective + 1 hours - 1);
+        vm.expectRevert(splitting);
+        mandate.price(address(nvda));
+        vm.warp(effective + 1 hours);
+        assertEq(mandate.price(address(nvda)), 100e6, "ten shares at $10: $100 a token again");
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OffPrice.selector, 0.099e18, 0.99e18));
+        mandate.trade(0, address(nvda), true, 100e6, 0, REASONING, QUOTE, tenth);
+        assertEq(_trade(0, address(nvda), true, 100e6, 1e18), 1e18);
+    }
+
+    /// The feed can move first: SPY's 2:1 split reported at $250 a share while the multiplier still counts
+    /// one share a token. A sell at half its worth would clear that floor; the pending step refuses it.
+    function test_aFeedThatMovesBeforeTheMultiplierIsRefusedToo() public {
+        _fund(0, 1_000e6);
+        _trade(0, address(spy), true, 500e6, 1e18);
+        vm.warp(block.timestamp + 1 hours);
+        uint256 effective = block.timestamp + 10 minutes;
+        spy.updateMultiplier(2e18, effective);
+        spyFeed.set(250e8, block.timestamp);
+        bytes memory splitting = abi.encodeWithSelector(DeskMandateV2.Splitting.selector, address(spy));
+        bytes memory half = _swap(address(spy), 1e18, address(usdg), 250e6);
+        vm.expectRevert(splitting);
+        mandate.floorOf(0, address(spy), false, 1e18);
+        vm.prank(operator);
+        vm.expectRevert(splitting);
+        mandate.trade(0, address(spy), false, 1e18, 0, REASONING, QUOTE, half);
+
+        vm.warp(effective + 1 hours);
+        assertEq(mandate.floorOf(0, address(spy), false, 1e18), 495e6);
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OffPrice.selector, 250e6, 495e6));
+        mandate.trade(0, address(spy), false, 1e18, 0, REASONING, QUOTE, half);
     }
 
     function test_aPriceThatRoundsToZeroIsRefused() public {
@@ -1018,6 +1079,8 @@ contract DeskMandateV2BudgetTest is DeskV2Setup {
         );
         mandate.equity(0);
         nvdaFeed.set(100e8, block.timestamp);
+        nvda.updateMultiplier(2e18, block.timestamp + 10 minutes);
+        assertEq(_budget(0), 8e6, "a multiplier mid-change");
         vm.startPrank(owner);
         mandate.setVenue(address(nvda), _feed(nvdaFeed), true, false);
         assertEq(_budget(0), 8e6, "delisted");
