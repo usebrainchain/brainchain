@@ -398,9 +398,42 @@ contract DeployDeskMandateV2ForkTest is Test {
             address token = FIRST.tokens(i);
             assertEq(mandate.price(token), FIRST.price(token));
         }
+        assertEq(mandate.premiumBps(), 100);
+        assertEq(mandate.budgetBps(), 100);
+        assertEq(mandate.maxFeedAge(), 25 hours);
+        vm.expectRevert(bytes("the Safe is not the owner"));
+        script.check(mandate);
+
+        // Until the Safe accepts, the deployer is still the owner. Whatever it changes in that window,
+        // the check after acceptOwnership refuses.
+        address deployer = mandate.owner();
+        _tampered(
+            script,
+            mandate,
+            deployer,
+            abi.encodeCall(DeskMandateV2.setOperator, (deployer)),
+            "the operator is not OPERATOR"
+        );
+        _tampered(
+            script,
+            mandate,
+            deployer,
+            abi.encodeCall(DeskMandateV2.setBounds, (0, 200, 10_000, type(uint64).max, 500)),
+            "the bounds are not the deploy's"
+        );
+        _tampered(
+            script,
+            mandate,
+            deployer,
+            abi.encodeCall(DeskMandateV2.setVenue, (FIRST.tokens(0), IPriceFeed(address(1)), true, false)),
+            "a venue is not the first mandate's"
+        );
+        _tampered(script, mandate, deployer, abi.encodeCall(DeskMandateV2.setPaused, (true)), "paused");
+
         vm.prank(SAFE);
         mandate.acceptOwnership();
         assertEq(mandate.owner(), SAFE);
+        script.check(mandate);
 
         // Last, because the refusal comes inside the broadcast and leaves it open.
         vm.setEnv("EXPECT", vm.toString(makeAddr("planned")));
@@ -408,5 +441,23 @@ contract DeployDeskMandateV2ForkTest is Test {
             bytes("the deployer would not land at EXPECT: use a fresh key and make this its first transaction")
         );
         script.run();
+    }
+
+    function _tampered(
+        DeployDeskMandateV2 script,
+        DeskMandateV2 mandate,
+        address deployer,
+        bytes memory change,
+        string memory refusal
+    ) internal {
+        uint256 snapshot = vm.snapshotState();
+        vm.prank(deployer);
+        (bool ok,) = address(mandate).call(change);
+        assertTrue(ok);
+        vm.prank(SAFE);
+        mandate.acceptOwnership();
+        vm.expectRevert(bytes(refusal));
+        script.check(mandate);
+        vm.revertToState(snapshot);
     }
 }
