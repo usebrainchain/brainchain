@@ -39,16 +39,23 @@ interface ISettlerRegistry {
 /// for the order's amount alone, and accepts only a Settler that 0x's registry lists for taker
 /// flows. Whatever the calldata does, the order is judged by this contract's own balances: it must
 /// spend exactly the order's amount of the sold token and receive at least the feed price less
-/// `premiumBps`. The owner (the Safe) funds, pauses, tunes the bounds, keeps the allowlist and can
-/// recall any desk to itself. A desk never borrows and never shorts, one order per desk per
-/// `interval`, a buy spends at most `maxBuyBps` of the desk's USDG. Each order carries the hash of
-/// the model's reasoning and the SHA-256 of 0x's signed quote body.
+/// `premiumBps`. What orders receive under the feed value of what they give is also summed per desk
+/// per UTC day, and may not pass `budgetBps` of the desk's value at the day's first order. A desk
+/// never borrows and never shorts, one order per desk per `interval`, a buy spends at most
+/// `maxBuyBps` of the desk's USDG. Each order carries the hash of the model's reasoning and the
+/// SHA-256 of 0x's signed quote body.
+///
+/// The owner (the treasury Safe) funds, pauses, tunes the bounds, keeps the allowlist and can recall
+/// any desk to itself.
 contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     uint8 public constant DESKS = 5;
     uint256 public constant BPS = 10_000;
-    uint16 public constant MAX_PREMIUM_BPS = 1_000;
+    uint16 public constant MAX_PREMIUM_BPS = 200;
+    uint16 public constant MAX_BUDGET_BPS = 500;
+    /// @notice The most tokens ever listed. It bounds every walk over the list.
+    uint256 public constant MAX_TOKENS = 16;
     /// @notice The registry's feature id for the Settler that takes taker-submitted (AllowanceHolder) calls.
     uint128 public constant TAKER_SETTLER = 2;
 
@@ -63,6 +70,12 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
         uint256 usdg;
         uint64 lastOrderAt;
         uint32 orders;
+        // For the UTC day (days since 1970) of the desk's last order: its value at the feeds before that
+        // day's first order, and what the day's orders received under the feed value they gave. They share
+        // the slot every order writes anyway.
+        uint32 day;
+        uint64 dayEquity;
+        uint64 dayShortfall;
     }
 
     // An order's feed price, the floor it must clear and the Settler that runs it.
@@ -79,9 +92,10 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
     address public operator;
     bool public paused;
     uint64 public interval = 1 hours;
-    uint16 public premiumBps = 200;
+    uint16 public premiumBps = 100;
     uint16 public maxBuyBps = 5_000;
-    uint256 public maxFeedAge = 3 days;
+    uint16 public budgetBps = 100;
+    uint64 public maxFeedAge = 3 days;
 
     Desk[DESKS] public desks;
     mapping(uint8 desk => mapping(address token => uint256)) public holdings;
@@ -107,7 +121,7 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
     event VenueSet(address indexed token, address feed, bool scaled, bool live);
     event OperatorSet(address indexed operator);
     event PausedSet(bool paused);
-    event BoundsSet(uint64 interval, uint16 premiumBps, uint16 maxBuyBps, uint256 maxFeedAge);
+    event BoundsSet(uint64 interval, uint16 premiumBps, uint16 maxBuyBps, uint64 maxFeedAge, uint16 budgetBps);
 
     error NotOperator();
     error IsPaused();
@@ -120,6 +134,7 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
     error BadFeed(address feed);
     error BadDecimals(address token);
     error OffPrice(uint256 amountOut, uint256 floor);
+    error OverBudget(uint256 dayShortfall, uint256 budget);
     error NoQuote();
     error NotExec(bytes4 selector);
     error WrongSell(address token, uint256 amount);
@@ -185,7 +200,7 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
             buy ? _swap(USDG, IERC20(token), amountIn, swap) : _swap(IERC20(token), USDG, amountIn, swap);
         if (amountOut < fill.floor) revert OffPrice(amountOut, fill.floor);
 
-        _book(desk, token, buy, amountIn, amountOut);
+        _book(desk, token, buy, amountIn, amountOut, fill.mark);
         emit Order(desk, token, buy, amountIn, amountOut, fill.mark, fill.floor, minOut, reasoning, quote, fill.settler);
     }
 
@@ -242,6 +257,7 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
             if (feed.decimals() != 8 || IERC20Metadata(token).decimals() != 18) revert BadDecimals(token);
             _price(venue, token);
             if (!_seen[token]) {
+                if (tokens.length == MAX_TOKENS) revert OverCap(MAX_TOKENS + 1, MAX_TOKENS);
                 _seen[token] = true;
                 tokens.push(token);
             }
@@ -261,18 +277,21 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
         emit PausedSet(paused_);
     }
 
-    /// @notice `premiumBps` is the whole price guard once the route is 0x's, so it stops at `MAX_PREMIUM_BPS`.
-    function setBounds(uint64 interval_, uint16 premiumBps_, uint16 maxBuyBps_, uint256 maxFeedAge_)
+    /// @notice `premiumBps` stops at `MAX_PREMIUM_BPS` and `budgetBps` at `MAX_BUDGET_BPS`. A new
+    /// `budgetBps` applies to the day's orders still to come, against the value the desk opened the day at.
+    function setBounds(uint64 interval_, uint16 premiumBps_, uint16 maxBuyBps_, uint64 maxFeedAge_, uint16 budgetBps_)
         external
         onlyOwner
     {
         if (premiumBps_ > MAX_PREMIUM_BPS) revert OverCap(premiumBps_, MAX_PREMIUM_BPS);
         if (maxBuyBps_ > BPS) revert OverCap(maxBuyBps_, BPS);
+        if (budgetBps_ > MAX_BUDGET_BPS) revert OverCap(budgetBps_, MAX_BUDGET_BPS);
         interval = interval_;
         premiumBps = premiumBps_;
         maxBuyBps = maxBuyBps_;
         maxFeedAge = maxFeedAge_;
-        emit BoundsSet(interval_, premiumBps_, maxBuyBps_, maxFeedAge_);
+        budgetBps = budgetBps_;
+        emit BoundsSet(interval_, premiumBps_, maxBuyBps_, maxFeedAge_, budgetBps_);
     }
 
     // Views
@@ -286,6 +305,16 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
             if (held == 0) continue;
             total += held * _price(venues[tokens[i]], tokens[i]) / 1e18;
         }
+    }
+
+    /// @notice A desk's shortfall budget for the current UTC day in USDG, and how much of it the day's
+    /// orders have used. Before the day's first order, the budget that order would open.
+    function budgetOf(uint8 desk) external view returns (uint256 budget, uint256 used) {
+        if (desk >= DESKS) revert NoDesk();
+        Desk storage d = desks[desk];
+        bool open = d.day == block.timestamp / 1 days;
+        budget = (open ? d.dayEquity : _openingEquity(desk)) * budgetBps / BPS;
+        used = open ? d.dayShortfall : 0;
     }
 
     function tokenCount() external view returns (uint256) {
@@ -345,8 +374,26 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
         }
     }
 
-    function _book(uint8 desk, address token, bool buy, uint256 amountIn, uint256 amountOut) private {
+    // Books the order and charges its shortfall to the desk's day. The ledger has not moved since the order
+    // began, so the day's opening value is the desk before this order.
+    function _book(uint8 desk, address token, bool buy, uint256 amountIn, uint256 amountOut, uint256 mark) private {
         Desk storage d = desks[desk];
+        uint32 today = uint32(block.timestamp / 1 days);
+        uint256 dayEquity = d.dayEquity;
+        uint256 dayShortfall = d.dayShortfall;
+        if (d.day != today) {
+            dayEquity = _openingEquity(desk);
+            dayShortfall = 0;
+        }
+        // Received against the feed value of what was given, in USDG, rounded against the operator.
+        uint256 gave = buy ? amountIn : Math.mulDiv(amountIn, mark, 1e18, Math.Rounding.Ceil);
+        uint256 got = buy ? amountOut * mark / 1e18 : amountOut;
+        if (gave > got) {
+            dayShortfall += gave - got;
+            uint256 budget = dayEquity * budgetBps / BPS;
+            if (dayShortfall > budget) revert OverBudget(dayShortfall, budget);
+        }
+
         if (buy) {
             d.usdg -= amountIn;
             holdings[desk][token] += amountOut;
@@ -356,6 +403,26 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
         }
         d.lastOrderAt = uint64(block.timestamp);
         d.orders += 1;
+        d.day = today;
+        d.dayEquity = uint64(dayEquity);
+        // Raised only up to the budget, which is at most a twentieth of a uint64.
+        d.dayShortfall = uint64(dayShortfall);
+    }
+
+    // The desk's USDG plus its holdings at the feeds, capped to fit its slot. A holding the contract cannot
+    // price now (a stale or broken feed, a delisted token) counts as nothing, so the budget can come out smaller
+    // than the desk but never larger, and one bad feed stops no other order.
+    function _openingEquity(uint8 desk) private view returns (uint256 total) {
+        total = desks[desk].usdg;
+        uint256 count = tokens.length;
+        for (uint256 i = 0; i < count; i++) {
+            address token = tokens[i];
+            uint256 held = holdings[desk][token];
+            if (held == 0) continue;
+            (bool priced, bytes memory mark) = address(this).staticcall(abi.encodeCall(this.price, (token)));
+            if (priced) total += held * abi.decode(mark, (uint256)) / 1e18;
+        }
+        if (total > type(uint64).max) total = type(uint64).max;
     }
 
     function _floor(uint8 desk, address token, bool buy, uint256 amountIn, uint256 mark)

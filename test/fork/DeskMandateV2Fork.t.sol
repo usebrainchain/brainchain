@@ -148,7 +148,7 @@ contract DeskMandateV2ForkTest is Test {
         Quote memory q = _quote("buy-usdg-weth");
         _deployAt(q.blockNumber);
         uint256 floor = mandate.floorOf(0, WETH, true, q.sellAmount);
-        assertGe(q.minBuyAmount, floor, "the quote's minimum clears the feed floor");
+        assertGe(q.buyAmount, floor, "0x's expected fill clears the feed floor");
 
         vm.recordLogs();
         uint256 got = _trade(0, WETH, true, q.sellAmount, q.minBuyAmount, q);
@@ -157,7 +157,7 @@ contract DeskMandateV2ForkTest is Test {
         assertApproxEqRel(got, q.buyAmount, 0.001e18, "the fill is the quote");
         assertEq(mandate.holdings(0, WETH), got);
         assertEq(IERC20(WETH).balanceOf(address(mandate)), got);
-        (, uint256 usdg,, uint32 orders) = mandate.desks(0);
+        (, uint256 usdg,, uint32 orders,,,) = mandate.desks(0);
         assertEq(usdg, 100e6 - q.sellAmount);
         assertEq(orders, 1);
         assertEq(IERC20(USDG).balanceOf(address(mandate)), 500e6 - q.sellAmount);
@@ -180,7 +180,9 @@ contract DeskMandateV2ForkTest is Test {
         _deployAt(q.blockNumber);
         _listNvda();
         uint256 floor = mandate.floorOf(0, NVDA, true, q.sellAmount);
-        assertGe(q.minBuyAmount, floor, "the quote's minimum clears the feed floor");
+        assertGe(q.buyAmount, floor, "0x's expected fill clears the feed floor");
+        // 0x's 1% slippage reaches under a 1% premium, so the mandate's floor is the one that binds.
+        assertLt(q.minBuyAmount, floor);
 
         uint256 got = _trade(0, NVDA, true, q.sellAmount, q.minBuyAmount, q);
         uint256 gasUsed = _gasUsed();
@@ -204,7 +206,7 @@ contract DeskMandateV2ForkTest is Test {
         _deployAt(sellQuote.blockNumber);
         _listNvda();
         vm.prank(owner);
-        mandate.setBounds(0, 200, 5_000, 3 days);
+        mandate.setBounds(0, 100, 5_000, 3 days, 100);
 
         uint256 bought = _trade(0, NVDA, true, buyQuote.sellAmount, buyQuote.minBuyAmount, buyQuote);
         assertGe(bought, buyQuote.minBuyAmount);
@@ -215,7 +217,7 @@ contract DeskMandateV2ForkTest is Test {
         assertApproxEqRel(back, sellQuote.buyAmount, 0.001e18, "the fill is the quote");
 
         assertEq(mandate.holdings(0, NVDA), bought - sellQuote.sellAmount);
-        (, uint256 usdg,, uint32 orders) = mandate.desks(0);
+        (, uint256 usdg,, uint32 orders,,,) = mandate.desks(0);
         assertEq(usdg, 100e6 - buyQuote.sellAmount + back);
         assertEq(orders, 2);
         assertEq(IERC20(NVDA).balanceOf(address(mandate)), bought - sellQuote.sellAmount);
@@ -236,13 +238,13 @@ contract DeskMandateV2ForkTest is Test {
         vm.stopPrank();
 
         uint256 floor = mandate.floorOf(1, WETH, false, q.sellAmount);
-        assertGe(q.minBuyAmount, floor, "the quote's minimum clears the feed floor");
+        assertGe(q.buyAmount, floor, "0x's expected fill clears the feed floor");
         uint256 got = _trade(1, WETH, false, q.sellAmount, q.minBuyAmount, q);
         uint256 gasUsed = _gasUsed();
         assertGe(got, q.minBuyAmount);
         assertApproxEqRel(got, q.buyAmount, 0.001e18, "the fill is the quote");
         assertEq(mandate.holdings(1, WETH), 0);
-        (, uint256 usdg,,) = mandate.desks(1);
+        (, uint256 usdg,,,,,) = mandate.desks(1);
         assertEq(usdg, 100e6 + got);
         assertEq(IERC20(USDG).balanceOf(address(mandate)), 500e6 + got);
         assertEq(IERC20(WETH).balanceOf(address(mandate)), 0);
@@ -325,7 +327,7 @@ contract DeskMandateV2ForkTest is Test {
         _deployAt(q.blockNumber);
         // With no premium allowed, 0x's 15 bps fee alone puts the fill under the feed.
         vm.prank(owner);
-        mandate.setBounds(1 hours, 0, 5_000, 3 days);
+        mandate.setBounds(1 hours, 0, 5_000, 3 days, 100);
         uint256 floor = mandate.floorOf(0, WETH, true, q.sellAmount);
         assertGt(floor, q.buyAmount);
         vm.prank(operator, operator);
@@ -389,7 +391,7 @@ contract DeployDeskMandateV2ForkTest is Test {
         assertEq(mandate.tokenCount(), 7);
         for (uint8 i = 0; i < 5; i++) {
             (bytes32 model,,,) = FIRST.desks(i);
-            (bytes32 copied,,,) = mandate.desks(i);
+            (bytes32 copied,,,,,,) = mandate.desks(i);
             assertEq(copied, model);
         }
         for (uint256 i = 0; i < 7; i++) {

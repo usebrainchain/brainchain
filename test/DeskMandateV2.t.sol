@@ -104,7 +104,7 @@ abstract contract DeskV2Setup is Test {
     }
 
     function _usdgOf(uint8 desk) internal view returns (uint256 usdg_) {
-        (, usdg_,,) = mandate.desks(desk);
+        (, usdg_,,,,,) = mandate.desks(desk);
     }
 }
 
@@ -113,11 +113,11 @@ contract DeskMandateV2Test is DeskV2Setup {
         _fund(0, 1_000e6);
         vm.expectEmit(true, true, true, true, address(mandate));
         emit DeskMandateV2.Order(
-            0, address(nvda), true, 200e6, 2e18, 100e6, 1.96e18, 0, REASONING, QUOTE, address(settler)
+            0, address(nvda), true, 200e6, 2e18, 100e6, 1.98e18, 0, REASONING, QUOTE, address(settler)
         );
         assertEq(_trade(0, address(nvda), true, 200e6, 2e18), 2e18);
         assertEq(mandate.holdings(0, address(nvda)), 2e18);
-        (,, uint64 lastOrderAt, uint32 orders) = mandate.desks(0);
+        (,, uint64 lastOrderAt, uint32 orders,,,) = mandate.desks(0);
         assertEq(_usdgOf(0), 800e6);
         assertEq(lastOrderAt, block.timestamp);
         assertEq(orders, 1);
@@ -135,26 +135,26 @@ contract DeskMandateV2Test is DeskV2Setup {
 
     function test_aBuyMayNotPayMoreThanTheFeedPlusThePremium() public {
         _fund(0, 1_000e6);
-        // 100 USDG at $100 buys one token by the feed; the 2% premium sets the floor at 0.98.
-        uint256 out = uint256(100e6) * 1e18 / 103e6;
+        // 100 USDG at $100 buys one token by the feed; the 1% premium sets the floor at 0.99.
+        uint256 out = uint256(100e6) * 1e18 / 102e6;
         bytes memory swap = _swap(address(usdg), 100e6, address(nvda), out);
         vm.prank(operator);
-        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OffPrice.selector, out, 0.98e18));
+        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OffPrice.selector, out, 0.99e18));
         mandate.trade(0, address(nvda), true, 100e6, 0, REASONING, QUOTE, swap);
 
-        assertEq(_trade(0, address(nvda), true, 100e6, 0.98e18), 0.98e18, "a fill at the floor goes through");
+        assertEq(_trade(0, address(nvda), true, 100e6, 0.99e18), 0.99e18, "a fill at the floor goes through");
     }
 
     function test_aSellMayNotTakeLessThanTheFeedLessThePremium() public {
         _fund(0, 1_000e6);
         _trade(0, address(nvda), true, 100e6, 1e18);
         vm.warp(block.timestamp + 1 hours);
-        bytes memory swap = _swap(address(nvda), 1e18, address(usdg), 97e6);
+        bytes memory swap = _swap(address(nvda), 1e18, address(usdg), 98e6);
         vm.prank(operator);
-        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OffPrice.selector, 97e6, 98e6));
+        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OffPrice.selector, 98e6, 99e6));
         mandate.trade(0, address(nvda), false, 1e18, 0, REASONING, QUOTE, swap);
 
-        assertEq(_trade(0, address(nvda), false, 1e18, 98e6), 98e6, "a fill at the floor goes through");
+        assertEq(_trade(0, address(nvda), false, 1e18, 99e6), 99e6, "a fill at the floor goes through");
     }
 
     function test_theBrainsOwnFloorAppliesWhenItIsHigher() public {
@@ -434,19 +434,24 @@ contract DeskMandateV2Test is DeskV2Setup {
     }
 
     function test_boundsAreTheOwnersAndCapped() public {
+        assertEq(mandate.premiumBps(), 100);
+        assertEq(mandate.budgetBps(), 100);
         vm.startPrank(owner);
-        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OverCap.selector, 1_001, 1_000));
-        mandate.setBounds(1 hours, 1_001, 5_000, 3 days);
+        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OverCap.selector, 201, 200));
+        mandate.setBounds(1 hours, 201, 5_000, 3 days, 100);
         vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OverCap.selector, 10_001, 10_000));
-        mandate.setBounds(1 hours, 200, 10_001, 3 days);
+        mandate.setBounds(1 hours, 100, 10_001, 3 days, 100);
+        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OverCap.selector, 501, 500));
+        mandate.setBounds(1 hours, 100, 5_000, 3 days, 501);
+        mandate.setBounds(1 hours, 200, 5_000, 3 days, 500);
         vm.expectEmit(false, false, false, true, address(mandate));
-        emit DeskMandateV2.BoundsSet(2 hours, 0, 10_000, 1 days);
-        // No premium and the whole desk per order.
-        mandate.setBounds(2 hours, 0, 10_000, 1 days);
+        emit DeskMandateV2.BoundsSet(2 hours, 0, 10_000, 1 days, 0);
+        // No premium, no shortfall at all, and the whole desk per order.
+        mandate.setBounds(2 hours, 0, 10_000, 1 days, 0);
         vm.stopPrank();
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
-        mandate.setBounds(1 hours, 200, 5_000, 3 days);
+        mandate.setBounds(1 hours, 100, 5_000, 3 days, 100);
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
         mandate.setOperator(stranger);
@@ -469,7 +474,7 @@ contract DeskMandateV2Test is DeskV2Setup {
 
     function test_theFloorViewIsTheGuard() public {
         _fund(0, 1_000e6);
-        assertEq(mandate.floorOf(0, address(nvda), true, 100e6), 0.98e18);
+        assertEq(mandate.floorOf(0, address(nvda), true, 100e6), 0.99e18);
         vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OverCap.selector, 600e6, 500e6));
         mandate.floorOf(0, address(nvda), true, 600e6);
         vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.Short.selector, 1e18, 0));
@@ -477,20 +482,37 @@ contract DeskMandateV2Test is DeskV2Setup {
         vm.expectRevert(DeskMandateV2.NoDesk.selector);
         mandate.floorOf(5, address(nvda), true, 1);
         _trade(0, address(nvda), true, 100e6, 1e18);
-        assertEq(mandate.floorOf(0, address(nvda), false, 1e18), 98e6);
+        assertEq(mandate.floorOf(0, address(nvda), false, 1e18), 99e6);
     }
 
-    /// Whatever fills the Settler gives, desk ledgers add up to the contract's balances and no approval is left.
+    function test_theTokenListStopsAtItsCap() public {
+        MockFeed feed = new MockFeed(1e8);
+        vm.startPrank(owner);
+        for (uint256 i = mandate.tokenCount(); i < mandate.MAX_TOKENS(); i++) {
+            mandate.setVenue(address(new MockStock("X")), _feed(feed), false, true);
+        }
+        address extra = address(new MockStock("X"));
+        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OverCap.selector, 17, 16));
+        mandate.setVenue(extra, _feed(feed), false, true);
+        // Delisting and relisting a token already counted still works.
+        mandate.setVenue(address(nvda), _feed(nvdaFeed), true, false);
+        mandate.setVenue(address(nvda), _feed(nvdaFeed), true, true);
+        vm.stopPrank();
+        assertEq(mandate.tokenCount(), 16);
+    }
+
+    /// Whatever fills the Settler gives, desk ledgers add up to the contract's balances, no approval is left
+    /// and no desk's day goes over its budget. A day and an hour of orders, so each budget opens twice.
     function testFuzz_theLedgersAlwaysAddUpToTheBalances(uint256 seed) public {
         for (uint8 i = 0; i < 5; i++) {
             _fund(i, 1_000e6);
         }
-        for (uint256 step = 0; step < 12; step++) {
+        for (uint256 step = 0; step < 25; step++) {
             uint256 r = uint256(keccak256(abi.encode(seed, step)));
             uint8 desk = uint8(r % 5);
             bool buy = (r >> 8) % 3 != 0;
-            // Fills from 5% under to 5% over the feed, so some clear the 2% guard and some do not.
-            uint256 fillBps = 9_500 + (r >> 16) % 1_001;
+            // Fills from 2% under to 2% over the feed, so some clear the 1% guard and some do not.
+            uint256 fillBps = 9_800 + (r >> 16) % 401;
             uint256 amountIn;
             uint256 out;
             if (buy) {
@@ -517,12 +539,14 @@ contract DeskMandateV2Test is DeskV2Setup {
             }
             assertEq(ledgerUsdg, usdg.balanceOf(address(mandate)));
             assertEq(ledgerNvda, nvda.balanceOf(address(mandate)));
+            (,,,,, uint64 dayEquity, uint64 dayShortfall) = mandate.desks(desk);
+            assertLe(dayShortfall, uint256(dayEquity) * mandate.budgetBps() / 10_000, "never over the budget");
             assertEq(usdg.allowance(address(mandate), ALLOWANCE_HOLDER), 0);
             assertEq(nvda.allowance(address(mandate), ALLOWANCE_HOLDER), 0);
         }
         uint256 orders;
         for (uint8 d = 0; d < 5; d++) {
-            (,,, uint32 n) = mandate.desks(d);
+            (,,, uint32 n,,,) = mandate.desks(d);
             orders += n;
         }
         assertGt(orders, 0, "some orders went through");
@@ -635,7 +659,7 @@ contract DeskMandateV2ZeroExTest is DeskV2Setup {
         vm.prank(operator);
         vm.expectEmit(true, true, true, true, address(mandate));
         emit DeskMandateV2.Order(
-            0, address(nvda), true, 100e6, 1e18, 100e6, 0.98e18, 0, REASONING, QUOTE, address(next)
+            0, address(nvda), true, 100e6, 1e18, 100e6, 0.99e18, 0, REASONING, QUOTE, address(next)
         );
         mandate.trade(0, address(nvda), true, 100e6, 0, REASONING, QUOTE, viaNext);
     }
@@ -711,7 +735,7 @@ contract DeskMandateV2ZeroExTest is DeskV2Setup {
             100e6,
             abi.encodeCall(MockSettler.fill, (address(usdg), 100e6, address(nvda), 1e18, stranger))
         );
-        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OffPrice.selector, 0, 0.98e18));
+        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OffPrice.selector, 0, 0.99e18));
         _attempt(0, address(nvda), true, 100e6, elsewhere);
         assertEq(nvda.balanceOf(stranger), 0);
         assertEq(usdg.balanceOf(address(mandate)), 2_000e6);
@@ -771,7 +795,7 @@ contract DeskMandateV2ZeroExTest is DeskV2Setup {
         vm.prank(owner);
         mandate.setVenue(address(fee), _feed(feeFeed), false, true);
 
-        // 100 USDG at $1 a token: the floor is 98 tokens. A 1% fee lands 99; a 3% fee lands 97.
+        // 100 USDG at $1 a token: the floor is 99 tokens. A 1% fee lands 99; a 3% fee lands 97.
         fee.setFee(100, false);
         assertEq(_trade(0, address(fee), true, 100e6, 100e18), 99e18);
         assertEq(mandate.holdings(0, address(fee)), 99e18);
@@ -779,7 +803,7 @@ contract DeskMandateV2ZeroExTest is DeskV2Setup {
 
         fee.setFee(300, false);
         bytes memory swap = _swap(address(usdg), 100e6, address(fee), 100e18);
-        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OffPrice.selector, 97e18, 98e18));
+        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OffPrice.selector, 97e18, 99e18));
         _attempt(1, address(fee), true, 100e6, swap);
     }
 
@@ -798,5 +822,143 @@ contract DeskMandateV2ZeroExTest is DeskV2Setup {
         bytes memory swap = _swap(address(fee), 10e18, address(usdg), 10e6);
         vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.Spent.selector, 10.1e18, 10e18));
         _attempt(0, address(fee), false, 10e18, swap);
+    }
+}
+
+/// The day's shortfall budget: what orders received under the feed value of what they gave, summed per desk
+/// per UTC day, against `budgetBps` of the desk's value before the day's first order.
+contract DeskMandateV2BudgetTest is DeskV2Setup {
+    function _today() internal view returns (uint256) {
+        return block.timestamp / 1 days;
+    }
+
+    function _nextDay() internal {
+        vm.warp((_today() + 1) * 1 days + 1 hours);
+        nvdaFeed.set(100e8, block.timestamp);
+        spyFeed.set(500e8, block.timestamp);
+    }
+
+    function _budget(uint8 desk) internal view returns (uint256 budget) {
+        (budget,) = mandate.budgetOf(desk);
+    }
+
+    function _used(uint8 desk) internal view returns (uint256 used) {
+        (, used) = mandate.budgetOf(desk);
+    }
+
+    /// Every order may take the whole premium, but the day's orders together may take only the budget:
+    /// 1% of the desk, 10 USDG on 1,000, however the shortfall is spread.
+    function test_aDaysShortfallStopsAtTheBudget() public {
+        _fund(0, 1_000e6);
+        uint256 day = _today();
+        (uint256 budget, uint256 used) = mandate.budgetOf(0);
+        assertEq(budget, 10e6);
+        assertEq(used, 0);
+
+        // Over the feed earns nothing back.
+        _trade(0, address(nvda), true, 100e6, 1.01e18);
+        assertEq(_used(0), 0);
+        vm.warp(block.timestamp + 1 hours);
+        // At the floor, a buy gives up 1% of what it spends and a sell 1% of what it sells.
+        _trade(0, address(nvda), true, 400e6, 3.96e18);
+        assertEq(_used(0), 4e6);
+        vm.warp(block.timestamp + 1 hours);
+        _trade(0, address(nvda), false, 4.97e18, 492.03e6);
+        assertEq(_used(0), 8.97e6);
+
+        vm.warp(block.timestamp + 1 hours);
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OverBudget.selector, 10.97e6, 10e6));
+        mandate.trade(
+            0, address(nvda), true, 200e6, 0, REASONING, QUOTE, _swap(address(usdg), 200e6, address(nvda), 1.98e18)
+        );
+        // Up to the budget exactly, then only fills at or over the feed.
+        _trade(0, address(nvda), true, 200e6, 1.9897e18);
+        assertEq(_used(0), 10e6);
+        vm.warp(block.timestamp + 1 hours);
+        _trade(0, address(nvda), true, 100e6, 1e18);
+        vm.warp(block.timestamp + 1 hours);
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OverBudget.selector, 10e6 + 1, 10e6));
+        mandate.trade(
+            0, address(nvda), true, 100e6, 0, REASONING, QUOTE, _swap(address(usdg), 100e6, address(nvda), 1e18 - 1e10)
+        );
+        assertEq(_today(), day, "all on one UTC day");
+
+        // A new day opens a new budget on what the desk is worth then.
+        _nextDay();
+        assertEq(_budget(0), mandate.equity(0) / 100);
+        assertEq(_used(0), 0);
+        _trade(0, address(nvda), true, 100e6, 0.99e18);
+        assertEq(_used(0), 1e6);
+    }
+
+    function test_theBudgetIsTheDesksValueAtTheDaysFirstOrder() public {
+        _fund(2, 500e6);
+        spy.mint(owner, 1e18);
+        vm.startPrank(owner);
+        spy.approve(address(mandate), 1e18);
+        mandate.fundHolding(2, address(spy), 1e18);
+        vm.stopPrank();
+        assertEq(_budget(2), 10e6, "500 USDG and one SPY at $500");
+
+        _trade(2, address(nvda), true, 100e6, 1e18);
+        (,,,, uint32 day, uint64 dayEquity, uint64 dayShortfall) = mandate.desks(2);
+        assertEq(day, _today());
+        assertEq(dayEquity, 1_000e6);
+        assertEq(dayShortfall, 0);
+
+        // Neither new money nor a rising price raises today's budget.
+        _fund(2, 1_000e6);
+        spyFeed.set(1_000e8, block.timestamp);
+        assertEq(_budget(2), 10e6);
+
+        _nextDay();
+        spyFeed.set(1_000e8, block.timestamp);
+        assertEq(_budget(2), 25e6, "1,400 USDG, one NVDA at $100 and one SPY at $1,000");
+    }
+
+    /// A holding the contract cannot price counts as nothing toward the budget, and stops no other order.
+    function test_aHoldingThatCannotBePricedCountsAsNothing() public {
+        _fund(0, 1_000e6);
+        _trade(0, address(nvda), true, 200e6, 2e18);
+        _nextDay();
+        assertEq(_budget(0), 10e6);
+
+        nvdaFeed.set(100e8, block.timestamp - 3 days - 1);
+        assertEq(_budget(0), 8e6, "a stale feed");
+        vm.expectRevert(
+            abi.encodeWithSelector(DeskMandateV2.StaleFeed.selector, address(nvdaFeed), block.timestamp - 3 days - 1)
+        );
+        mandate.equity(0);
+        nvdaFeed.set(100e8, block.timestamp);
+        vm.startPrank(owner);
+        mandate.setVenue(address(nvda), _feed(nvdaFeed), true, false);
+        assertEq(_budget(0), 8e6, "delisted");
+        vm.stopPrank();
+
+        _trade(0, address(spy), true, 100e6, 0.2e18);
+        (,,,,, uint64 dayEquity,) = mandate.desks(0);
+        assertEq(dayEquity, 800e6);
+    }
+
+    /// The owner can tighten the budget mid-day; it applies at once against the day's opening value.
+    function test_aNewBudgetAppliesToTheRestOfTheDay() public {
+        _fund(0, 1_000e6);
+        _trade(0, address(nvda), true, 100e6, 0.99e18);
+        vm.prank(owner);
+        mandate.setBounds(1 hours, 100, 5_000, 3 days, 0);
+        assertEq(_budget(0), 0);
+        vm.warp(block.timestamp + 1 hours);
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OverBudget.selector, 2e6, 0));
+        mandate.trade(
+            0, address(nvda), true, 100e6, 0, REASONING, QUOTE, _swap(address(usdg), 100e6, address(nvda), 0.99e18)
+        );
+        assertEq(_trade(0, address(nvda), true, 100e6, 1e18), 1e18, "a fill at the feed still goes through");
+        assertEq(_used(0), 1e6, "over the new budget, and no order adds to it");
+
+        vm.expectRevert(DeskMandateV2.NoDesk.selector);
+        mandate.budgetOf(5);
     }
 }
