@@ -214,6 +214,12 @@ contract DeskMandateV2ForkTest is Test {
         console.log("buy: 5 USDG for NVDA wei", got);
         console.log("  feed floor", floor, "quote minBuyAmount", q.minBuyAmount);
         console.log("  gas", gasUsed, "0x's own estimate", q.gas);
+
+        // The same quote ten minutes later, on another desk.
+        vm.warp(block.timestamp + 10 minutes);
+        vm.prank(operator, operator);
+        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.QuoteUsed.selector, q.digest));
+        mandate.trade(1, NVDA, true, q.sellAmount, q.minBuyAmount, bytes32(0), q.digest, q.data);
     }
 
     /// Both stock quotes were bought seconds apart for the same taker, so the round trip runs at the later
@@ -403,7 +409,9 @@ contract DeskMandateV2ForkTest is Test {
         console.log("skim: desk got", got, "key kept (WETH wei)", kept);
         console.log("  key's share of the fill in bps", kept * 10_000 / (got + kept));
 
-        // Replayed in the same block with more money in the desk: today's budget is what the desk opened at.
+        // Replayed in the same block with more money in the desk. Each replay names a digest of its own: the
+        // contract cannot tie a digest to the calldata, so only the budget stops this. Today's budget is what
+        // the desk opened at.
         deal(USDG, owner, 1_000e6);
         vm.startPrank(owner);
         IERC20(USDG).approve(address(mandate), 1_000e6);
@@ -426,7 +434,9 @@ contract DeskMandateV2ForkTest is Test {
         while (true) {
             (uint256 budget, uint256 used) = mandate.budgetOf(0);
             vm.prank(operator, operator);
-            try mandate.trade(0, WETH, true, q.sellAmount, 0, bytes32(0), q.digest, swap) {
+            try mandate.trade(
+                0, WETH, true, q.sellAmount, 0, bytes32(0), keccak256(abi.encode(q.digest, orders)), swap
+            ) {
                 orders++;
             } catch (bytes memory err) {
                 assertEq(err, abi.encodeWithSelector(DeskMandateV2.OverBudget.selector, used + shortfall, budget));

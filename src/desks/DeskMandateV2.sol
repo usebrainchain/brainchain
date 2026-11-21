@@ -48,7 +48,7 @@ interface ISettlerRegistry {
 /// never borrows and never shorts, one order per desk per `interval`, a buy spends at most
 /// `maxBuyBps` of the desk's USDG, and a stock token is not traded while its share multiplier is
 /// changing. Each order carries the hash of the model's reasoning and the SHA-256 of 0x's signed
-/// quote body.
+/// quote body, and no two orders carry the same digest.
 ///
 /// The owner (the treasury Safe) funds, pauses, tunes the bounds and keeps the allowlist. It brings
 /// a desk's USDG and each of its positions home one at a time, so a token that refuses to move holds
@@ -111,6 +111,7 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
     mapping(address token => Venue) public venues;
     address[] public tokens;
     mapping(address token => bool) private _seen;
+    mapping(bytes32 quote => bool) public quoteUsed;
 
     event Order(
         uint8 indexed desk,
@@ -149,6 +150,7 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
     error OffPrice(uint256 amountOut, uint256 floor);
     error OverBudget(uint256 dayShortfall, uint256 budget);
     error NoQuote();
+    error QuoteUsed(bytes32 quote);
     error NotExec(bytes4 selector);
     error WrongSell(address token, uint256 amount);
     error NotSettler(address operator, address target);
@@ -185,7 +187,7 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
     /// `amountIn` of `token` for USDG. `swap` is the `transaction.data` of a 0x AllowanceHolder quote
     /// for exactly this sale, with this contract as taker and recipient. `minOut` is the brain's own
     /// floor (the quote's `minBuyAmount`); the feed's floor applies too. `quote` is the SHA-256 of
-    /// 0x's response body, the digest its signature covers.
+    /// 0x's response body, the digest its signature covers, and is accepted once.
     function trade(
         uint8 desk,
         address token,
@@ -201,6 +203,8 @@ contract DeskMandateV2 is Ownable2Step, ReentrancyGuard {
         if (desk >= DESKS) revert NoDesk();
         if (amountIn == 0) revert ZeroAmount();
         if (quote == bytes32(0)) revert NoQuote();
+        if (quoteUsed[quote]) revert QuoteUsed(quote);
+        quoteUsed[quote] = true;
         Fill memory fill;
         {
             Venue memory venue = venues[token];

@@ -38,6 +38,7 @@ abstract contract DeskV2Setup is Test {
     MockSettlerRegistry internal registry;
     MockSettler internal settler;
     DeskMandateV2 internal mandate;
+    uint256 internal _quotes;
 
     function setUp() public virtual {
         vm.warp(1_800_000_000);
@@ -100,7 +101,12 @@ abstract contract DeskV2Setup is Test {
         bytes memory swap =
             buy ? _swap(address(usdg), amountIn, token, out) : _swap(token, amountIn, address(usdg), out);
         vm.prank(operator);
-        return mandate.trade(desk, token, buy, amountIn, 0, REASONING, QUOTE, swap);
+        return mandate.trade(desk, token, buy, amountIn, 0, REASONING, _freshQuote(), swap);
+    }
+
+    /// Every order needs a quote of its own.
+    function _freshQuote() internal returns (bytes32) {
+        return keccak256(abi.encode(QUOTE, _quotes++));
     }
 
     function _usdgOf(uint8 desk) internal view returns (uint256 usdg_) {
@@ -115,7 +121,10 @@ contract DeskMandateV2Test is DeskV2Setup {
         emit DeskMandateV2.Order(
             0, address(nvda), true, 200e6, 2e18, 100e6, 1.98e18, 0, REASONING, QUOTE, address(settler)
         );
-        assertEq(_trade(0, address(nvda), true, 200e6, 2e18), 2e18);
+        vm.prank(operator);
+        mandate.trade(
+            0, address(nvda), true, 200e6, 0, REASONING, QUOTE, _swap(address(usdg), 200e6, address(nvda), 2e18)
+        );
         assertEq(mandate.holdings(0, address(nvda)), 2e18);
         (,, uint64 lastOrderAt, uint32 orders,,,) = mandate.desks(0);
         assertEq(_usdgOf(0), 800e6);
@@ -163,6 +172,35 @@ contract DeskMandateV2Test is DeskV2Setup {
         vm.prank(operator);
         vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OffPrice.selector, 1e18, 1.5e18));
         mandate.trade(0, address(nvda), true, 100e6, 1.5e18, REASONING, QUOTE, swap);
+    }
+
+    /// A quote fills once: sent again ten minutes later on another desk, or on the same one, it is refused.
+    /// An order that reverts leaves its quote unused.
+    function test_aQuoteFillsOnce() public {
+        _fund(0, 1_000e6);
+        _fund(1, 1_000e6);
+        bytes memory swap = _swap(address(usdg), 100e6, address(nvda), 1e18);
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.OffPrice.selector, 0.9e18, 0.99e18));
+        mandate.trade(
+            0, address(nvda), true, 100e6, 0, REASONING, QUOTE, _swap(address(usdg), 100e6, address(nvda), 0.9e18)
+        );
+        assertFalse(mandate.quoteUsed(QUOTE));
+
+        vm.prank(operator);
+        mandate.trade(0, address(nvda), true, 100e6, 0, REASONING, QUOTE, swap);
+        assertTrue(mandate.quoteUsed(QUOTE));
+        bytes memory used = abi.encodeWithSelector(DeskMandateV2.QuoteUsed.selector, QUOTE);
+        vm.warp(block.timestamp + 10 minutes);
+        vm.prank(operator);
+        vm.expectRevert(used);
+        mandate.trade(1, address(nvda), true, 100e6, 0, REASONING, QUOTE, swap);
+        vm.warp(block.timestamp + 1 hours);
+        vm.prank(operator);
+        vm.expectRevert(used);
+        mandate.trade(0, address(nvda), true, 100e6, 0, REASONING, QUOTE, swap);
+        assertEq(mandate.holdings(1, address(nvda)), 0);
+        assertEq(mandate.holdings(0, address(nvda)), 1e18);
     }
 
     function test_aBuySpendsAtMostTheCapAndASellAtMostTheHolding() public {
@@ -675,7 +713,7 @@ contract DeskMandateV2Test is DeskV2Setup {
                 ? _swap(address(usdg), amountIn, address(nvda), out)
                 : _swap(address(nvda), amountIn, address(usdg), out);
             vm.prank(operator);
-            try mandate.trade(desk, address(nvda), buy, amountIn, 0, REASONING, QUOTE, swap) {} catch {}
+            try mandate.trade(desk, address(nvda), buy, amountIn, 0, REASONING, _freshQuote(), swap) {} catch {}
             vm.warp(block.timestamp + 1 hours);
 
             uint256 ledgerUsdg;
