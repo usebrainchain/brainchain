@@ -587,13 +587,13 @@ describe("what a quote may not carry", () => {
 describe("what a caller passes", () => {
   const options = { settlers: SETTLERS, now: at(EXACT_OUT_ETH) };
 
-  it("takes the body as the bytes 0x sent, a Uint8Array or an ArrayBuffer, and refuses anything parsed or decoded", async () => {
+  it("takes the body as the bytes 0x sent, and refuses anything parsed, decoded or not yet wrapped in a Uint8Array", async () => {
     const buffer = EXACT_OUT_ETH.body.buffer.slice(EXACT_OUT_ETH.body.byteOffset, EXACT_OUT_ETH.body.byteOffset + EXACT_OUT_ETH.body.byteLength);
-    assert.equal((await verifyQuote({ ...response(EXACT_OUT_ETH), body: buffer }, EXACT_OUT_ETH.url, intentFor(EXACT_OUT_ETH), options)).ok, true);
-    for (const body of [EXACT_OUT_ETH.json, EXACT_OUT_ETH.body.toString("utf8"), null]) {
+    assert.equal((await verifyQuote({ ...response(EXACT_OUT_ETH), body: new Uint8Array(buffer) }, EXACT_OUT_ETH.url, intentFor(EXACT_OUT_ETH), options)).ok, true);
+    for (const body of [EXACT_OUT_ETH.json, EXACT_OUT_ETH.body.toString("utf8"), null, buffer]) {
       await assert.rejects(verifyQuote({ ...response(EXACT_OUT_ETH), body }, EXACT_OUT_ETH.url, intentFor(EXACT_OUT_ETH), options), (error) => {
         assert.ok(error instanceof TypeError);
-        assert.match(error.message, /pass the raw response bytes 0x sent, a Uint8Array or ArrayBuffer, such as new Uint8Array\(await response\.clone\(\)\.arrayBuffer\(\)\)/);
+        assert.match(error.message, /^the response body is (an object|a string|null|an ArrayBuffer): pass the raw response bytes 0x sent as a Uint8Array, such as new Uint8Array\(await response\.clone\(\)\.arrayBuffer\(\)\)/);
         return true;
       });
     }

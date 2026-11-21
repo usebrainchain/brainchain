@@ -70,16 +70,15 @@ export interface SignedResponse {
   status: number;
   headers: Headers | Readonly<Record<string, string | undefined>>;
   /** The bytes 0x sent, kept before anything reads the body, such as new Uint8Array(await response.clone().arrayBuffer()). */
-  body: Uint8Array | ArrayBuffer;
+  body: Uint8Array;
 }
 
 /** The body as bytes; a parsed or decoded body cannot be held to 0x's digest. */
 function bytesOf(body: unknown): Uint8Array {
   if (body instanceof Uint8Array) return body;
-  if (body instanceof ArrayBuffer) return new Uint8Array(body);
+  const what = body instanceof ArrayBuffer ? "an ArrayBuffer" : body === null ? "null" : typeof body === "object" ? "an object" : `a ${typeof body}`;
   throw new TypeError(
-    `the response body is ${body === null ? "null" : typeof body === "object" ? "an object" : `a ${typeof body}`}: pass the raw response bytes 0x sent, a Uint8Array or ArrayBuffer, ` +
-      "such as new Uint8Array(await response.clone().arrayBuffer()) taken before the body is read",
+    `the response body is ${what}: pass the raw response bytes 0x sent as a Uint8Array, such as new Uint8Array(await response.clone().arrayBuffer()), taken before the body is read`,
   );
 }
 
