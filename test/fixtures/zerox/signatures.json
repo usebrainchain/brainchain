@@ -1,0 +1,60 @@
+{
+  "source": "0x Swap API v2 firm quotes for chain 4663 (GET api.0x.org/swap/allowance-holder/quote), bought 2026-11-21: the WETH ones through the keyless gateway, the NVDA ones with BrainChain's own key, which tokenized stocks need. Each body is stored byte for byte; its SHA-256 is the content-digest below, and the signature covers status, content type, digest, method, authority, path and query (RFC 9421, Ed25519, key 0x-signing-key-prod-24092026).",
+  "quotes": {
+    "buy-usdg-weth": {
+      "via": "agent.api.0x.org (x402)",
+      "authority": "api.0x.org",
+      "path": "/swap/allowance-holder/quote",
+      "query": "?chainId=4663&sellToken=0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168&buyToken=0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73&sellAmount=5000000&taker=0x4522d47dA5929B75263d7A64FEe5A67cB3b58D73&txOrigin=0xF6a9d62C878A28870Ef6F34E534Bb2aeBb34d36b&slippageBps=100",
+      "status": 200,
+      "content-type": "application/json",
+      "content-digest": "sha-256=:7iKTtc2VOPTgNSoWwf05X0NLAqb0pvKLFc6sWLzYOzM=:",
+      "signature-input": "sig=(\"@status\" \"content-type\" \"content-digest\" \"@method\";req \"@authority\";req \"@path\";req \"@query\";req);created=1795224853;keyid=\"0x-signing-key-prod-24092026\";alg=\"ed25519\";tag=\"0x-swap-api\"",
+      "signature": "sig=:AwF38Ll+Y8Ov+CWS2VitGdX2ZSr+Upjrby54Xq5dYup3yPMSsXkIX/iUP7dIT8SUCTdkJNhtvdiGEAZ1pL5IDw==:"
+    },
+    "sell-weth-usdg": {
+      "via": "agent.api.0x.org (x402)",
+      "authority": "api.0x.org",
+      "path": "/swap/allowance-holder/quote",
+      "query": "?chainId=4663&sellToken=0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73&buyToken=0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168&sellAmount=1000000000000000&taker=0x4522d47dA5929B75263d7A64FEe5A67cB3b58D73&txOrigin=0xF6a9d62C878A28870Ef6F34E534Bb2aeBb34d36b&slippageBps=100",
+      "status": 200,
+      "content-type": "application/json",
+      "content-digest": "sha-256=:hh12zuBDS1UdIu8VnAQs/x4xpcJoE1gYkFu6lb0QP7M=:",
+      "signature-input": "sig=(\"@status\" \"content-type\" \"content-digest\" \"@method\";req \"@authority\";req \"@path\";req \"@query\";req);created=1795224865;keyid=\"0x-signing-key-prod-24092026\";alg=\"ed25519\";tag=\"0x-swap-api\"",
+      "signature": "sig=:OiRKlOx8QGerdzwblOYnShOIHC+gZUY+DKAgOB6HFHyFjVtQ1JH11nIlJ9JMoQ56ywD8tnFhzMQxQVY1VagQDA==:"
+    },
+    "buy-usdg-weth-to-stranger": {
+      "via": "agent.api.0x.org (x402)",
+      "authority": "api.0x.org",
+      "path": "/swap/allowance-holder/quote",
+      "query": "?chainId=4663&sellToken=0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168&buyToken=0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73&sellAmount=5000000&taker=0x4522d47dA5929B75263d7A64FEe5A67cB3b58D73&recipient=0x525De286F84C672c30Ef9B6820787f6262C893B1&txOrigin=0xF6a9d62C878A28870Ef6F34E534Bb2aeBb34d36b&slippageBps=100",
+      "status": 200,
+      "content-type": "application/json",
+      "content-digest": "sha-256=:fYTK8DpIhxcrT6pfuPs48fiq923WH7W2CWKSLBT7vio=:",
+      "signature-input": "sig=(\"@status\" \"content-type\" \"content-digest\" \"@method\";req \"@authority\";req \"@path\";req \"@query\";req);created=1795224866;keyid=\"0x-signing-key-prod-24092026\";alg=\"ed25519\";tag=\"0x-swap-api\"",
+      "signature": "sig=:nMSj1DxUb0MYpcCNuVKQUF1GEuQJnZbyrFusq6iMhLByGWABoI//QDGI4Rdukzae8PpqbEcl7s831be53nHGDg==:"
+    },
+    "buy-usdg-nvda": {
+      "via": "api.0x.org (BrainChain's API key)",
+      "authority": "api.0x.org",
+      "path": "/swap/allowance-holder/quote",
+      "query": "?chainId=4663&sellToken=0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168&buyToken=0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC&sellAmount=5000000&taker=0x4522d47dA5929B75263d7A64FEe5A67cB3b58D73&txOrigin=0xF6a9d62C878A28870Ef6F34E534Bb2aeBb34d36b&slippageBps=100",
+      "status": 200,
+      "content-type": "application/json",
+      "content-digest": "sha-256=:TSwkAf+2/3T5RqHG/26cWbuMquyR459SQ5CT31mpL6g=:",
+      "signature-input": "sig=(\"@status\" \"content-type\" \"content-digest\" \"@method\";req \"@authority\";req \"@path\";req \"@query\";req);created=1795225550;keyid=\"0x-signing-key-prod-24092026\";alg=\"ed25519\";tag=\"0x-swap-api\"",
+      "signature": "sig=:KCRZWR5v0dkGm1JK7EUGzd2X2QjeuM9yE+FTElHmbQ1rbDo2Q1q0iy0A6fqM69mrVQMLv4SK5BVtRfmEzgeEBA==:"
+    },
+    "sell-nvda-usdg": {
+      "via": "api.0x.org (BrainChain's API key)",
+      "authority": "api.0x.org",
+      "path": "/swap/allowance-holder/quote",
+      "query": "?chainId=4663&sellToken=0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC&buyToken=0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168&sellAmount=20000000000000000&taker=0x4522d47dA5929B75263d7A64FEe5A67cB3b58D73&txOrigin=0xF6a9d62C878A28870Ef6F34E534Bb2aeBb34d36b&slippageBps=100",
+      "status": 200,
+      "content-type": "application/json",
+      "content-digest": "sha-256=:DulbFK225R65HjFtDNknX9vbqk50/0cXM5JBQZqX/qw=:",
+      "signature-input": "sig=(\"@status\" \"content-type\" \"content-digest\" \"@method\";req \"@authority\";req \"@path\";req \"@query\";req);created=1795225550;keyid=\"0x-signing-key-prod-24092026\";alg=\"ed25519\";tag=\"0x-swap-api\"",
+      "signature": "sig=:FmnlfbSXOX7MV/5Y33wtBmNBR2YTn3UFrQtcb8qUwmr6cI0F/m++CwCBeHo3eh6erCb3wdk+MJd0qmBXmMP9AA==:"
+    }
+  }
+}
