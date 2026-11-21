@@ -4,8 +4,12 @@ pragma solidity ^0.8.24;
 import {Test, Vm, console} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {DeskMandate, IAggregatorV3} from "../../src/desks/DeskMandate.sol";
-import {DeskMandateV2, ISettlerRegistry} from "../../src/desks/DeskMandateV2.sol";
+import {DeskMandateV2, IAllowanceHolder, ISettlerRegistry} from "../../src/desks/DeskMandateV2.sol";
 import {DeployDeskMandateV2} from "../../script/DeployDeskMandateV2.s.sol";
+
+// A block between the two reads of the first mandate's books (119,503,194 and 119,528,980), which found them the
+// same: desk 4 holds 79.92 USDG and 0.1496 NVDA here.
+uint256 constant BOOKS_BLOCK = 119_514_831;
 
 interface IWETH {
     function deposit() external payable;
@@ -21,6 +25,10 @@ interface IRhRegistry {
     function hasRole(bytes32 role, address account) external view returns (bool);
     function isBlocked(address account) external view returns (bool);
 }
+
+// The Settler's `execute` call and its positive-slippage action, which pays the fill above an amount to a recipient.
+bytes4 constant SETTLER_EXECUTE = bytes4(keccak256("execute((address,address,uint256),bytes[],bytes32)"));
+bytes4 constant POSITIVE_SLIPPAGE = bytes4(keccak256("POSITIVE_SLIPPAGE(address,address,uint256,uint256,uint256)"));
 
 // The Settler's `execute` slippage argument.
 struct Slippage {
@@ -49,6 +57,11 @@ contract DeskMandateV2ForkTest is Test {
     address constant NVDA_FEED = 0x379EC4f7C378F34a1B47E4F3cbeBCbAC3E8E9F15;
     // The taker in every quote: the first contract `deployer` creates.
     address constant TAKER = 0x4522d47dA5929B75263d7A64FEe5A67cB3b58D73;
+    // The brain's fallback gas limit: 0x's estimate, plus this, plus this much per position the desk holds.
+    uint256 constant GAS_HEADROOM = 150_000;
+    uint256 constant GAS_PER_POSITION = 30_000;
+    // EIP-3529: a transaction gets back at most a fifth of the gas it used.
+    uint256 constant MAX_REFUND_QUOTIENT = 5;
 
     struct Quote {
         string name;
@@ -62,6 +75,8 @@ contract DeskMandateV2ForkTest is Test {
     }
 
     DeskMandateV2 mandate;
+    // The quotes were bought for TAKER, the first contract this deployer creates, with this operator as txOrigin:
+    // change a label and the taker address and every recorded quote stop matching.
     address deployer = makeAddr("zx-desks fork deployer");
     address operator = makeAddr("zx-desks fork operator");
     address stranger = makeAddr("zx-desks fork stranger");
@@ -130,14 +145,15 @@ contract DeskMandateV2ForkTest is Test {
         require(ok);
         (, uint64 used,, int64 refunded) = abi.decode(ret, (uint64, uint64, uint64, int64));
         uint256 refund = refunded > 0 ? uint256(int256(refunded)) : 0;
-        return used - (refund > used / 5 ? used / 5 : refund);
+        uint256 cap = used / MAX_REFUND_QUOTIENT;
+        return used - (refund > cap ? cap : refund);
     }
 
     function _settler() internal view returns (address) {
-        return ISettlerRegistry(SETTLERS).ownerOf(2);
+        return ISettlerRegistry(SETTLERS).ownerOf(mandate.TAKER_SETTLER());
     }
 
-    function _assertOrderLog(Quote memory q, uint256 got, uint256 floor) internal view {
+    function _assertOrderLog(Quote memory q, uint256 got, uint256 feedFloor) internal view {
         Vm.Log[] memory logs = vm.getRecordedLogs();
         Vm.Log memory order;
         for (uint256 i = 0; i < logs.length; i++) {
@@ -148,13 +164,13 @@ contract DeskMandateV2ForkTest is Test {
         assertEq(order.topics[1], bytes32(uint256(0)));
         assertEq(order.topics[2], bytes32(uint256(uint160(WETH))));
         assertEq(order.topics[3], q.digest, "the order carries the quote's digest");
-        (bool buy, uint256 amountIn, uint256 amountOut, uint256 feedPrice, uint256 enforced, uint256 minOut,,) =
+        (bool buy, uint256 amountIn, uint256 amountOut, uint256 feedPrice, uint256 floor, uint256 minOut,,) =
             abi.decode(order.data, (bool, uint256, uint256, uint256, uint256, uint256, bytes32, address));
         assertTrue(buy);
         assertEq(amountIn, q.sellAmount);
         assertEq(amountOut, got);
         assertEq(feedPrice, mandate.price(WETH));
-        assertEq(enforced, floor > q.minBuyAmount ? floor : q.minBuyAmount, "the floor the order had to clear");
+        assertEq(floor, feedFloor > q.minBuyAmount ? feedFloor : q.minBuyAmount, "the floor the order had to clear");
         assertEq(minOut, q.minBuyAmount);
         (,,,,,, bytes32 reasoning, address settler) =
             abi.decode(order.data, (bool, uint256, uint256, uint256, uint256, uint256, bytes32, address));
@@ -301,7 +317,7 @@ contract DeskMandateV2ForkTest is Test {
         _trade(0, NVDA, true, q.sellAmount, q.minBuyAmount, q);
         uint256 gasUsed = _gasUsed();
         console.log("day's first NVDA buy on a book of 8 tokens, 7 held: gas", gasUsed);
-        assertLt(gasUsed, q.gas + 150_000 + 7 * 30_000);
+        assertLt(gasUsed, q.gas + GAS_HEADROOM + 7 * GAS_PER_POSITION);
     }
 
     /// The same calldata run straight from the contract's address, to separate 0x's gas from the mandate's.
@@ -321,7 +337,7 @@ contract DeskMandateV2ForkTest is Test {
         assertTrue(ok);
         console.log("gas through the mandate", viaMandate, "bare AllowanceHolder call", bare);
         console.log("  mandate overhead", viaMandate - bare);
-        assertLt(viaMandate, q.gas + 150_000, "the brain's gas limit, 0x's estimate plus 150,000, covers the order");
+        assertLt(viaMandate, q.gas + GAS_HEADROOM, "the brain's gas limit covers the order");
     }
 
     function test_aRealQuoteThatPaysSomeoneElseIsRefused() public onFork {
@@ -365,8 +381,9 @@ contract DeskMandateV2ForkTest is Test {
         mandate.trade(0, WETH, true, q.sellAmount, 0, bytes32(0), q.digest, tampered);
 
         // A registry that no longer lists the quote's Settler, now or as the one before.
-        vm.mockCall(SETTLERS, abi.encodeWithSignature("ownerOf(uint256)", 2), abi.encode(stranger));
-        vm.mockCall(SETTLERS, abi.encodeWithSignature("prev(uint128)", 2), abi.encode(stranger));
+        uint128 feature = mandate.TAKER_SETTLER();
+        vm.mockCall(SETTLERS, abi.encodeCall(ISettlerRegistry.ownerOf, (feature)), abi.encode(stranger));
+        vm.mockCall(SETTLERS, abi.encodeCall(ISettlerRegistry.prev, (feature)), abi.encode(stranger));
         vm.prank(operator, operator);
         vm.expectRevert(abi.encodeWithSelector(DeskMandateV2.NotSettler.selector, settler, settler));
         mandate.trade(0, WETH, true, q.sellAmount, 0, bytes32(0), q.digest, q.data);
@@ -385,9 +402,9 @@ contract DeskMandateV2ForkTest is Test {
         mandate.trade(0, WETH, true, q.sellAmount, 0, bytes32(0), q.digest, q.data);
     }
 
-    /// The desk key edits a real signed quote so 0x's surplus action pays the key everything above the
-    /// mandate's floor. At a 2% premium that kept 1.9% of every fill. At 1% it keeps under 1%, and the
-    /// day's shortfall budget stops such orders once together they have taken 1% of the desk.
+    /// A desk key that edits a signed quote can point 0x's surplus action at itself and keep everything above
+    /// the floor: 1.9% of each fill at a 2% premium. At 1% it keeps under 1%, and the daily budget stops such
+    /// orders once they have taken 1% of the desk.
     function test_theDeskKeyKeepsNoMoreThanThePremiumOrTheDaysBudget() public onFork {
         Quote memory q = _quote("buy-usdg-weth");
         _deployAt(q.blockNumber);
@@ -407,11 +424,11 @@ contract DeskMandateV2ForkTest is Test {
         (, uint256 used) = mandate.budgetOf(0);
         assertEq(used, shortfall, "the whole shortfall is charged to the day");
         console.log("skim: desk got", got, "key kept (WETH wei)", kept);
-        console.log("  key's share of the fill in bps", kept * 10_000 / (got + kept));
+        console.log("  key's share of the fill in bps", kept * mandate.BPS() / (got + kept));
 
         // Replayed in the same block with more money in the desk. Each replay names a digest of its own: the
-        // contract cannot tie a digest to the calldata, so only the budget stops this. Today's budget is what
-        // the desk opened at.
+        // contract cannot tie a digest to the calldata, so only the budget stops this. The day's budget stays
+        // what the desk opened the day at.
         deal(USDG, owner, 1_000e6);
         vm.startPrank(owner);
         IERC20(USDG).approve(address(mandate), 1_000e6);
@@ -422,7 +439,7 @@ contract DeskMandateV2ForkTest is Test {
         (, used) = mandate.budgetOf(0);
         kept = IERC20(WETH).balanceOf(operator);
         assertLe(used, budget);
-        assertLe(kept * mark / 1e18, budget, "all the key kept today is within the budget");
+        assertLe(kept * mark / 1e18, budget, "all the key kept that day is within the budget");
         assertEq(orders, budget / shortfall);
         console.log("  orders before the budget stopped them", orders, "key kept in USDG", kept * mark / 1e18);
     }
@@ -452,15 +469,15 @@ contract DeskMandateV2ForkTest is Test {
             abi.decode(_tail(data, 4), (address, address, uint256, address, bytes));
         (Slippage memory slippage, bytes[] memory actions, bytes32 zid) =
             abi.decode(_tail(inner, 4), (Slippage, bytes[], bytes32));
-        actions[actions.length - 1] = abi.encodeWithSelector(bytes4(0x5f80abae), operator, WETH, floor, 1e6, 1e6);
+        actions[actions.length - 1] = abi.encodeWithSelector(POSITIVE_SLIPPAGE, operator, WETH, floor, 1e6, 1e6);
         slippage.minAmountOut = floor;
         return abi.encodeWithSelector(
-            bytes4(0x2213bc0b),
+            IAllowanceHolder.exec.selector,
             op,
             token,
             amount,
             target,
-            abi.encodeWithSelector(bytes4(0x1fff991f), slippage, actions, zid)
+            abi.encodeWithSelector(SETTLER_EXECUTE, slippage, actions, zid)
         );
     }
 
@@ -472,7 +489,7 @@ contract DeskMandateV2ForkTest is Test {
     }
 
     /// The stock tokens need no new code: listed with their feeds and `scaled`, they price exactly as the
-    /// first mandate prices them today.
+    /// first mandate prices them.
     function test_theSevenStockTokensPriceAsTheFirstMandatePricesThem() public onFork {
         Quote memory q = _quote("buy-usdg-weth");
         _deployAt(q.blockNumber);
@@ -489,8 +506,8 @@ contract DeskMandateV2ForkTest is Test {
         assertEq(mandate.tokenCount(), 8);
     }
 
-    /// Today's mandate buying the same 5 USDG of NVDA on its fixed pool at the same block, for the gas comparison.
-    function test_theFirstMandatesNvdaBuyAtTheSameBlock() public onFork {
+    /// The first mandate buying the same 5 USDG of NVDA on its fixed pool at the same block, for the gas comparison.
+    function test_gas_firstMandateNvdaBuy() public onFork {
         Quote memory q = _quote("buy-usdg-nvda");
         vm.rollFork(q.blockNumber);
         DeskMandate first = DeskMandate(FIRST_MANDATE);
@@ -502,7 +519,7 @@ contract DeskMandateV2ForkTest is Test {
 }
 
 /// The real NVDA token on a fork of Robinhood Chain: what its issuer can do to a desk's position, and what the
-/// owner can still do about it. Desk 4 holds what DEPLOY.md moves into it, 79.92 USDG and 0.1496 NVDA.
+/// owner can still do about it. Desk 4 holds the first mandate's desk 4 book at BOOKS_BLOCK: 79.92 USDG and 0.1496 NVDA.
 contract DeskMandateV2StockForkTest is Test {
     address constant USDG = 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168;
     address constant ALLOWANCE_HOLDER = 0x0000000000001fF3684f28c67538d4D072C22734;
@@ -523,7 +540,7 @@ contract DeskMandateV2StockForkTest is Test {
 
     function setUp() public {
         vm.skip(block.chainid != 4663);
-        vm.rollFork(119514831);
+        vm.rollFork(BOOKS_BLOCK);
         bytes32[5] memory models;
         mandate = new DeskMandateV2(IERC20(USDG), ALLOWANCE_HOLDER, ISettlerRegistry(SETTLERS), safe, operator, models);
         deal(USDG, safe, DESK_USDG);
@@ -635,7 +652,7 @@ contract DeployDeskMandateV2ForkTest is Test {
 
     function test_theScriptCopiesTheFirstMandateAndHandsOverToTheSafe() public {
         vm.skip(block.chainid != 4663);
-        vm.rollFork(119514831);
+        vm.rollFork(BOOKS_BLOCK);
         // The script reads the process environment, which every test shares, so every case runs in this one test.
         vm.setEnv("DEPLOY_DESK_MANDATE_V2", "true");
         vm.setEnv("OPERATOR", vm.toString(DESK_KEY));
