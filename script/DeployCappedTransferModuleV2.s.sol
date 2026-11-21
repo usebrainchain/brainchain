@@ -10,7 +10,8 @@ interface ISafeInfo {
     function getThreshold() external view returns (uint256);
 }
 
-/// @notice Deploys a CappedTransferModuleV2 for one Safe on Robinhood Chain (chain 4663) or BrainChain (chain 274663).
+/// @notice Deploys a CappedTransferModuleV2 for one Safe on Robinhood Chain (chain 4663), BrainChain (chain 274663) or
+/// Base (chain 8453), where the owners keep the USDC for the desk and the BlockRun float.
 /// Fixed at deployment: the Safe, the asset and the first operator. The deployer pays the gas and gets no power over
 /// the module. The module can do nothing until the Safe sets its recipient and caps and enables it, which takes the
 /// Safe's owners: `setRecipient`, `setCaps` and the Safe's own `enableModule`, in one batch.
@@ -24,8 +25,8 @@ interface ISafeInfo {
 contract DeployCappedTransferModuleV2 is Script {
     function run() external {
         require(
-            block.chainid == 4663 || block.chainid == 274663,
-            "not Robinhood Chain (4663) or BrainChain (274663): pass --rpc-url"
+            block.chainid == 4663 || block.chainid == 274663 || block.chainid == 8453,
+            "not Robinhood Chain (4663), BrainChain (274663) or Base (8453): pass --rpc-url"
         );
         address safe = vm.envAddress("SAFE");
         address token = vm.envAddress("TOKEN");
