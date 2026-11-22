@@ -326,6 +326,7 @@ async function main(): Promise<void> {
         ...(r.outside ? { outside: true } : {}),
         ...(r.withheld ? { withheld: true } : {}),
         ...(r.run ? { run: r.run } : {}),
+        ...(r.shape ? { shape: r.shape } : {}),
         ...(r.panel ? { panel: r.panel } : {}),
         ...(r.evidence ? { evidence: r.evidence } : {}),
         ...(r.receipt ? { receipt: r.receipt } : {}),
