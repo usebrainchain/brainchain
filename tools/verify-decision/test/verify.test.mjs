@@ -86,8 +86,11 @@ const PINNED_EVIDENCE = "0x268e177e64120e2809a06f847cd3c51a51ec648b33764646502c5
 const PINNED_EVIDENCE_V2 = "0x21d62f925ee4bcf1b09e21c8a481f974e15c28e6c0669766b18a28295353fc37";
 // Version 2 for the rejected grade below when the brief's checks failed, from the same evidenceHash.
 const PINNED_EVIDENCE_V2_CHECKS = "0xb42c1e5ada5cba3a0aa645264e8cb4387af001da7c44cfe8103d35050c12f44a";
-// Version 2 for the weighted grade in fixtures/panel, which adds the weights beside the panel's rule (the brain's evidenceHash from release 11).
-const PINNED_EVIDENCE_V2_WEIGHTED = "0x508423a1c620268a54d7fc5d906037c1b0cad944973fd713e8849a83807f3dc9";
+// The release 11 grades in fixtures/panel, which the brain's decideGrade, askOpinion and withEvidence made: under the weighted rule, with
+// the weights beside the panel's rule; the same short of the second grader; and on a brief whose JSON schema the result misses.
+const PINNED_EVIDENCE_V2_WEIGHTED = "0x9d1386db9fb7629dd83b2758b5f0993bd928af7ab6d8ec2669952d7b3b59e5f3";
+const PINNED_EVIDENCE_V2_DEGRADED = "0x6a4096d26089667b5893076a73ed4a2d7d53e23102fad2cec0968b75251bfb85";
+const PINNED_EVIDENCE_V2_SHAPE = "0x56c479127aeeca2962391514e41c8ac2336ed05b124362176a17e0028aecc144";
 const PINNED_SIGNATURE = "0x48656313d9ced258eed50e2e35e402d10721b3599f7350d212ca4dda5d97fdac7b87e4e9e3dc26aacee57ab9e270fad8df78f12eeb38d229a3b620cc064573991c";
 const Status = { Open: 1, Hired: 2, Delivered: 3, Graded: 4, Disputed: 5, Paid: 6, Refunded: 7, Ruled: 8, Appealed: 9 };
 
@@ -876,7 +879,7 @@ describe("a check of the result against the brief's JSON schema", () => {
     assert.deepEqual(failed(none), ["shape"]);
     assert.match(check(none, "shape").message, /the brief fences no JSON schema BrainChain checks$/);
     const format = await paid(shaped(GOOD, PASSED, { brief: "T\n\nB\n\n```json schema\n{\"type\": \"string\", \"format\": \"email\"}\n```" }));
-    assert.match(check(format, "shape").message, /fences no JSON schema BrainChain checks: schema uses "format"$/);
+    assert.match(check(format, "shape").message, /fences no JSON schema BrainChain checks: schema uses "format"; BrainChain checks type, properties, required, additionalProperties, items, enum, minimum, maximum, minLength, maxLength$/);
     const plain = await paid(grade());
     assert.equal(status(plain, "shape"), undefined);
     assert.equal(plain.shape, undefined);
@@ -1022,8 +1025,9 @@ describe("a panel of judges", () => {
   });
 
   describe("under the weighted rule", () => {
-    // decideGrade from release 11: a grade with Jev and the second grader, weighted 0.25 and 0.75, as the brain records it.
-    const { brief: BRIEFED, record: WEIGHTED } = JSON.parse(readFileSync(new URL("./fixtures/panel/weighted-grade.json", import.meta.url), "utf8"));
+    const fixture = (name) => JSON.parse(readFileSync(new URL(`./fixtures/panel/${name}.json`, import.meta.url), "utf8"));
+    // Jev and the second grader, weighted 0.25 and 0.75.
+    const { brief: BRIEFED, record: WEIGHTED } = fixture("weighted-grade");
     const FOURTH = "meta-llama/llama-4-maverick";
     /** Jev at 0.9 and the second grader at 0.8 under weights 0.25 and 0.75, which give 0.825. */
     const weighted = (answer, confidence, panel = {}, fields = {}) =>
@@ -1044,6 +1048,45 @@ describe("a panel of judges", () => {
       const median = { ...WEIGHTED, confidence: 0.875, panel: { ...WEIGHTED.panel, rule: "median" } };
       const asMedian = await verify({ publish: median, answer: YES, bps: 8750, ...posted(BRIEFED), fragment: `#evidence=${WEIGHTED.evidence}` });
       assert.deepEqual(failed(asMedian), ["evidence"]);
+    });
+
+    it("holds a weighted grade short of the second grader as the brain records it, its weights divided over the members that answered", async () => {
+      const { brief, record } = fixture("weighted-degraded");
+      assert.equal(record.evidence, PINNED_EVIDENCE_V2_DEGRADED);
+      const report = await verify({ publish: record, answer: YES, bps: 9357, ...posted(brief) });
+      assert.deepEqual(failed(report), []);
+      assert.equal(outcomeOf([report]), "match");
+      assert.deepEqual([status(report, "evidence"), status(report, "judge-receipt"), status(report, "second-grader")], ["ok", "ok", undefined]);
+      assert.equal(check(report, "panel").message, `panel: weighted decides over Jev at 0.9 and ${THIRD} at 0.95, with weights 0.2, 0.3 and 0.5, Jev first, without ${SECOND}, so it pays only from 90%; the candidates are as recorded: lower-of 0.9, majority 0.9, median 0.925, weighted 0.9357`);
+      assert.equal(
+        check(report, "confidence-recomputed").message,
+        "confidence recomputed: paid levels 1, 2 hold 0.5 + 0.4 = 0.9000; under weighted the panel puts (0.2 × 0.9 + 0.5 × 0.95) / 0.7 = 0.9357 on paying; a panel short of a member pays only from 90%, so accept at 0.9357",
+      );
+
+      // Counting the second grader as 0 would give 0.655 and refund; the brain divides by the weight that answered instead.
+      const zeroed = { ...record, answer: "reject", confidence: 0.345, panel: { ...record.panel, rules: { ...record.panel.rules, weighted: 0.655 } } };
+      const asZero = await verify({ publish: zeroed, answer: NO, bps: 3450, ...posted(brief) });
+      assert.deepEqual(failed(asZero), ["panel", "confidence-recomputed"]);
+      assert.equal(check(asZero, "panel").message, "panel: the record puts 0.655 on weighted, but the members' probabilities give 0.9357");
+    });
+
+    it("holds a grade whose result misses the brief's JSON schema as the brain records it, its shape in the evidence", async () => {
+      const { brief, record } = fixture("shape-grade");
+      assert.equal(record.evidence, PINNED_EVIDENCE_V2_SHAPE);
+      assert.equal(record.shape, "failed");
+      const report = await verify({ publish: record, answer: NO, bps: 10_000, ...posted(brief) });
+      assert.deepEqual(failed(report), []);
+      assert.equal(outcomeOf([report]), "match");
+      assert.match(check(report, "shape").message, /^shape: the result does not match the brief's JSON schema \(.+\), so the answer is reject at 100%, as recorded$/);
+      assert.match(check(report, "confidence-recomputed").message, /under weighted the panel puts 0\.25 × 0\.95 \+ 0\.75 × 0\.8 = 0\.8375 on paying; the result does not match the brief's JSON schema, so the probability of paying is 0, so reject at 1\.0000$/);
+      assert.equal(report.shape.outcome, "failed");
+      assert.equal(status(report, "evidence"), "ok");
+
+      // A copy that drops or flips the outcome misses the hash the chain holds.
+      for (const shape of [undefined, "passed"]) {
+        const copy = await verify({ publish: record, serve: { ...record, shape }, answer: NO, bps: 10_000, ...posted(brief) });
+        assert.ok(failed(copy).includes("evidence"), String(shape));
+      }
     });
 
     it("pays once the weighted probability reaches the bar, rounded to four decimals as median is", async () => {
@@ -1081,7 +1124,7 @@ describe("a panel of judges", () => {
         assert.equal(check(report, "confidence-recomputed").status, "skip");
         assert.equal(outcomeOf([report]), "mismatch");
       }
-      assert.equal(check(await verify(recorded(weighted("accept", 0.825, { weights: undefined }))), "confidence-recomputed").message, "confidence: the panel decides by weighted, and the record carries no weights the brain could have used");
+      assert.equal(check(await verify(recorded(weighted("accept", 0.825, { weights: undefined }))), "confidence-recomputed").message, "confidence: the panel decides by weighted, but the record carries no weights the brain could have used");
 
       // A sum checked to four decimals, as the brain checks it.
       const thirds = await verify(recorded(weighted("accept", 0.8333, { weights: [0.33333, 0.66667], rules: { "lower-of": 0.8, majority: 0.8, median: 0.85, weighted: 0.8333 } })));
@@ -1106,43 +1149,50 @@ describe("a panel of judges", () => {
       assert.match(check(report, "confidence-recomputed").message, /under median the panel puts 0\.8500 on paying, so accept at 0\.8500$/);
     });
 
-    it("decides a panel short of a member at the higher bar, and never reweights the members that answered", async () => {
+    it("divides a short panel's weights over the members that answered, at the higher bar, and decides on two answers or none", async () => {
       // Jev, the second grader and a third judge, weighted 0.2, 0.3 and 0.5; the second grader stopped answering.
       const degraded = { missing: [SECOND], bar: 0.9 };
-      const short = (answer, confidence, value) =>
-        weighted(answer, confidence, { weights: [0.2, 0.3, 0.5], rules: { "lower-of": 0.9, majority: 0.9, median: 0.925, weighted: value }, judges: [third({ 0: 0.05, 1: 0.15, 2: 0.8 }, 0.95)], degraded }, { second: undefined, usage: { jev: { ms: 250 } } });
-      const report = await verify(recorded(short("reject", 0.345, 0.655)));
+      const short = (answer, confidence, value, paid = 0.5) =>
+        weighted(answer, confidence, { weights: [0.2, 0.3, 0.5], rules: { "lower-of": paid, majority: paid, median: Number(((0.9 + paid) / 2).toFixed(4)), weighted: value }, judges: [third({ 0: 1 - paid, 1: paid / 2, 2: paid / 2 }, paid)], degraded }, { second: undefined, usage: { jev: { ms: 250 } } });
+      const report = await verify(recorded(short("reject", 0.3857, 0.6143)));
       assert.deepEqual(failed(report), []);
-      assert.equal(check(report, "panel").message, `panel: weighted decides over Jev at 0.9 and ${THIRD} at 0.95, with weights 0.2, 0.3 and 0.5, Jev first, without ${SECOND}, so it pays only from 90%; the candidates are as recorded: lower-of 0.9, majority 0.9, median 0.925, weighted 0.655`);
-      assert.match(check(report, "confidence-recomputed").message, /under weighted the panel puts 0\.2 × 0\.9 \+ 0\.5 × 0\.95 = 0\.6550 on paying; a panel short of a member pays only from 90%, so reject at 0\.3450$/);
-      assert.deepEqual(report.panel, { rule: "weighted", weights: [0.2, 0.3, 0.5], judges: [{ model: "jev-1.14.0", paid: 0.9 }, { model: THIRD, paid: 0.95 }], degraded: true, missing: [SECOND], bar: 0.9 });
+      assert.match(check(report, "confidence-recomputed").message, /under weighted the panel puts \(0\.2 × 0\.9 \+ 0\.5 × 0\.5\) \/ 0\.7 = 0\.6143 on paying; a panel short of a member pays only from 90%, so reject at 0\.3857$/);
+      assert.deepEqual(report.panel, { rule: "weighted", weights: [0.2, 0.3, 0.5], judges: [{ model: "jev-1.14.0", paid: 0.9 }, { model: THIRD, paid: 0.5 }], degraded: true, missing: [SECOND], bar: 0.9 });
+      // Over half, but short of the 90% a short panel needs.
+      assert.deepEqual(failed(await verify(recorded(short("accept", 0.6143, 0.6143)))), ["confidence-recomputed"]);
 
-      // Spread over the two that answered, the weights would give 0.9357 and pay.
-      const spread = await verify(recorded(short("accept", 0.9357, 0.9357)));
-      assert.deepEqual(failed(spread), ["panel", "confidence-recomputed"]);
-      assert.match(check(spread, "panel").message, /the record puts 0\.9357 on weighted, but the members' probabilities give 0\.655$/);
-
-      // Without Jev, the first weight goes to nobody.
-      const jevless = withoutJev(weighted("reject", 0.41, { weights: [0.2, 0.3, 0.5], rules: { "lower-of": 0.7, majority: 0.7, median: 0.75, weighted: 0.59 }, judges: [third()], degraded: { missing: ["jev-latest"], bar: 0.9 } }));
+      // Without Jev, the judges' 0.3 and 0.5 are divided by 0.8.
+      const jevless = withoutJev(weighted("reject", 0.2625, { weights: [0.2, 0.3, 0.5], rules: { "lower-of": 0.7, majority: 0.7, median: 0.75, weighted: 0.7375 }, judges: [third()], degraded: { missing: ["jev-latest"], bar: 0.9 } }));
       const noJev = await verify(recorded(jevless));
       assert.deepEqual(failed(noJev), []);
-      assert.match(check(noJev, "confidence-recomputed").message, /^confidence recomputed: Jev did not answer; under weighted the panel puts 0\.3 × 0\.8 \+ 0\.5 × 0\.7 = 0\.5900 on paying; a panel short of a member pays only from 90%, so reject at 0\.4100$/);
+      assert.match(check(noJev, "confidence-recomputed").message, /^confidence recomputed: Jev did not answer; under weighted the panel puts \(0\.3 × 0\.8 \+ 0\.5 × 0\.7\) \/ 0\.8 = 0\.7375 on paying; a panel short of a member pays only from 90%, so reject at 0\.2625$/);
+
+      // Answering members with no weight give the rule no value, and the brain waits rather than record a decision.
+      const weightless = await verify(recorded(weighted("reject", 0.2, { weights: [0, 0, 1], rules: { "lower-of": 0.8, majority: 0.8, median: 0.85 }, degraded: { missing: [THIRD], bar: 0.9 } })));
+      assert.deepEqual(failed(weightless), ["panel"]);
+      assert.equal(check(weightless, "panel").message, "panel: the members that answered carry no weight, so the weighted rule has no value and the brain does not decide by it");
+      assert.equal(check(weightless, "confidence-recomputed").message, "confidence: the panel decides by weighted, but the members that answered carry no weight");
+
+      // A panel still needs two answers, so Jev never decides alone, whatever the weights.
+      const alone = await verify(recorded(weighted("accept", 0.95, { rules: { "lower-of": 0.9, majority: 0.9, median: 0.9, weighted: 0.9 }, degraded }, { second: undefined })));
+      assert.deepEqual(failed(alone), ["panel"]);
+      assert.equal(check(alone, "panel").message, "panel: one member answered, and the brain never decides on one alone");
     });
 
     it("takes either place for a judge the panel decided without when the record cannot say which it held", async () => {
       // Jev, the second grader and two judges, one missing: the record keeps the one that answered apart from the one missing, so either held third place.
-      const fourth = { ...third({ 0: 0.05, 1: 0.15, 2: 0.8 }, 0.95), model: FOURTH };
+      const fourth = { ...third({ 0: 0.1, 1: 0.2, 2: 0.7 }, 0.9), model: FOURTH };
       const four = (value) =>
         weighted("reject", Number((1 - value).toFixed(4)), { weights: [0.1, 0.2, 0.3, 0.4], rules: { "lower-of": 0.8, majority: 0.9, median: 0.9, weighted: value }, judges: [fourth], degraded: { missing: [THIRD], bar: 0.9 } });
-      for (const value of [0.535, 0.63]) {
+      for (const value of [0.8667, 0.8714]) {
         const report = await verify(recorded(four(value)));
         assert.deepEqual(failed(report), [], String(value));
         assert.match(check(report, "confidence-recomputed").message, new RegExp(`under weighted the panel puts ${value.toFixed(4).replace(".", "\\.")} on paying; a panel short`));
       }
-      const neither = await verify(recorded(four(0.6)));
+      const neither = await verify(recorded(four(0.87)));
       assert.deepEqual(failed(neither), ["panel"]);
-      assert.equal(check(neither, "panel").message, "panel: the record puts 0.6 on weighted, but the members' probabilities give 0.535 or 0.63, by where the judges it decided without sat");
-      assert.equal(check(neither, "confidence-recomputed").message, "confidence: no order of the panel the record allows gives its weighted value");
+      assert.equal(check(neither, "panel").message, "panel: the record puts 0.87 on weighted, but the members' probabilities give 0.8667 or 0.8714, by where the judges it decided without sat");
+      assert.equal(check(neither, "confidence-recomputed").message, "confidence: the panel decides by weighted, but no order of the panel the record allows gives its weighted value");
     });
   });
 
