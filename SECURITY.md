@@ -32,7 +32,7 @@ Out of scope:
 
 ## Bounty
 
-The bounty closes at 23:59 UTC on 22 November 2026. Reports received by then are assessed and paid on the terms below. Reports sent after that are still welcome at the same addresses and earn credit in the advisory, with no payment.
+The bounty is open until 23:59 UTC on 31 January 2027, on the terms below. Results of the first round (7 to 22 November 2026) are at https://docs.usebrainchain.com/security#results-7-to-22-november-2026.
 
 What a report earns depends on what its proof shows.
 
@@ -46,7 +46,7 @@ Funds include anything a BrainChain tool sends, signs or approves without its us
 
 We pay at most $1,500 in awards in a calendar month. Awards confirmed beyond that are paid in the following months, in the order we confirmed them.
 
-The first private report of each root cause earns the award. A vulnerability we already know about, or one already made public, does not earn one. We decide whether a report qualifies and what it pays. These terms apply to reports received from 7 November to 22 November 2026.
+The first private report of each root cause earns the award. A vulnerability we already know about, or one already made public, does not earn one. We decide whether a report qualifies and what it pays. These terms apply to reports received from 7 November 2026 to 31 January 2027.
 
 We pay in USDC on Base or USDG on Robinhood Chain, to a wallet you name, once the fix is live or 90 days after we confirm the report, whichever comes first. The [bug hunt's rules](https://docs.usebrainchain.com/bug-hunt#rules) on eligibility, sanctions, tax, use of reports and good-faith testing apply here too.
 
