@@ -86,8 +86,7 @@ const PINNED_EVIDENCE = "0x268e177e64120e2809a06f847cd3c51a51ec648b33764646502c5
 const PINNED_EVIDENCE_V2 = "0x21d62f925ee4bcf1b09e21c8a481f974e15c28e6c0669766b18a28295353fc37";
 // Version 2 for the rejected grade below when the brief's checks failed, from the same evidenceHash.
 const PINNED_EVIDENCE_V2_CHECKS = "0xb42c1e5ada5cba3a0aa645264e8cb4387af001da7c44cfe8103d35050c12f44a";
-// Version 2 for the weighted grade in fixtures/panel, with the weights beside the panel's rule as release 11 hashes them.
-// Taken from that canonical form before the brain's own evidenceHash held weights: pin it again from the brain's.
+// Version 2 for the weighted grade in fixtures/panel, which adds the weights beside the panel's rule (the brain's evidenceHash from release 11).
 const PINNED_EVIDENCE_V2_WEIGHTED = "0x508423a1c620268a54d7fc5d906037c1b0cad944973fd713e8849a83807f3dc9";
 const PINNED_SIGNATURE = "0x48656313d9ced258eed50e2e35e402d10721b3599f7350d212ca4dda5d97fdac7b87e4e9e3dc26aacee57ab9e270fad8df78f12eeb38d229a3b620cc064573991c";
 const Status = { Open: 1, Hired: 2, Delivered: 3, Graded: 4, Disputed: 5, Paid: 6, Refunded: 7, Ruled: 8, Appealed: 9 };
