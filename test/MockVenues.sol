@@ -4,9 +4,13 @@ pragma solidity ^0.8.24;
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-/// A Robinhood stock token: 18 decimals, with the share multiplier the desks price by.
+/// A Robinhood stock token: 18 decimals, with the share multiplier the desks price by. As on the real
+/// token, a change is scheduled as `newUIMultiplier` from `effectiveAt` (not in the past), and
+/// `uiMultiplier` returns the new value from that second on.
 contract MockStock is ERC20 {
-    uint256 public uiMultiplier = 1e18;
+    uint256 public newUIMultiplier = 1e18;
+    uint256 public effectiveAt;
+    uint256 internal _previous = 1e18;
 
     constructor(string memory symbol) ERC20(symbol, symbol) {}
 
@@ -14,8 +18,21 @@ contract MockStock is ERC20 {
         _mint(to, amount);
     }
 
+    function uiMultiplier() public view returns (uint256) {
+        return block.timestamp >= effectiveAt ? newUIMultiplier : _previous;
+    }
+
+    /// In force at once, with no schedule a desk could see coming.
     function setMultiplier(uint256 multiplier) external {
-        uiMultiplier = multiplier;
+        _previous = multiplier;
+        newUIMultiplier = multiplier;
+    }
+
+    function updateMultiplier(uint256 multiplier, uint256 effectiveAt_) external {
+        require(multiplier > 0 && effectiveAt_ >= block.timestamp);
+        _previous = uiMultiplier();
+        newUIMultiplier = multiplier;
+        effectiveAt = effectiveAt_;
     }
 }
 
@@ -31,6 +48,7 @@ contract MockWETH is ERC20 {
 contract MockFeed {
     int256 public answer;
     uint256 public updatedAt;
+    uint8 public decimals = 8;
 
     constructor(int256 answer_) {
         set(answer_, block.timestamp);
@@ -39,6 +57,10 @@ contract MockFeed {
     function set(int256 answer_, uint256 updatedAt_) public {
         answer = answer_;
         updatedAt = updatedAt_;
+    }
+
+    function setDecimals(uint8 decimals_) external {
+        decimals = decimals_;
     }
 
     function latestRoundData() external view returns (uint80, int256, uint256, uint256, uint80) {
