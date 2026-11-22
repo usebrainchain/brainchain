@@ -2,7 +2,20 @@
 
 Changes to `brainchain-verify`, the npm package built from this directory. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are npm publish dates, in UTC.
 
-## [0.10.0] - unreleased
+## [0.11.0] - unreleased
+
+### Added
+
+- `gateway` reads the attestation of Phala's Private AI gateway at `inference.phala.com`, through which the judges beside Jev answer, once per run and for a fresh nonce. It holds the report's TDX quote to Intel's SGX root CA, checks that the quote binds the nonce and the gateway's keyset, replays the gateway's boot events to the quote's RTMR3 and names the receipt key, app and compose hash it measured. It runs with Node's own crypto and adds no dependency.
+- `second-grader-receipt` and `judge-receipt` check each judge's receipt in a grade or ruling: its Ed25519 signature is by a receipt key the gateway attests, it names the request the record keeps and that request rebuilds from the record's question and state, the gateway verified the TEE upstream that answered, and it was served before the decision was recorded. See [judges' receipts](README.md#judges-receipts).
+
+### Changed
+
+- `--offline` also reads no attestation from the gateway. Each judge's receipt is then held to the record without its signature.
+- The `Not checked` line and the JSON's `notChecked` also say the tool cannot show that a judge's probabilities are the ones in the response its gateway hashed: the record keeps the probabilities, not the response.
+- Judges' receipts on decisions recorded before 2026-11-06 03:39 UTC, all of set v3-3 and decisions 1 to 149 on set v3-4, skip their signatures. Phala's gateway signed them with a key it no longer publishes. The README lists this under known history.
+
+## [0.10.0] - 2026-11-21
 
 ### Added
 
