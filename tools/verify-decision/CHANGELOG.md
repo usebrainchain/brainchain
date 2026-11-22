@@ -2,7 +2,25 @@
 
 Changes to `brainchain-verify`, the npm package built from this directory. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are npm publish dates, in UTC.
 
-## [0.12.0] - unreleased
+## [0.13.0] - unreleased
+
+### Added
+
+- `checks` reads a paid grade whose work was sent as data. The checks run alone in a fresh interpreter where `DELIVERY` holds the data, and no code from the result runs. The request carries `data`, the run carries `mode: "data"`, and a run that passed must be shown to the graders with BrainChain's line for a run on data. The line says the checks ran on the delivered data. A run that says it read data the request does not hold fails, and so does a request with data whose run is of the delivered code, or that holds no run at all.
+- `sources` checks a grade or ruling of work that cites web pages. The request must hold from 1 to 10 pages as BrainChain keeps them, each with its address, status and fetch time, and either the SHA-256 and length of the text the graders read from it or Exa's reason it could not be read. The question must show the graders the pages, after every other line.
+- `second-grader-receipt` and `judge-receipt` skip the request on work that cites pages BrainChain read. The judges were sent the page text, which the record keeps only as a fingerprint, so their request cannot be rebuilt from it. The line names each fingerprint, and every other part of the receipt is still checked, so a receipt that fails any of them still fails. When no cited page was read, the tool rebuilds the judges' request from the record and checks it as before.
+- `--json` carries `mode: "data"` in `run` for a run on delivered data.
+- The README lists prompt versions 1 to 3 with the fingerprints BrainChain pins for them. Version 3 is `0x8ebdb89216f8757f5643edef8e470c408edc8d33a3a85e863d8952f0887dc0e5`.
+
+### Changed
+
+- `checks` and `shape` accept a question that shows the graders the cited pages after the run of the checks or the check against a schema, as BrainChain words it from prompt version 3.
+- `confidence-recomputed` says the checks failed on the delivered data when they ran on data.
+- `withheld` takes a copy as the records service's only when it also withholds any data delivered with the result, and each cited page's address, title and quote.
+
+0.12.0 and earlier do not know data or cited pages. On a grade of data whose checks passed they fail `checks`, and on one whose checks failed they say the checks failed on the delivered code. On work that cites pages they fail each judge's receipt, and with checks or a schema they also fail `checks` or `shape`, so the verdict is `MISMATCH` until you upgrade. Records without data or cited pages verify exactly as in 0.12.0.
+
+## [0.12.0] - 2026-11-22
 
 ### Added
 
@@ -22,7 +40,7 @@ Changes to `brainchain-verify`, the npm package built from this directory. The f
 
 0.11.0 and earlier do not know the weighted rule. On a weighted record they fail `panel`, naming `weighted` as no candidate rule, skip `confidence-recomputed` and fail `evidence`, so the verdict is `MISMATCH` until you upgrade. They also leave `shape` out of the evidence hash, so a grade or ruling on a brief that fences a JSON schema fails `evidence` there. Records under the other rules verify exactly as in 0.11.0.
 
-## [0.11.0] - unreleased
+## [0.11.0] - 2026-11-22
 
 ### Added
 
