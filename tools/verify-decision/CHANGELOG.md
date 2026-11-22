@@ -2,6 +2,21 @@
 
 Changes to `brainchain-verify`, the npm package built from this directory. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are npm publish dates, in UTC.
 
+## [0.12.0] - unreleased
+
+### Added
+
+- The weighted rule. A panel record under `weighted` carries `panel.weights`: one weight per member in panel order, Jev first, each from 0 to 1, summing to 1 to four decimals. `confidence-recomputed` takes the probability of paying as each member's weight times its own probability, added up and rounded to four decimals as `median` is, and holds the answer to 0.5, or to 90% when the panel decided without a member. A missing member adds nothing, and the members that answered keep their recorded weights.
+- `panel` fails a record that decides by `weighted` without weights, values `weighted` in `rules` without weights, or carries weights that are not one per member, lie outside 0 to 1 or do not sum to 1. Each failure names its reason.
+- `evidence` rebuilds evidence version 2 with `panel.weights` beside the rule when the rule is `weighted`. Records under any other rule hash as before.
+- `--json` carries `weights` in `panel` when the record has them.
+
+### Changed
+
+- A rule the tool does not know now fails `panel` with `weighted` among the rules it lists.
+
+0.11.0 and earlier do not know the weighted rule. On a weighted record they fail `panel`, naming `weighted` as no candidate rule, skip `confidence-recomputed` and fail `evidence`, so the verdict is `MISMATCH` until you upgrade. Records under the other rules verify exactly as in 0.11.0.
+
 ## [0.11.0] - unreleased
 
 ### Added
