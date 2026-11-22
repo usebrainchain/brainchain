@@ -251,13 +251,17 @@ function panelRules(paid: number[]): Record<(typeof BASE_RULES)[number], number>
 }
 
 /**
- * The weighted rule: each member's weight times its probability of paying, in
- * panel order, rounded as median is. A member the panel decided without adds
- * nothing and the others keep their recorded weights, because the brain does not
- * reweight a panel short of a member; the higher bar applies instead.
+ * The weighted rule (judges.ts): each member's weight times its probability of
+ * paying, in panel order, rounded as median is. Short of a member, each
+ * answering weight is divided by their sum, so the panel decides at the higher
+ * bar as under any other rule. Answering weights that sum to 0 give no value:
+ * the brain then waits rather than decide.
  */
-function weightedRule(weights: readonly number[], paid: readonly (number | undefined)[]): number {
-  return Number(paid.reduce<number>((sum, p, i) => sum + weights[i]! * (p ?? 0), 0).toFixed(4));
+function weightedRule(weights: readonly number[], paid: readonly (number | undefined)[]): number | undefined {
+  const answered = paid.flatMap((p, i) => (p === undefined ? [] : [[weights[i]!, p] as const]));
+  const scale = answered.length < paid.length ? answered.reduce((sum, [w]) => sum + w, 0) : 1;
+  if (scale === 0) return undefined;
+  return Number(answered.reduce((sum, [w, p]) => sum + (w / scale) * p, 0).toFixed(4));
 }
 
 /** Why `weights` cannot be a panel's of `size` members, or undefined when they can. */
@@ -1327,18 +1331,20 @@ function checkPanel(c: Checks, record: Published, p: Paying): void {
   if (fault) wrong.push(fault);
   if (weights === undefined && rule === "weighted") wrong.push("the panel decides by weighted, but the record carries no weights");
   else if (weights === undefined && Object.hasOwn(rules, "weighted")) wrong.push(`the record puts ${rules.weighted} on weighted, but carries no weights`);
-  const candidates = weighed ? [...new Set(orders.map((order) => weightedRule(weighed, order)))] : [];
+  const candidates = weighed ? [...new Set(orders.map((order) => weightedRule(weighed, order)).filter((value) => value !== undefined))] : [];
+  const valuing = rule === "weighted" || Object.hasOwn(rules, "weighted");
+  if (weighed && valuing && candidates.length === 0) wrong.push("the members that answered carry no weight, so the weighted rule has no value and the brain does not decide by it");
   recomputed.weighted = candidates.length > 1 ? candidates.find((value) => close(rules.weighted, value)) : candidates[0];
 
   for (const [name, value] of Object.entries(rules)) {
     const given = recomputed[name as PanelRule];
     if (!isRule(name)) wrong.push(`the record puts ${value} on "${name}", which is not a candidate rule`);
     else if (given === undefined) {
-      if (weighed) wrong.push(`the record puts ${value} on weighted, but the members' probabilities give ${candidates.slice(0, -1).join(", ")} or ${candidates.at(-1)}, by where the judges it decided without sat`);
+      if (candidates.length > 0) wrong.push(`the record puts ${value} on weighted, but the members' probabilities give ${candidates.slice(0, -1).join(", ")} or ${candidates.at(-1)}, by where the judges it decided without sat`);
     } else if (!close(value, given)) wrong.push(`the record puts ${value} on ${name}, but the members' probabilities give ${given}`);
   }
   for (const name of BASE_RULES) if (!Object.hasOwn(rules, name)) wrong.push(`the record gives no value for ${name}`);
-  if (rule === "weighted" && weighed && !Object.hasOwn(rules, "weighted")) wrong.push("the record gives no value for weighted");
+  if (rule === "weighted" && candidates.length > 0 && !Object.hasOwn(rules, "weighted")) wrong.push("the record gives no value for weighted");
   if (!isRule(rule)) wrong.push(`the record names the rule "${rule}", which is none of ${list([...PANEL_RULES])}`);
 
   const without = missing.map((name) => (jev === undefined && name === record.model ? `Jev (${name})` : name));
@@ -1357,11 +1363,18 @@ function checkPanel(c: Checks, record: Published, p: Paying): void {
   }
   const paying = recomputed[rule];
   if (paying === undefined) {
-    c.add("confidence-recomputed", "skip", weighed ? "confidence: no order of the panel the record allows gives its weighted value" : "confidence: the panel decides by weighted, and the record carries no weights the brain could have used");
+    const why = !weighed
+      ? "the record carries no weights the brain could have used"
+      : candidates.length === 0
+        ? "the members that answered carry no weight"
+        : "no order of the panel the record allows gives its weighted value";
+    c.add("confidence-recomputed", "skip", `confidence: the panel decides by weighted, but ${why}`);
     return;
   }
   const order = orders.length === 1 ? orders[0] : undefined;
-  const sum = rule === "weighted" && weighed && order ? `${order.flatMap((paid, i) => (paid === undefined ? [] : [`${weighed[i]} × ${paid}`])).join(" + ")} = ` : "";
+  const terms = weighed && order ? order.flatMap((paid, i) => (paid === undefined ? [] : [`${weighed[i]} × ${paid}`])).join(" + ") : "";
+  const scale = weighed && order ? Number(order.reduce<number>((sum, paid, i) => (paid === undefined ? sum : sum + weighed[i]!), 0).toFixed(4)) : 1;
+  const sum = rule !== "weighted" || !terms ? "" : degraded ? `(${terms}) / ${scale} = ` : `${terms} = `;
   const steps = [jev === undefined ? "Jev did not answer" : (p.how ?? `Jev puts ${jev} on ${p.yes}`), `under ${rule} the panel puts ${sum}${paying.toFixed(4)} on paying`];
   checkDecided(c, record, p, paying, steps, `the panel's ${rule} rule`, degraded?.bar);
 }

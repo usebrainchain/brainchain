@@ -22,7 +22,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 function unsupported(schema: unknown, path = "schema", depth = 0): string | undefined {
   if (!isRecord(schema)) return `${path} must be an object`;
   if (depth > MAX_DEPTH) return `${path} nests deeper than ${MAX_DEPTH} levels`;
-  for (const key of Object.keys(schema)) if (!KEYWORDS.has(key)) return `${path} uses "${key}"`;
+  for (const key of Object.keys(schema)) if (!KEYWORDS.has(key)) return `${path} uses "${key}"; BrainChain checks ${[...KEYWORDS].filter((k) => k !== "description" && k !== "title").join(", ")}`;
   const { type, properties, required, additionalProperties, items, enum: allowed } = schema;
   const types = Array.isArray(type) ? type : type === undefined ? [] : [type];
   if (!types.every((t) => typeof t === "string" && TYPES.has(t))) return `${path}.type names a type outside ${[...TYPES].join(", ")}`;
