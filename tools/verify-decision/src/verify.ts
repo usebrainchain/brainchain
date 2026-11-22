@@ -61,6 +61,8 @@ export interface Run {
 /** A grade or ruling decided by a panel, as its record states it. */
 export interface PanelReport {
   rule: string;
+  /** Each member's weight, Jev first, as the record carries them. */
+  weights?: number[];
   /** Every member that answered, Jev first, with its probability of paying. */
   judges: { model: string; paid: number }[];
   degraded: boolean;
@@ -156,6 +158,8 @@ interface Panel {
   /** The judges after the second grader that answered. */
   judges: Judge[];
   degraded?: { missing: string[]; bar: number };
+  /** For the weighted rule: each member's weight in panel order, Jev first, the members it decided without included. */
+  weights?: unknown;
 }
 
 type Question = { type: string; instructions?: unknown; criteria: Record<string, string> | string[] };
@@ -221,18 +225,47 @@ const optionsOf = (question: Question): string[] => (Array.isArray(question.crit
 // Items with commas of their own take one before the "and" too, so the last item reads apart from the one before it.
 const list = (items: string[]): string => (items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")}${items.some((item) => item.includes(",")) ? "," : ""} and ${items.at(-1)}`);
 
-// The brain's candidate rules and the bar of a panel short of a member (judges.ts).
-const PANEL_RULES = ["lower-of", "majority", "median"] as const;
+// The brain's candidate rules and the bar of a panel short of a member (judges.ts). Every panel record values the
+// first three; weighted needs the weights a record carries, so only a record with weights values it.
+const BASE_RULES = ["lower-of", "majority", "median"] as const;
+const PANEL_RULES = [...BASE_RULES, "weighted"] as const;
 type PanelRule = (typeof PANEL_RULES)[number];
 const isRule = (rule: string): rule is PanelRule => (PANEL_RULES as readonly string[]).includes(rule);
 const DEGRADED_BAR = 0.9;
 
 /** Each candidate's probability of paying over the members that answered, as the brain's panelRules works it out. */
-function panelRules(paid: number[]): Record<PanelRule, number> {
+function panelRules(paid: number[]): Record<(typeof BASE_RULES)[number], number> {
   const sure = [...paid].sort((a, b) => b - a);
   const n = sure.length;
   const median = n % 2 === 1 ? sure[(n - 1) / 2]! : (sure[n / 2 - 1]! + sure[n / 2]!) / 2;
   return { "lower-of": sure[n - 1]!, majority: sure[Math.floor(n / 2)]!, median: Number(median.toFixed(4)) };
+}
+
+/**
+ * The weighted rule: each member's weight times its probability of paying, in
+ * panel order, rounded as median is. A member the panel decided without adds
+ * nothing and the others keep their recorded weights, because the brain does not
+ * reweight a panel short of a member; the higher bar applies instead.
+ */
+function weightedRule(weights: readonly number[], paid: readonly (number | undefined)[]): number {
+  return Number(paid.reduce<number>((sum, p, i) => sum + weights[i]! * (p ?? 0), 0).toFixed(4));
+}
+
+/** Why `weights` cannot be a panel's of `size` members, or undefined when they can. */
+function weightsWrong(weights: unknown, size: number): string | undefined {
+  if (!Array.isArray(weights) || !weights.every((w) => typeof w === "number")) return "the record's weights are not a list of numbers";
+  if (weights.length !== size) return `the record carries ${weights.length} weight${weights.length === 1 ? "" : "s"} for a panel of ${size} members`;
+  const outside = weights.find((w) => w < 0 || w > 1);
+  if (outside !== undefined) return `the weight ${outside} is not between 0 and 1`;
+  // To four decimals, as the brain checks them, so a third written out as 0.3333 does not count as one.
+  const sum = Number(weights.reduce((total, w) => total + w, 0).toFixed(4));
+  return sum === 1 ? undefined : `the weights sum to ${sum}, not 1`;
+}
+
+/** Every merge of two lists that keeps each list's own order. */
+function merges<T>(a: readonly T[], b: readonly T[]): T[][] {
+  if (a.length === 0 || b.length === 0) return [[...a, ...b]];
+  return [...merges(a.slice(1), b).map((rest) => [a[0]!, ...rest]), ...merges(a, b.slice(1)).map((rest) => [b[0]!, ...rest])];
 }
 
 type Language = Run["language"];
@@ -441,7 +474,7 @@ const hasPanel = (record: Published): record is Paneled =>
   typeof record.model === "string" && isPanel(record.panel) && (record.second === undefined || isJudge(record.second));
 
 function panelReport(record: Paneled): PanelReport {
-  const { rule, judges, degraded } = record.panel;
+  const { rule, judges, degraded, weights } = record.panel;
   const members = [
     ...(typeof record.jevPaid === "number" ? [{ model: record.model, paid: record.jevPaid }] : []),
     ...(record.second ? [record.second] : []),
@@ -449,6 +482,7 @@ function panelReport(record: Paneled): PanelReport {
   ];
   return {
     rule: clean(rule),
+    ...(Array.isArray(weights) && weights.every((w) => typeof w === "number") ? { weights } : {}),
     judges: members.map(({ model, paid }) => ({ model: clean(model), paid })),
     degraded: degraded !== undefined,
     ...(degraded ? { missing: degraded.missing.map(clean), bar: degraded.bar } : {}),
@@ -1196,12 +1230,12 @@ function checkPanel(c: Checks, record: Published, p: Paying): void {
     c.add("confidence-recomputed", "skip", "confidence: needs a panel as the brain records it");
     return;
   }
-  const { rule, rules, judges, degraded } = record.panel;
+  const { rule, rules, judges, degraded, weights } = record.panel;
   const options = optionsOf(record.request.questions.decision);
   const jev = Object.keys(record.probabilities).length > 0 ? p.paidOf(record.probabilities) : undefined;
-  const members = jev === undefined ? [] : [{ name: "Jev", paid: jev }];
-  if (record.second) members.push({ name: record.second.model, paid: checkJudge(c, "second-grader", `the second grader (${record.second.model})`, record.second, p.paidOf, options) });
-  for (const judge of judges) members.push({ name: judge.model, paid: checkJudge(c, "judge", `the judge ${judge.model}`, judge, p.paidOf, options) });
+  const second = record.second && { name: record.second.model, paid: checkJudge(c, "second-grader", `the second grader (${record.second.model})`, record.second, p.paidOf, options) };
+  const after = judges.map((judge) => ({ name: judge.model, paid: checkJudge(c, "judge", `the judge ${judge.model}`, judge, p.paidOf, options) }));
+  const members = [...(jev === undefined ? [] : [{ name: "Jev", paid: jev }]), ...(second ? [second] : []), ...after];
   if (members.length < 2) {
     c.add("panel", "fail", `panel: ${members.length === 1 ? "one member" : "no member"} answered, and the brain never decides on one alone`);
     c.add("confidence-recomputed", "skip", "confidence: needs at least two members' answers");
@@ -1209,34 +1243,62 @@ function checkPanel(c: Checks, record: Published, p: Paying): void {
   }
 
   const missing = degraded?.missing ?? [];
-  const recomputed = panelRules(members.map((m) => m.paid));
+  const recomputed: Partial<Record<PanelRule, number>> = panelRules(members.map((m) => m.paid));
   const wrong: string[] = [];
   if (jev !== undefined && !close(record.jevPaid, jev)) wrong.push(`Jev's probability of paying recomputes to ${jev}, not the recorded ${record.jevPaid}`);
   if (jev === undefined && record.jevPaid !== undefined) wrong.push("the record holds no probabilities of Jev's, yet states Jev's probability of paying");
   if (jev === undefined && !missing.includes(record.model)) wrong.push(`the record holds no probabilities of Jev's, and the panel does not say it decided without Jev (${record.model})`);
   if (!record.second && missing.length === 0) wrong.push("the record holds no second grader, and the panel does not say it decided without one");
   if (degraded && degraded.bar !== DEGRADED_BAR) wrong.push(`the panel decided without ${list(missing)} at ${degraded.bar}, where the brain pays a panel short of a member only from ${DEGRADED_BAR}`);
+
+  // Weights run in panel order. A first judge the panel went without leaves no `second`, so its place is known, but
+  // the record keeps later judges that answered apart from later ones it went without, so their places can be any merge.
+  const gone = missing.length - (jev === undefined && missing.includes(record.model) ? 1 : 0);
+  const head = [jev, ...(second ? [second.paid] : gone > 0 ? [undefined] : [])];
+  const open = second || gone === 0 ? gone : gone - 1;
+  const orders = merges<number | undefined>(after.map((m) => m.paid), Array<undefined>(open).fill(undefined)).map((rest) => [...head, ...rest]);
+  const fault = weights === undefined ? undefined : weightsWrong(weights, orders[0]!.length);
+  const weighed = weights !== undefined && fault === undefined ? (weights as number[]) : undefined;
+  if (fault) wrong.push(fault);
+  if (weights === undefined && rule === "weighted") wrong.push("the panel decides by weighted, but the record carries no weights");
+  else if (weights === undefined && Object.hasOwn(rules, "weighted")) wrong.push(`the record puts ${rules.weighted} on weighted, but carries no weights`);
+  const candidates = weighed ? [...new Set(orders.map((order) => weightedRule(weighed, order)))] : [];
+  recomputed.weighted = candidates.length > 1 ? candidates.find((value) => close(rules.weighted, value)) : candidates[0];
+
   for (const [name, value] of Object.entries(rules)) {
+    const given = recomputed[name as PanelRule];
     if (!isRule(name)) wrong.push(`the record puts ${value} on "${name}", which is not a candidate rule`);
-    else if (!close(value, recomputed[name])) wrong.push(`the record puts ${value} on ${name}, but the members' probabilities give ${recomputed[name]}`);
+    else if (given === undefined) {
+      if (weighed) wrong.push(`the record puts ${value} on weighted, but the members' probabilities give ${candidates.slice(0, -1).join(", ")} or ${candidates.at(-1)}, by where the judges it decided without sat`);
+    } else if (!close(value, given)) wrong.push(`the record puts ${value} on ${name}, but the members' probabilities give ${given}`);
   }
-  for (const name of PANEL_RULES) if (!Object.hasOwn(rules, name)) wrong.push(`the record gives no value for ${name}`);
+  for (const name of BASE_RULES) if (!Object.hasOwn(rules, name)) wrong.push(`the record gives no value for ${name}`);
+  if (rule === "weighted" && weighed && !Object.hasOwn(rules, "weighted")) wrong.push("the record gives no value for weighted");
   if (!isRule(rule)) wrong.push(`the record names the rule "${rule}", which is none of ${list([...PANEL_RULES])}`);
 
   const without = missing.map((name) => (jev === undefined && name === record.model ? `Jev (${name})` : name));
   const bar = degraded ? `, without ${list(without)}, so it pays only from ${percent(Math.round(degraded.bar * 10_000))}` : "";
+  const weighting = weighed ? `, with weights ${list(weighed.map(String))}, Jev first` : "";
+  const valued = weighed && Object.hasOwn(rules, "weighted") ? PANEL_RULES : BASE_RULES;
   c.check(
     "panel",
     wrong.length === 0,
-    `panel: ${rule} decides over ${list(members.map((m) => `${m.name} at ${m.paid}`))}${bar}; the candidates are as recorded: ${PANEL_RULES.map((name) => `${name} ${recomputed[name]}`).join(", ")}`,
+    `panel: ${rule} decides over ${list(members.map((m) => `${m.name} at ${m.paid}`))}${weighting}${bar}; the candidates are as recorded: ${valued.map((name) => `${name} ${recomputed[name]}`).join(", ")}`,
     `panel: ${wrong.join("; ")}`,
   );
   if (!isRule(rule)) {
     c.add("confidence-recomputed", "skip", "confidence: the panel names no rule the brain decides by");
     return;
   }
-  const steps = [jev === undefined ? "Jev did not answer" : (p.how ?? `Jev puts ${jev} on ${p.yes}`), `under ${rule} the panel puts ${recomputed[rule].toFixed(4)} on paying`];
-  checkDecided(c, record, p, recomputed[rule], steps, `the panel's ${rule} rule`, degraded?.bar);
+  const paying = recomputed[rule];
+  if (paying === undefined) {
+    c.add("confidence-recomputed", "skip", weighed ? "confidence: no order of the panel the record allows gives its weighted value" : "confidence: the panel decides by weighted, and the record carries no weights the brain could have used");
+    return;
+  }
+  const order = orders.length === 1 ? orders[0] : undefined;
+  const sum = rule === "weighted" && weighed && order ? `${order.flatMap((paid, i) => (paid === undefined ? [] : [`${weighed[i]} × ${paid}`])).join(" + ")} = ` : "";
+  const steps = [jev === undefined ? "Jev did not answer" : (p.how ?? `Jev puts ${jev} on ${p.yes}`), `under ${rule} the panel puts ${sum}${paying.toFixed(4)} on paying`];
+  checkDecided(c, record, p, paying, steps, `the panel's ${rule} rule`, degraded?.bar);
 }
 
 /** A judge's probability of paying, recomputed from its own probabilities, with the receipt it carries named. */
@@ -1415,12 +1477,13 @@ const hostOf = (uri: string): string | undefined => (/^https?:\/\//i.test(uri) &
 /**
  * The brain's evidenceHash (evidence.ts): inputHash as the chain holds it, Jev's
  * answer, each other judge's answer with the receipt its gateway signed, the
- * payments and the versions; since version 2 also the panel's rule, the pass
- * level and how the brief's checks ran. None of it is withheld with the work.
+ * payments and the versions; since version 2 also the panel's rule, with its
+ * weights under the weighted rule, the pass level and how the brief's checks
+ * ran. None of it is withheld with the work.
  */
 function evidenceOf(record: Published, inputHash: Hex, version: 1 | 2): Hex | undefined {
   try {
-    const panel = record.panel as { judges?: Judge[]; rule?: unknown; degraded?: unknown } | undefined;
+    const panel = record.panel as { judges?: Judge[]; rule?: unknown; degraded?: unknown; weights?: unknown } | undefined;
     const judges = [record.second, ...(panel?.judges ?? [])]
       .filter((judge) => judge !== undefined)
       .map(({ model, probabilities, requestHash, receipt }) => ({ model, probabilities, requestHash, receipt }));
@@ -1430,7 +1493,16 @@ function evidenceOf(record: Published, inputHash: Hex, version: 1 | 2): Hex | un
       judges: [{ model: record.model, probabilities: record.probabilities }, ...judges],
       payments: record.payments ?? [],
       versions: record.versions,
-      ...(version === 2 && panel ? { panel: { rule: panel.rule, ...(panel.degraded !== undefined ? { degraded: panel.degraded } : {}) } } : {}),
+      // Weights beside the rule only under weighted, so a record under any other rule hashes as it did before weights.
+      ...(version === 2 && panel
+        ? {
+            panel: {
+              rule: panel.rule,
+              ...(panel.rule === "weighted" && panel.weights !== undefined ? { weights: panel.weights } : {}),
+              ...(panel.degraded !== undefined ? { degraded: panel.degraded } : {}),
+            },
+          }
+        : {}),
       ...(version === 2 && record.passFrom !== undefined ? { passFrom: record.passFrom } : {}),
       ...(version === 2 && record.checks !== undefined ? { checks: record.checks } : {}),
     };
