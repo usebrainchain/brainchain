@@ -2,7 +2,7 @@
 
 Check any BrainChain decision against the chain. The tool reads the decision from the `DecisionLog`, fetches its published record, recomputes its hashes and confidence, and applies the task's thresholds the way the contracts do. It needs a public RPC and nothing else: no keys, no account.
 
-Each record holds the question BrainChain asked Jev, a decision model served by TypeSafe, and Jev's answer with its probabilities.
+Each record holds the question BrainChain asked Jev, a decision model served by TypeSafe, and Jev's answer with its probabilities. A grade or ruling also holds the answers of the judges beside Jev, open models served in a TEE through Phala's Private AI gateway, each with the receipt the gateway signed. The tool checks those receipts against the key the gateway's enclave attests.
 
 It also checks the reputation BrainChain writes for its workers. Each entry in the ERC-8004 registry on Robinhood Chain is followed through its signed receipt to the decision, the payment and the task on the board.
 
@@ -54,7 +54,7 @@ brainchain-verify <mainnet|testnet|chainId> --item <itemId> [--service <url>] [-
 | `--service <url>` | Another brain host for `--record`, `--licence`, `--papers` and `--item`. Without it, `https://brain.usebrainchain.com` on mainnet and `https://brain.testnet.usebrainchain.com` on testnet. A host on a private address is read only when `--rpc` is on one too. |
 | `--registry-rpc <url>` | Another RPC for Robinhood Chain, where the ERC-8004 registries are. `--entry`, `--agent`, `--licence` and `--papers` read it, and `--record` only with `--epoch`. |
 | `--payment-rpc <url>` | Another RPC for Robinhood Chain, or Robinhood Chain testnet with `testnet`, such as a fork or your own node. A receipt's payment on that chain is read from it, for a decision, `--task`, `--receipt`, `--entry`, `--agent` and `--record`. Without it, the public RPC. Payments on Base and Solana are read from their public RPCs either way. See [receipts](#receipts). |
-| `--offline` | Fetch no receipt from the brain host. A receipt given with `--receipt` is still checked. |
+| `--offline` | Fetch no receipt from the brain host, and no attestation from the judges' gateway. A receipt given with `--receipt` is still checked, and each judge's receipt is held to the record without its signature. |
 | `--json` | One JSON object on stdout. |
 | `--version` | Print the version. |
 
@@ -84,7 +84,7 @@ Task 11: Compare the rule of 72 with the exact doubling time
   ok    threshold: accept at 80% is at or above task 11's 70% grade threshold, so the work is accepted, as the board recorded
 
 Verdict: match. The published record is exactly what the chain recorded, and the chain applied it as its contracts require.
-Not checked: that Jev produced the answer. See https://docs.usebrainchain.com/trust-model
+Not checked: that Jev produced the answer, or that a judge's probabilities are the ones in the response its gateway hashed. See https://docs.usebrainchain.com/trust-model
 ```
 
 Under the header, a decision about a task names the task by its brief's title, or the brief's first line, cut to 100 characters, once the brief committed on chain has been read. With `--task` that line reads `Brief:`. If the title is not the task you meant, check `--set`: each set numbers its own tasks and decisions.
@@ -118,6 +118,9 @@ The verdict is `match`, `withheld`, `UNVERIFIED` or `MISMATCH`. `withheld` means
 | `threshold` | The task's threshold, applied as `TaskBoard.hire`, `grade`, `rule` and `ruleAppeal` do, gives the outcome the board emitted. A poster can raise the grade and ruling thresholds while the task is open, so they can be higher than when it was posted; they cannot change after the hire. A ruling on appeal (set 3.5.0 and later) is checked against the board's `AppealRuled` event. A change is queued only on a yes. |
 | `change-subject`, `change-call` | A queued change is the call the decision names and the call Jev was shown. |
 | `evidence` | The record's evidence hash recomputes from the chain's `inputHash` and the record's judges, payments and versions, and equals the hash its `Recorded` event carries in `payloadURI`. Since evidence version 2 the hash also covers the panel's rule, a degraded panel's bar, the grade's pass level and the record's `checks`, so a copy served without the work cannot name another rule or another outcome of the brief's checks. The tool recomputes both versions and takes the one the chain holds; the line says when a record is version 1. When neither gives the hash, the line shows what each gives. |
+| `gateway` | On a grade or ruling whose judges carry receipts: the attestation of Phala's gateway at `inference.phala.com`, read once per run for a fresh nonce, holds. A TDX quote certified by Intel's SGX root binds the nonce and the gateway's keyset, and the gateway's boot events replay to the quote. The line names the receipt key, and the app and compose hash the enclave measured. See [judges' receipts](#judges-receipts). |
+| `second-grader-receipt` | The second grader's receipt is signed by a receipt key the gateway attests. It names the request the record keeps, that request is Jev's question and state as the brain puts them to a judge, the gateway verified the TEE upstream that answered, and it was served before the decision was recorded. |
+| `judge-receipt` | The same, for each judge on a panel after the second grader. |
 | `versions` | The key the record names sent the decision's `Recorded` transaction, and the image and app it names are the ones the DecisionLog attested that key for. |
 | `receipt` | The receipt's EIP-712 signature recovers to the key that sent the decision's `Recorded` transaction. |
 | `receipt-decision` | The receipt names this decision, its DecisionLog, its chain and the record's evidence hash. A version 2 receipt also names the decision's subject, the task or the paid grade, which must be the subject on the log. Version 1 receipts, signed before receipts named their subject, check as before. |
@@ -131,6 +134,7 @@ Some checks skip by design:
 - A grade recorded before the chain gated on the paid levels skips `confidence-recomputed`: its confidence is Jev's score confidence, which the probabilities alone do not give.
 - A grade or ruling recorded before BrainChain ran a brief's checks skips `checks` when its brief carries some. Such a record has no `jevPaid`, Jev's probability of paying, which every later grade and ruling states unless its panel decided without Jev.
 - A grade of outside work skips `checks` when its brief ends in a checks block and its record holds no run. The section on grades of outside work says why.
+- A judge that answered without a receipt skips its receipt line. With `--offline`, `gateway` skips, and so does the signature on each judge's receipt, while its request and upstream are still checked. A receipt on a decision recorded before 2026-11-06 03:39 UTC skips its signature: see [known history](#known-history).
 
 ### Decided by a panel
 
@@ -142,9 +146,40 @@ On a record with a panel, the tool checks that:
 - each candidate in `rules` recomputes over the judges that answered. `lower-of` is the lowest probability. `majority` is the lowest within the surest majority, which is the median with three judges. `median` is the middle probability, or the mean of the middle two.
 - `rules` holds exactly `lower-of`, `majority` and `median`, and `rule` names one of them.
 - the answer and confidence follow from that rule's value: accept or pay from 0.5, at the probability of the answer, and reject or refund at 100% when the brief's checks failed.
-- each judge's receipt id is shown, as for the second grader.
+- each judge's receipt is checked as the second grader's is: see [judges' receipts](#judges-receipts).
 
 A panel of three can decide without a member that stopped answering. `panel.degraded` then names the missing member and gives the bar, which must be 0.9: the panel pays only from 90%, and below it the answer is reject or refund. At least two judges must have answered. When the second grader is missing, the record has no `second`. When Jev is missing, the record holds none of Jev's probabilities and no `jevPaid`, and `model` names the version BrainChain asked for, which `degraded.missing` must name too.
+
+### Judges' receipts
+
+The second grader and any other judge on a panel answer through Phala's Private AI gateway at `inference.phala.com`, which runs in an Intel TDX enclave. For every answer the gateway signs a receipt with an Ed25519 key it publishes in its attestation. BrainChain keeps the receipt in the record, as `second.receipt.body` or `panel.judges[i].receipt.body`, beside `requestHash`, the SHA-256 of the request it sent. The evidence hash covers both.
+
+On decision 400 on set v3-6 the two lines read:
+
+```text
+  ok    gateway: inference.phala.com attests receipt key c9bd…f34e: a TDX quote that Intel's SGX root certifies binds its keyset, sha256:b7f8…6301, to this run's nonce, and measures app 89c5…2a0f and compose 2617…0a7a
+  ok    the second grader's receipt rcpt-37e77d3e69df7cf34629dfab is signed by inference.phala.com's receipt key c9bd…f34e. The gateway received the request the record names, sha256:c425…0e5f, which is Jev's question and state put to deepseek/deepseek-v4.1-flash-1017, and served it at 2026-11-22 08:05:27 UTC from a TEE upstream it verified
+```
+
+The tool reads the gateway's attestation once per run, from `/v1/aci/attestation` with a fresh 32-byte nonce, and checks that:
+
+- the keyset, in JCS form ([RFC 8785](https://www.rfc-editor.org/rfc/rfc8785)), hashes to the `workload_keyset_digest` the report states.
+- the quote is a version 4 TDX quote whose PCK certificate chain ends at the Intel SGX Root CA, held by its certificate's SHA-256 fingerprint, `44A0196B…74D3`. The PCK key signs the quoting enclave's report, that report vouches for the attestation key, and the attestation key signs the quote. Each certificate is valid at the time of the run.
+- the quote's report data is the SHA-256 of `{"keyset_digest":"<digest>","nonce":"<nonce>","purpose":"aci.report_data.v1"}` for this run's nonce, so the report was made for this run.
+- the enclave is not a debug TD, and the keyset has not expired.
+- the boot events replay to the quote's RTMR3, each one hashing to the digest it states, and the compose hash they measured is the SHA-256 of the compose file the report carries.
+
+On each judge's receipt, it checks that:
+
+- the signature is Ed25519 over the JCS form of the receipt without `signature`, by the key in the attested keyset that `key_id` names. The gateway renews its keyset as it restarts and has kept the same receipt key since 2026-11-06, so a receipt that cites an earlier keyset still verifies, and the line names both keysets.
+- `receipt_id`, `model`, `method` and `endpoint` are the record's receipt id, the judge's model, `POST` and `/v1/chat/completions`.
+- the gateway's `request.received` hash is the record's `requestHash`, and that hash rebuilds from the record's question and state as the brain sends them to a judge (`promptFor` in the brain's `judges.ts`, with `max_tokens` 8000, or 2000 before 2026-11-03). A copy served without the work cannot rebuild it, and the line says so.
+- `upstream.verified` has `result` `verified`, `required` true and a session id: the gateway verified the TEE upstream before it forwarded the request.
+- `served_at` is at most five minutes after the decision was recorded, which allows for the gateway's clock and the chain's.
+
+A signature that does not verify under the key of the keyset the receipt cites fails. A receipt that cites a keyset the gateway no longer serves, and does not verify under the key it serves now, is an `ERROR`, since the key that signed it cannot be read. A gateway that does not answer is an `ERROR` on the `gateway` line, and an attestation that does not hold is a `FAIL` there. Either way each judge's signature then skips, while its request and upstream are still checked.
+
+A receipt shows that the gateway received exactly the request in the record and served it from a verified TEE upstream. It also hashes the response the gateway returned (`response.returned`), but the record keeps each judge's probabilities, not its response, so nothing ties the probabilities to that hash. The tool does not appraise the platform's TCB level against Intel's collateral, hold the measured compose hash to the releases Phala publishes in [Dstack-TEE/private-ai-gateway](https://github.com/Dstack-TEE/private-ai-gateway/releases), or fetch the upstream's attested session that the receipt names.
 
 ### Evidence and versions
 
@@ -259,7 +294,7 @@ Entry 20424:7 in the ERC-8004 reputation registry on Robinhood Chain (0x8004BAa1
   ok    worker: the board hired claude for task 49 as keccak256("claude"), and agent 20424 is the house worker claude
 
 Verdict: no receipt. No signed receipt backs this entry, and the checks the chain allows without one passed.
-Not checked: that Jev produced the answer. See https://docs.usebrainchain.com/trust-model
+Not checked: that Jev produced the answer, or that a judge's probabilities are the ones in the response its gateway hashed. See https://docs.usebrainchain.com/trust-model
 ```
 
 An entry's verdict is `match`, `no receipt`, `withheld`, `MISMATCH` or `UNVERIFIED`. `no receipt` means the hash is zero and every check that could run passed. `withheld` is a decision record served without the work, as for any decision.
@@ -450,7 +485,9 @@ A `match` shows that the published item is the one its id committed to. It does 
 
 ## What it cannot check
 
-That Jev produced the answer. BrainChain records Jev's answers, and the contracts bound what a recorded answer can do. A decision that passes every check has the question, answer and probabilities the chain acted on. The [trust model](https://docs.usebrainchain.com/trust-model) explains what the chain relies on and what bounds it.
+That Jev produced the answer. Jev's answers carry no signature from the service that runs Jev: BrainChain records them, and the contracts bound what a recorded answer can do. A decision that passes every check has the question, answer and probabilities the chain acted on. The [trust model](https://docs.usebrainchain.com/trust-model) explains what the chain relies on and what bounds it.
+
+That a judge's probabilities are the ones it answered with. Each judge's receipt shows that Phala's gateway received the request in the record and served it from a verified TEE upstream. The record keeps the probabilities BrainChain read from the response, not the response the receipt hashes, so the tool cannot hold one to the other.
 
 For an agent's record, licences and papers, the tool shows whose key signed and that nothing was left out or changed since. It cannot show that an outcome without a receipt is what the board did, that an exam's judgments were right, or that an agent runs the build it declares.
 
@@ -461,6 +498,8 @@ On set v3-5, decision 972 and every decision after it until the switch to set v3
 While BrainChain is switching sets, `receipt-payment` fails until the switch completes. The host's `/network.json` is then signed by a brain other than the active set's, as [receipts](#receipts) describes.
 
 The host signs a receipt with the brain key that is live when it issues the receipt, and the tool holds a receipt to the key that recorded its decision. So a receipt issued after a brain switch, for a decision made before it, is signed by the newer key and fails `receipt`. Outside a switch of sets, the decision itself and its payment still verify. Entry 20425:9 is one: `0xeEA7b082103A9018FD5fC6ac820553a3FdE4B772` recorded decision 689 on set v3-5, and its receipt is signed by `0x95C7AfD81973F0c24b4AEAC75E4A6FFD8cC31C76`, the brain from 2026-11-18 13:46 UTC. A future release will accept a receipt signed by the brain that was live when it was issued.
+
+Phala's gateway moved to a new app on 2026-11-05 (Pacific time), with a new receipt key, and every replica served from it by 2026-11-06 03:39 UTC ([gateway-prod-2026-11-05](https://github.com/Dstack-TEE/private-ai-gateway/releases/tag/gateway-prod-2026-11-05)). Phala does not publish the receipt key the gateway used before. So the judges' receipts on decisions recorded before then, all of set v3-3 and decisions 1 to 149 on set v3-4, skip their signatures. Their requests and upstreams are still checked.
 
 Testnet's brain was replaced on 2026-11-20 and its records started fresh, so the host no longer serves the records of testnet decisions made before that day. The `fetch` line on such a decision points here.
 
@@ -508,7 +547,7 @@ Testnet's brain was replaced on 2026-11-20 and its records started fresh, so the
       ]
     }
   ],
-  "notChecked": "That Jev produced the answer. BrainChain records Jev's answers, and the contracts bound what a recorded answer can do.",
+  "notChecked": "That Jev produced the answer, or that a judge's probabilities are the ones in the response its gateway hashed. BrainChain records Jev's answers and the judges' probabilities, and the contracts bound what a recorded answer can do.",
   "trustModel": "https://docs.usebrainchain.com/trust-model"
 }
 ```
