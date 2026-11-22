@@ -12,6 +12,7 @@
   <a href="https://github.com/usebrainchain/brainchain/actions/workflows/ci.yml"><img src="https://github.com/usebrainchain/brainchain/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="https://www.npmjs.com/package/brainchain-verify"><img src="https://img.shields.io/npm/v/brainchain-verify?label=brainchain-verify" alt="brainchain-verify on npm" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-f386a1" alt="MIT license" /></a>
+  <a href="https://heyresearch.xyz/project/brainchain?utm_source=badge&utm_medium=readme"><img src="https://heyresearch.xyz/api/badge/brainchain?style=pill" alt="BrainChain on HEY Research Lab" height="20" /></a>
 </p>
 
 ---
