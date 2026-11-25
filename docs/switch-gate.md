@@ -24,7 +24,7 @@ The operator chooses the moment. If it runs a release before the new enclave is 
 
 - A listed log must answer like a `DecisionLog`. It needs code, and its `owner()`, `allowedApp(bytes32)` and `allowedImage(bytes32)` must answer. Otherwise listing fails with `NotADecisionLog(<log>)`. An owner other than the timelock fails with `NotTimelockOwned(<log>)`. A contract that imitates those three views and names the timelock as its owner still passes, so the Safe lists only the real decision logs.
 - Arming accepts any pending operation id. Only a batch of `allowApp` and `allowImage` calls on listed logs, scheduled with `scheduleBatch` and zero values, can execute.
-- An arming holds for one scheduling. The gate records the operation's ready time when the Safe arms it. If the Safe cancels the batch and schedules it again, the ready time changes, and `execute` fails with `NotArmed(<id>)` until the Safe arms it again. A cancel and a new schedule in the same block with the same delay keep the ready time, and with it the arming.
+- An arming holds for one scheduling. The gate records the operation's ready time when the Safe arms it. If the Safe cancels the batch and schedules it again, the ready time changes, and `execute` fails with `NotArmed(<id>)` until the Safe arms it again. A cancel and a new schedule in the same block with the same delay keep the ready time, and with it the arming. To see whether an arming still holds, compare `cast call $GATE "armedReadyAt()(uint256)"` with `cast call $TIMELOCK "getTimestamp(bytes32)(uint256)" $OP`: the two numbers are equal while it does.
 - The operator and the guardian are always different keys. The contract refuses the same key with `SameKey` when it is deployed and in `setOperator` and `setGuardian`. A zero operator is allowed: it switches the operator off.
 
 ## Operating rules
@@ -109,8 +109,8 @@ TIMELOCK=0xB23F49390061B1E7Faf0F99B146E491Ee1574B1e \
 OPERATOR=<the guard's operator address> \
 GUARDIAN=<the guardian's address> \
 LOGS=0x2EF509bd9cA1e7C5FBe2C2FD7Ff25cE9F6f9cB68,0x53e0137e45C8bAc1018802aD36060cDda3B159F0 \
-forge script script/DeploySwitchGate.s.sol --rpc-url https://rpc.usebrainchain.com \
-  --keystore <deployer keystore file> --password-file <file with its password> --sender <deployer address> --broadcast
+forge script script/DeploySwitchGate.s.sol --rpc-url https://rpc.usebrainchain.com --sender <deployer address> \
+  --keystore <deployer keystore file> --password-file <file with its password> --broadcast
 ```
 
 `LOGS` is comma-separated, without spaces. The script stops before deploying with one of these lines:
