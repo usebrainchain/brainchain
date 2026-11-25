@@ -74,26 +74,7 @@ Every call emits `Passed` with the amount, the total passed so far and the posit
 
 ## Executing ready timelock operations
 
-The AdminTimelock on BrainChain, `0xB23F49390061B1E7Faf0F99B146E491Ee1574B1e`, holds the admin powers over the decision logs, the executors and the boards. It is OpenZeppelin's `TimelockController` with a 48-hour delay. The admin Safe is its only proposer, its only canceller and its only executor. The timelock alone holds the admin role over its own roles.
-
-With the executor role, the operator can execute an operation the Safe scheduled, once its delay has passed. An operation is identified by the hash of its targets, values, calldata, predecessor and salt, so the operator can run only exactly what the Safe scheduled. The timelock refuses an operation that was never scheduled, one still waiting out its delay, one already executed, and one whose predecessor has not run.
-
-The operator cannot:
-
-- schedule an operation, which needs the proposer role;
-- cancel one, which needs the canceller role;
-- grant or revoke a role, or change the delay, which only the timelock itself can do through an operation the Safe scheduled.
-
-One thing does change. The owners no longer pick the moment a ready operation runs: anything the Safe schedules may run as soon as its delay is over. To hold an operation back, the Safe cancels it before it becomes ready and schedules it again when it should run.
-
-| To | Transaction | Takes effect |
-| --- | --- | --- |
-| Stop one operation | `cancel(id)` on the timelock, from the Safe, before the operation becomes ready | At once |
-| Remove the role | `revokeRole(EXECUTOR_ROLE, operator)` scheduled on the timelock by the Safe, then executed | After 48 hours |
-
-A cancel holds only while the operation is still waiting. Once it is ready, the operator can execute it first. While a revoke waits out its delay, the Safe cancels any operation it does not want run before that operation becomes ready. The operator can also give the role up at once with `renounceRole`.
-
-An operation that is never executed or cancelled stays pending for good. Before the role is granted, the Safe cancels every pending operation it does not mean to run, so an old operation cannot run after a newer one.
+The operator does not get the AdminTimelock's executor role itself. A release the Safe scheduled and armed runs through [`SwitchGate`](switch-gate.md), which holds that role and lets the operator execute only the one armed batch of allow and drop calls on the decision logs.
 
 ## Watching
 
