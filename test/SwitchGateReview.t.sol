@@ -25,6 +25,14 @@ contract ReviewTreasury {
     }
 }
 
+contract ReviewImitation is ReviewTreasury {
+    constructor(address owner_, address payable recipient_) ReviewTreasury(owner_, recipient_) {}
+
+    function allowedApp(bytes32) external pure returns (bool) {}
+
+    function allowedImage(bytes32) external pure returns (bool) {}
+}
+
 contract ReviewCallbackLog {
     address public immutable owner;
     SwitchGate public immutable gate;
@@ -42,6 +50,10 @@ contract ReviewCallbackLog {
         targets = targets_;
         calls = calls_;
     }
+
+    function allowedApp(bytes32) external pure returns (bool) {}
+
+    function allowedImage(bytes32) external pure returns (bool) {}
 
     function allowApp(bytes32, bool) external {
         require(msg.sender == owner);
@@ -342,8 +354,7 @@ contract SwitchGateReviewTest is SwitchGateReviewFixture {
         assertEq(gate.armed(), id);
     }
 
-    // These reproductions assert the unsafe behavior, so a passing suite is not a sign-off.
-    function testFuzz_cancelRescheduleRevivesOldAuthorization(uint32 elapsed) public {
+    function testFuzz_cancelRescheduleNeedsANewArming(uint32 elapsed) public {
         (address[] memory t, bytes[] memory p) = release(SALT);
         bytes32 id = schedule(t, p, 0, SALT);
         arm(id);
@@ -360,6 +371,11 @@ contract SwitchGateReviewTest is SwitchGateReviewFixture {
         vm.expectRevert();
         gate.execute(t, p, 0, SALT);
         skip(1);
+        vm.prank(OPERATOR);
+        vm.expectRevert(abi.encodeWithSelector(SwitchGate.NotArmed.selector, id));
+        gate.execute(t, p, 0, SALT);
+        assertFalse(logA.allowedApp(SALT));
+        arm(id);
         vm.prank(OPERATOR);
         gate.execute(t, p, 0, SALT);
         assertTrue(logA.allowedApp(SALT));
@@ -397,8 +413,16 @@ contract SwitchGateReviewTest is SwitchGateReviewFixture {
         assertFalse(logA.allowedApp(SALT));
     }
 
-    function test_wrongOwnedLogExecutesUnrelatedTreasuryTransfer() public {
+    function test_timelockOwnedContractWithoutDecisionLogViewsIsRefusedAtListing() public {
         ReviewTreasury wrong = new ReviewTreasury(address(timelock), payable(OPERATOR));
+        vm.prank(SAFE);
+        vm.expectRevert(abi.encodeWithSelector(SwitchGate.NotADecisionLog.selector, address(wrong)));
+        gate.setLog(address(wrong), true);
+        assertFalse(gate.isLog(address(wrong)));
+    }
+
+    function test_timelockOwnedDecisionLogImitationIsStillTrustedOnceTheSafeListsIt() public {
+        ReviewImitation wrong = new ReviewImitation(address(timelock), payable(OPERATOR));
         vm.deal(address(wrong), 5 ether);
         vm.prank(SAFE);
         gate.setLog(address(wrong), true);
@@ -419,7 +443,7 @@ contract SwitchGateReviewTest is SwitchGateReviewFixture {
         address eoa = address(0xEEEE);
         DecisionLog wrong = new DecisionLog(wrongOwner, BRAIN);
         vm.startPrank(SAFE);
-        vm.expectRevert(abi.encodeWithSelector(SwitchGate.NotTimelockOwned.selector, eoa));
+        vm.expectRevert(abi.encodeWithSelector(SwitchGate.NotADecisionLog.selector, eoa));
         gate.setLog(eoa, true);
         vm.expectRevert(abi.encodeWithSelector(SwitchGate.NotTimelockOwned.selector, address(wrong)));
         gate.setLog(address(wrong), true);
@@ -596,6 +620,7 @@ contract SwitchGateReviewHandler is Test {
     bytes32[8] public ids;
     bool[8] public expected;
     bytes32 public expectedSlot;
+    uint256 public expectedReadyAt;
     bool public expectedPause;
     bool public violation;
     uint256 public executions;
@@ -630,6 +655,7 @@ contract SwitchGateReviewHandler is Test {
         vm.prank(safe);
         gate.arm(id);
         expectedSlot = id;
+        expectedReadyAt = timelock.getTimestamp(id);
     }
 
     function advance(uint32 seconds_) external {
@@ -658,7 +684,8 @@ contract SwitchGateReviewHandler is Test {
         uint256 i = choice % ids.length;
         (address[] memory t, bytes[] memory p) = batch(i);
         if (mutate) p[0] = abi.encodeCall(DecisionLog.allowApp, (bytes32(i), false));
-        bool permitted = !mutate && !expectedPause && expectedSlot == ids[i] && timelock.isOperationReady(ids[i]);
+        bool permitted = !mutate && !expectedPause && expectedSlot == ids[i] && timelock.isOperationReady(ids[i])
+            && timelock.getTimestamp(ids[i]) == expectedReadyAt;
         ++attempts;
         vm.prank(operator);
         (bool ok,) = address(gate).call(abi.encodeCall(SwitchGate.execute, (t, p, 0, bytes32(i))));
@@ -666,6 +693,7 @@ contract SwitchGateReviewHandler is Test {
         if (ok) {
             expected[i] = true;
             expectedSlot = 0;
+            expectedReadyAt = 0;
             ++executions;
         }
     }
@@ -711,7 +739,7 @@ contract SwitchGateReviewInvariantTest is SwitchGateReviewFixture {
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
 
-    // Trusted concrete DecisionLogs and distinct roles; cancellation generations have separate reproductions above.
+    // Trusted concrete DecisionLogs and distinct roles.
     function invariant_operatorOnlyExecutesTheArmedReadyBatch() public view {
         assertFalse(handler.violation());
         assertEq(gate.armed(), handler.expectedSlot());
