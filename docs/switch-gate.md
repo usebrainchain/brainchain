@@ -22,17 +22,22 @@ The operator chooses the moment. If it runs a release before the new enclave is 
 
 ## What the gate checks
 
-- A listed log must be a `DecisionLog`. The gate checks only that the timelock owns it. Another contract the timelock owns would receive an armed batch's calls too, and a contract with a fallback function accepts calls it does not define.
+- A listed log must answer like a `DecisionLog`. It needs code, and its `owner()`, `allowedApp(bytes32)` and `allowedImage(bytes32)` must answer. Otherwise listing fails with `NotADecisionLog(<log>)`. An owner other than the timelock fails with `NotTimelockOwned(<log>)`. A contract that imitates those three views and names the timelock as its owner still passes, so the Safe lists only the real decision logs.
 - Arming accepts any pending operation id. Only a batch of `allowApp` and `allowImage` calls on listed logs, scheduled with `scheduleBatch` and zero values, can execute.
+- An arming holds for one scheduling. The gate records the operation's ready time when the Safe arms it. If the Safe cancels the batch and schedules it again, the ready time changes, and `execute` fails with `NotArmed(<id>)` until the Safe arms it again. A cancel and a new schedule in the same block with the same delay keep the ready time, and with it the arming.
 - The operator and the guardian are always different keys. The contract refuses the same key with `SameKey` when it is deployed and in `setOperator` and `setGuardian`. A zero operator is allowed: it switches the operator off.
 
 ## Operating rules
 
 1. One release is armed at a time. The gate holds a single operation id, and arming another replaces it.
-2. Disarm in the same Safe transaction as a cancel. A cancelled operation stays armed on the gate, and the same batch scheduled again with the same salt would already be armed.
-3. Once an armed batch is ready, the guardian's pause is the only fast stop. Disarming and cancelling take both owners' signatures.
+2. Disarm in the same Safe transaction as a cancel. A cancel leaves the id in the slot, and a new schedule of the same batch in the same block with the same delay would still be armed.
+3. Once an armed batch is ready, the guardian's pause is the only fast stop. Disarming and cancelling take both owners' signatures. A pause must land before the execute. It does not undo one.
+
+The Safe keeps its own executor role on the timelock. The gate's pause stops only the gate: the Safe can still execute any ready operation directly on the timelock.
 
 ## On a fork
+
+The commands need Foundry. In the repository root, run `git submodule update --init` and `forge build` once.
 
 Start a fork that lets any address send:
 
@@ -120,9 +125,20 @@ forge script script/DeploySwitchGate.s.sol --rpc-url https://rpc.usebrainchain.c
 | `Error: script failed: GUARDIAN is zero or the Safe` | Pick another guardian |
 | `Error: script failed: OPERATOR and GUARDIAN are the same key` | The two must differ |
 | `Error: script failed: LOGS is empty` | `LOGS` names no log |
-| `Error: script failed: NotTimelockOwned(<log>)` | A log in `LOGS` has no code or another owner |
+| `Error: script failed: NotADecisionLog(<log>)` | A log in `LOGS` has no code or does not answer like a `DecisionLog` |
+| `Error: script failed: NotTimelockOwned(<log>)` | A log in `LOGS` has another owner |
 
 ### Grant the executor role
+
+Check the timelock first. Its executor role must not be open to everyone, and the gate must hold no proposer or canceller role:
+
+```sh
+cast call $TIMELOCK "hasRole(bytes32,address)(bool)" $EXECUTOR_ROLE 0x0000000000000000000000000000000000000000
+cast call $TIMELOCK "hasRole(bytes32,address)(bool)" $(cast keccak PROPOSER_ROLE) $GATE
+cast call $TIMELOCK "hasRole(bytes32,address)(bool)" $(cast keccak CANCELLER_ROLE) $GATE
+```
+
+All three print `false`. If the first prints `true`, anyone can execute a ready operation on the timelock, and the gate adds nothing.
 
 The timelock is its own admin, so the grant is a timelock operation. The Safe schedules it:
 
@@ -242,10 +258,10 @@ It prints one line per call. On every line the value after `set` and the value a
 | `BadBatch` | No calls, or a different number of targets and payloads |
 | `ForbiddenTarget(i)` | Call `i` goes to an address that is not a listed log |
 | `ForbiddenCall(i)` | Call `i` is not 68 bytes of `allowApp` or `allowImage` |
-| `NotArmed(id)` | The batch's operation id is not the armed one |
+| `NotArmed(id)` | The batch's operation id is not the armed one, or the batch was cancelled or scheduled again since it was armed |
 | `NotPending(id)` | `arm` was given an id the timelock does not hold as pending |
 | `AccessControlUnauthorizedAccount(<gate>, <EXECUTOR_ROLE>)` | The gate does not hold the executor role: it was never granted, or it was revoked |
-| `TimelockUnexpectedOperationState(id, ...)` | The timelock's own refusal of the armed batch |
+| `TimelockUnexpectedOperationState(id, ...)` | The armed batch is still waiting out its delay |
 | No reason (`execution reverted, data: "0x"`) | `execute` was called with the timelock's five-argument shape, values included. The gate takes four |
 
 To see why the timelock refused, read the operation's state:
@@ -286,9 +302,11 @@ The second line prints `false`. The reason string is published in the `Paused` e
 ```sh
 cast send $GATE "setOperator(address)" 0x4444444444444444444444444444444444444444 --unlocked --from $SAFE
 cast call $GATE "operator()(address)"
+OPERATOR=0x4444444444444444444444444444444444444444
+cast rpc anvil_setBalance $OPERATOR 0xDE0B6B3A7640000
 ```
 
-The second line prints the new address. The old key loses its right in the same block. `setGuardian(address)` replaces the guardian the same way. Both take only the Safe, and both fail with `SameKey` if the new key is the other role's key.
+The second line prints the new address. The old key loses its right in the same block. The last two lines point the shell's `$OPERATOR` at the new key and fund it on the fork; set `$OPERATOR` before any later command that sends from the operator. `setGuardian(address)` replaces the guardian the same way. Both take only the Safe, and both fail with `SameKey` if the new key is the other role's key.
 
 ### List or delist a log
 
@@ -299,7 +317,7 @@ cast send $GATE "setLog(address,bool)" $LOG_360 true --unlocked --from $SAFE
 cast call $GATE "isLog(address)(bool)" $LOG_360
 ```
 
-The two calls print `false`, then `true`. Listing needs a contract whose `owner()` is the timelock. An address without code, or a contract owned by anyone else, fails with `NotTimelockOwned(<address>)`. A contract without an `owner()` function fails with no reason. Delisting works for any address.
+The two calls print `false`, then `true`. An address without code, or a contract whose `owner()`, `allowedApp(bytes32)` or `allowedImage(bytes32)` does not answer, fails with `NotADecisionLog(<address>)`. A contract owned by anyone other than the timelock fails with `NotTimelockOwned(<address>)`. Delisting works for any address.
 
 ### Take the role away
 
