@@ -19,10 +19,16 @@ interface ISwitchTimelock {
     ) external pure returns (bytes32);
 
     function isOperationPending(bytes32 id) external view returns (bool);
+
+    function getTimestamp(bytes32 id) external view returns (uint256);
 }
 
 interface ISwitchLog {
     function owner() external view returns (address);
+
+    function allowedApp(bytes32 app) external view returns (bool);
+
+    function allowedImage(bytes32 image) external view returns (bool);
 }
 
 /// @title SwitchGate
@@ -47,6 +53,7 @@ contract SwitchGate {
     error NotArmed(bytes32 id);
     error NotPending(bytes32 id);
     error NotTimelockOwned(address log);
+    error NotADecisionLog(address log);
     error SameKey();
 
     event OperatorSet(address indexed operator);
@@ -69,6 +76,8 @@ contract SwitchGate {
     mapping(address => bool) public isLog;
     /// @notice The one timelock operation the operator may execute; zero for none.
     bytes32 public armed;
+    /// @notice When that operation becomes ready, as scheduled at arming.
+    uint256 public armedReadyAt;
 
     constructor(address safe_, ISwitchTimelock timelock_, address operator_, address guardian_, address[] memory logs) {
         if (safe_ == address(0) || address(timelock_) == address(0)) revert ZeroAddress();
@@ -104,8 +113,10 @@ contract SwitchGate {
 
         uint256[] memory values = new uint256[](count);
         bytes32 id = timelock.hashOperationBatch(targets, values, payloads, predecessor, salt);
-        if (id != armed) revert NotArmed(id);
+        // The arming holds for one scheduling: a cancel and reschedule needs a new one.
+        if (id != armed || timelock.getTimestamp(id) != armedReadyAt) revert NotArmed(id);
         armed = bytes32(0);
+        armedReadyAt = 0;
         timelock.executeBatch(targets, values, payloads, predecessor, salt);
         emit Executed(id, msg.sender);
     }
@@ -118,6 +129,7 @@ contract SwitchGate {
         // A mistyped id would otherwise wait unnoticed until the switch.
         if (id != bytes32(0) && !timelock.isOperationPending(id)) revert NotPending(id);
         armed = id;
+        armedReadyAt = id == bytes32(0) ? 0 : timelock.getTimestamp(id);
         emit Armed(id);
     }
 
@@ -157,11 +169,24 @@ contract SwitchGate {
         if (operator_ != address(0) && operator_ == guardian_) revert SameKey();
     }
 
-    // A call to an address without code succeeds silently, so a listed log
-    // must be a contract the timelock owns.
+    // A call to an address without code succeeds silently, and any other
+    // contract could do anything behind these two selectors.
     function _list(address log) private {
         if (log == address(0)) revert ZeroAddress();
-        if (log.code.length == 0 || ISwitchLog(log).owner() != address(timelock)) revert NotTimelockOwned(log);
+        if (log.code.length == 0) revert NotADecisionLog(log);
+        try ISwitchLog(log).owner() returns (address owner) {
+            if (owner != address(timelock)) revert NotTimelockOwned(log);
+        } catch {
+            revert NotADecisionLog(log);
+        }
+        try ISwitchLog(log).allowedApp(bytes32(0)) {}
+        catch {
+            revert NotADecisionLog(log);
+        }
+        try ISwitchLog(log).allowedImage(bytes32(0)) {}
+        catch {
+            revert NotADecisionLog(log);
+        }
         isLog[log] = true;
         emit LogSet(log, true);
     }

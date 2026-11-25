@@ -23,6 +23,10 @@ contract ReenteringLog {
         reentry = reentry_;
     }
 
+    function allowedApp(bytes32) external pure returns (bool) {}
+
+    function allowedImage(bytes32) external pure returns (bool) {}
+
     function allowApp(bytes32, bool) external {
         (bool ok, bytes memory reason) = gate.call(reentry);
         if (!ok) {
@@ -30,6 +34,39 @@ contract ReenteringLog {
                 revert(add(reason, 32), mload(reason))
             }
         }
+    }
+}
+
+/// Answers the gate's listing probes like a DecisionLog, except the one named by `broken`.
+contract ProbedLog {
+    enum Probe {
+        None,
+        Owner,
+        AllowedApp,
+        AllowedImage
+    }
+
+    address internal immutable owner_;
+    Probe internal immutable broken;
+
+    constructor(address theOwner, Probe broken_) {
+        owner_ = theOwner;
+        broken = broken_;
+    }
+
+    function owner() external view returns (address) {
+        require(broken != Probe.Owner);
+        return owner_;
+    }
+
+    function allowedApp(bytes32) external view returns (bool) {
+        require(broken != Probe.AllowedApp);
+        return false;
+    }
+
+    function allowedImage(bytes32) external view returns (bool) {
+        require(broken != Probe.AllowedImage);
+        return false;
     }
 }
 
@@ -143,6 +180,10 @@ contract SwitchGateTest is Test {
 
     function _notOwned(address log) internal pure returns (bytes memory) {
         return abi.encodeWithSelector(SwitchGate.NotTimelockOwned.selector, log);
+    }
+
+    function _notALog(address log) internal pure returns (bytes memory) {
+        return abi.encodeWithSelector(SwitchGate.NotADecisionLog.selector, log);
     }
 
     function _assertReleased(bytes32 app, bytes32 old) internal view {
@@ -364,7 +405,7 @@ contract SwitchGateTest is Test {
         gate.arm(id);
     }
 
-    function test_aCancelledOperationCannotBeArmedAndStaysArmedUntilDisarmed() public {
+    function test_aCancelledOperationCannotBeArmedAndItsArmingLapses() public {
         (address[] memory t, bytes[] memory p) = _release(APP, OLD_APP);
         bytes32 id = _schedule(t, p, 0, SALT);
         vm.prank(safe);
@@ -379,9 +420,79 @@ contract SwitchGateTest is Test {
         assertEq(gate.armed(), id);
         skip(DELAY);
         vm.prank(operator);
-        vm.expectRevert(_notReady(id));
+        vm.expectRevert(_notArmed(id));
+        gate.execute(t, p, 0, SALT);
+    }
+
+    function test_aRescheduledBatchNeedsANewArming() public {
+        (address[] memory t, bytes[] memory p) = _release(APP, OLD_APP);
+        bytes32 id = _scheduleArmed(t, p, 0, SALT);
+        uint256 firstReady = gate.armedReadyAt();
+        skip(1 hours);
+        vm.prank(safe);
+        timelock.cancel(id);
+        assertEq(_schedule(t, p, 0, SALT), id);
+        assertEq(timelock.getTimestamp(id), firstReady + 1 hours);
+
+        vm.warp(firstReady);
+        vm.prank(operator);
+        vm.expectRevert(_notArmed(id));
+        gate.execute(t, p, 0, SALT);
+        skip(1 hours);
+        assertTrue(timelock.isOperationReady(id));
+        vm.prank(operator);
+        vm.expectRevert(_notArmed(id));
+        gate.execute(t, p, 0, SALT);
+        assertEq(gate.armed(), id);
+
+        _arm(id);
+        assertEq(gate.armedReadyAt(), firstReady + 1 hours);
+        vm.prank(operator);
+        gate.execute(t, p, 0, SALT);
+        _assertReleased(APP, OLD_APP);
+    }
+
+    function test_armedReadyAtFollowsTheSlot() public {
+        assertEq(gate.armedReadyAt(), 0);
+        (address[] memory t, bytes[] memory p) = _release(APP, OLD_APP);
+        bytes32 id = _scheduleArmed(t, p, 0, SALT);
+        assertEq(gate.armedReadyAt(), block.timestamp + DELAY);
+        assertEq(gate.armedReadyAt(), timelock.getTimestamp(id));
+
+        _arm(bytes32(0));
+        assertEq(gate.armedReadyAt(), 0);
+
+        _arm(id);
+        skip(DELAY);
+        vm.prank(operator);
+        gate.execute(t, p, 0, SALT);
+        assertEq(gate.armed(), bytes32(0));
+        assertEq(gate.armedReadyAt(), 0);
+    }
+
+    function test_aSameBlockCancelAndRescheduleKeepsTheArmingOnlyWithTheSameDelay() public {
+        (address[] memory t, bytes[] memory p) = _release(APP, OLD_APP);
+        bytes32 id = _scheduleArmed(t, p, 0, SALT);
+        vm.prank(safe);
+        timelock.cancel(id);
+        _schedule(t, p, 0, SALT);
+        assertEq(timelock.getTimestamp(id), gate.armedReadyAt());
+
+        vm.prank(safe);
+        timelock.cancel(id);
+        vm.prank(safe);
+        timelock.scheduleBatch(t, new uint256[](t.length), p, 0, SALT, DELAY + 1);
+        skip(DELAY + 1);
+        vm.prank(operator);
+        vm.expectRevert(_notArmed(id));
         gate.execute(t, p, 0, SALT);
 
+        vm.prank(safe);
+        timelock.cancel(id);
+        _schedule(t, p, 0, SALT);
+        _arm(id);
+        vm.prank(safe);
+        timelock.cancel(id);
         _schedule(t, p, 0, SALT);
         skip(DELAY);
         vm.prank(operator);
@@ -802,35 +913,50 @@ contract SwitchGateTest is Test {
     }
 
     function test_listingRefusesWhatTheTimelockDoesNotOwn() public {
-        address undeployed = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 100);
-        address eoa = makeAddr("an eoa");
-        vm.deal(eoa, 1 ether);
-        address foreign = address(new DecisionLog(stranger, makeAddr("brain")));
         DecisionLog handingOver = new DecisionLog(stranger, makeAddr("brain"));
         vm.prank(stranger);
         handingOver.transferOwnership(address(timelock));
-        address[4] memory bad = [undeployed, eoa, foreign, address(handingOver)];
-
-        address[] memory logs = new address[](2);
-        logs[0] = address(logA);
-        ISwitchTimelock tl = ISwitchTimelock(address(timelock));
+        address[3] memory bad = [
+            address(new DecisionLog(stranger, makeAddr("brain"))),
+            address(handingOver),
+            address(new ProbedLog(stranger, ProbedLog.Probe.None))
+        ];
         for (uint256 i; i < bad.length; i++) {
-            logs[1] = bad[i];
-            vm.expectRevert(_notOwned(bad[i]));
-            new SwitchGate(safe, tl, operator, guardian, logs);
+            _refusedAtListing(bad[i], _notOwned(bad[i]));
+        }
+    }
 
-            vm.prank(safe);
-            vm.expectRevert(_notOwned(bad[i]));
-            gate.setLog(bad[i], true);
-            assertFalse(gate.isLog(bad[i]));
+    function test_listingRefusesWhatDoesNotAnswerLikeADecisionLog() public {
+        address eoa = makeAddr("an eoa");
+        vm.deal(eoa, 1 ether);
+        address[6] memory bad = [
+            vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 100),
+            eoa,
+            address(timelock),
+            address(new ProbedLog(address(timelock), ProbedLog.Probe.Owner)),
+            address(new ProbedLog(address(timelock), ProbedLog.Probe.AllowedApp)),
+            address(new ProbedLog(address(timelock), ProbedLog.Probe.AllowedImage))
+        ];
+        for (uint256 i; i < bad.length; i++) {
+            _refusedAtListing(bad[i], _notALog(bad[i]));
         }
 
-        logs[1] = address(timelock);
-        vm.expectRevert();
-        new SwitchGate(safe, tl, operator, guardian, logs);
+        address imitation = address(new ProbedLog(address(timelock), ProbedLog.Probe.None));
         vm.prank(safe);
-        vm.expectRevert();
-        gate.setLog(address(timelock), true);
+        gate.setLog(imitation, true);
+        assertTrue(gate.isLog(imitation));
+    }
+
+    function _refusedAtListing(address log, bytes memory err) internal {
+        address[] memory logs = new address[](2);
+        logs[0] = address(logA);
+        logs[1] = log;
+        vm.expectRevert(err);
+        new SwitchGate(safe, ISwitchTimelock(address(timelock)), operator, guardian, logs);
+        vm.prank(safe);
+        vm.expectRevert(err);
+        gate.setLog(log, true);
+        assertFalse(gate.isLog(log));
     }
 
     function test_delistingNeedsNoOwnershipCheck() public {
