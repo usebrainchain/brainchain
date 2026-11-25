@@ -27,10 +27,10 @@ interface ISwitchLog {
 /// @notice Sits in an executor seat of the admin timelock, so a release the
 /// owners' Safe scheduled takes effect when its delay has passed without both
 /// owners at a keyboard. The operator (BrainChain's guard, with its own key)
-/// can execute only a batch the Safe has armed here, and only if it allows or
-/// drops an enclave's app or OS image on the listed decision logs. It cannot
-/// schedule, cannot change what a batch holds, cannot pick among batches the
-/// Safe did not arm, and cannot reach roles, ownership or funds. The guardian
+/// can execute only the one batch the Safe has armed here, and only if it
+/// allows or drops an enclave's app or OS image on the listed decision logs.
+/// It cannot schedule, cannot change what a batch holds, cannot choose among
+/// ready batches, and cannot reach roles, ownership or funds. The guardian
 /// can pause it; only the Safe arms, unpauses, lists logs and replaces the
 /// operator or the guardian. Removing the gate itself stays with the admin
 /// timelock.
@@ -49,7 +49,7 @@ contract SwitchGate {
     event GuardianSet(address indexed guardian);
     event LogSet(address indexed log, bool listed);
     event Paused(bool paused, address indexed by, string reason);
-    event Armed(bytes32 indexed id, bool armed);
+    event Armed(bytes32 indexed id);
     event Executed(bytes32 indexed id, address indexed by);
 
     bytes4 private constant ALLOW_APP = bytes4(keccak256("allowApp(bytes32,bool)"));
@@ -63,8 +63,8 @@ contract SwitchGate {
     address public guardian;
     bool public paused;
     mapping(address => bool) public isLog;
-    /// @notice Timelock operation ids the Safe has cleared for the operator.
-    mapping(bytes32 => bool) public armed;
+    /// @notice The one timelock operation the operator may execute; zero for none.
+    bytes32 public armed;
 
     constructor(address safe_, ISwitchTimelock timelock_, address operator_, address guardian_, address[] memory logs) {
         if (safe_ == address(0) || address(timelock_) == address(0)) revert ZeroAddress();
@@ -99,19 +99,19 @@ contract SwitchGate {
 
         uint256[] memory values = new uint256[](count);
         bytes32 id = timelock.hashOperationBatch(targets, values, payloads, predecessor, salt);
-        if (!armed[id]) revert NotArmed(id);
-        delete armed[id];
+        if (id != armed) revert NotArmed(id);
+        armed = bytes32(0);
         timelock.executeBatch(targets, values, payloads, predecessor, salt);
         emit Executed(id, msg.sender);
     }
 
-    /// @notice The Safe names a scheduled batch the operator may execute, or
-    /// takes that back. Without it a leaked operator key could run any ready
-    /// release, a superseded one included, in an order of its choosing.
-    function setArmed(bytes32 id, bool armed_) external {
+    /// @notice The Safe names the scheduled batch the operator may execute;
+    /// zero disarms. One at a time, so a leaked operator key can never choose
+    /// among ready releases or run a superseded one.
+    function arm(bytes32 id) external {
         if (msg.sender != safe) revert NotSafe();
-        armed[id] = armed_;
-        emit Armed(id, armed_);
+        armed = id;
+        emit Armed(id);
     }
 
     /// @notice The guardian may pause; only the Safe may unpause.

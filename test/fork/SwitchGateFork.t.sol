@@ -8,8 +8,9 @@ import {DecisionLog} from "../../src/DecisionLog.sol";
 import {SwitchGate, ISwitchTimelock} from "../../src/SwitchGate.sol";
 
 /// Runs release 13 (enclave v17), which the Safe scheduled on the real AdminTimelock, through a SwitchGate given the
-/// executor role, once the Safe has armed it there. The fork is pinned to a block after releases 11 and 12 ran and before release 13 is ready, so it
-/// keeps working once release 13 has run on BrainChain. Skips unless BRAINCHAIN_RPC is set:
+/// executor role, once the Safe has armed it there. The fork is pinned to a block after releases 11 and 12 ran and
+/// before release 13 is ready, so it keeps working once release 13 has run on BrainChain. Skips unless BRAINCHAIN_RPC
+/// is set:
 ///   BRAINCHAIN_RPC=https://rpc.usebrainchain.com forge test --match-path test/fork/SwitchGateFork.t.sol -vv
 contract SwitchGateForkTest is Test {
     TimelockController constant TIMELOCK = TimelockController(payable(0xB23F49390061B1E7Faf0F99B146E491Ee1574B1e));
@@ -72,7 +73,7 @@ contract SwitchGateForkTest is Test {
 
     function _arm(bytes32 id) internal {
         vm.prank(SAFE);
-        gate.setArmed(id, true);
+        gate.arm(id);
     }
 
     function _notReady(bytes32 id) internal pure returns (bytes memory) {
@@ -110,11 +111,10 @@ contract SwitchGateForkTest is Test {
             )
         );
         gate.execute(t, p, 0, SALT);
-        assertTrue(gate.armed(OP));
+        assertEq(gate.armed(), OP);
 
         _grant();
-        vm.prank(SAFE);
-        gate.setArmed(OP, false);
+        _arm(bytes32(0));
         vm.prank(operator);
         vm.expectRevert(abi.encodeWithSelector(SwitchGate.NotArmed.selector, OP));
         gate.execute(t, p, 0, SALT);
@@ -132,7 +132,7 @@ contract SwitchGateForkTest is Test {
         gate.execute(t, p, 0, SALT);
 
         assertTrue(TIMELOCK.isOperationDone(OP));
-        assertFalse(gate.armed(OP));
+        assertEq(gate.armed(), bytes32(0));
         for (uint256 i; i < 2; i++) {
             DecisionLog log = i == 0 ? LOG_350 : LOG_360;
             assertTrue(log.allowedApp(V17_APP));
@@ -179,7 +179,6 @@ contract SwitchGateForkTest is Test {
         bytes[] memory feeCalls = new bytes[](1);
         feeTargets[0] = UPGRADE_EXECUTOR;
         feeCalls[0] = FEE_CALL;
-        _arm(FEE_OP);
         _arm(TIMELOCK.hashOperationBatch(feeTargets, new uint256[](1), feeCalls, 0, FEE_SALT));
         vm.prank(operator);
         vm.expectRevert(abi.encodeWithSelector(SwitchGate.ForbiddenTarget.selector, 0));

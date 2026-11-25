@@ -42,6 +42,7 @@ contract SwitchGateTest is Test {
     bytes32 internal constant IMAGE = keccak256("image 116");
     bytes32 internal constant OLD_APP = keccak256("v16 app");
     bytes32 internal constant APP = keccak256("v17 app");
+    bytes32 internal constant NEXT_APP = keccak256("v18 app");
 
     TimelockController internal timelock;
     DecisionLog internal logA;
@@ -103,7 +104,7 @@ contract SwitchGateTest is Test {
 
     function _arm(bytes32 id) internal {
         vm.prank(safe);
-        gate.setArmed(id, true);
+        gate.arm(id);
     }
 
     function _scheduleArmed(address[] memory t, bytes[] memory p, bytes32 predecessor, bytes32 salt)
@@ -148,7 +149,7 @@ contract SwitchGateTest is Test {
         gate.execute(t, p, 0, SALT);
     }
 
-    function test_theOperatorExecutesAnArmedReleaseOnceItsDelayHasPassed() public {
+    function test_theOperatorExecutesTheArmedReleaseOnceItsDelayHasPassed() public {
         (address[] memory t, bytes[] memory p) = _release(APP, OLD_APP);
         bytes32 id = _scheduleArmed(t, p, 0, SALT);
         skip(DELAY);
@@ -174,63 +175,120 @@ contract SwitchGateTest is Test {
         _assertReleased(APP, OLD_APP);
     }
 
-    function test_anUnarmedBatchIsRefusedForTheOperatorAndTheSafe() public {
+    function testFuzz_nothingRunsWhileDisarmed(bytes32 salt) public {
+        (address[] memory t, bytes[] memory p) = _release(APP, OLD_APP);
+        bytes32 id = _schedule(t, p, 0, salt);
+        skip(DELAY);
+        assertEq(gate.armed(), bytes32(0));
+
+        vm.prank(operator);
+        vm.expectRevert(_notArmed(id));
+        gate.execute(t, p, 0, salt);
+        vm.prank(safe);
+        vm.expectRevert(_notArmed(id));
+        gate.execute(t, p, 0, salt);
+        assertTrue(timelock.isOperationReady(id));
+    }
+
+    function testFuzz_onlyTheArmedIdRuns(bytes32 other) public {
         (address[] memory t, bytes[] memory p) = _release(APP, OLD_APP);
         bytes32 id = _schedule(t, p, 0, SALT);
+        vm.assume(other != id);
+        _arm(other);
         skip(DELAY);
 
         vm.prank(operator);
         vm.expectRevert(_notArmed(id));
         gate.execute(t, p, 0, SALT);
-        vm.prank(safe);
-        vm.expectRevert(_notArmed(id));
-        gate.execute(t, p, 0, SALT);
+        assertEq(gate.armed(), other);
         assertTrue(timelock.isOperationReady(id));
-        assertTrue(logA.allowedApp(OLD_APP));
     }
 
-    function test_onlyTheSafeArmsAndDisarms() public {
+    function test_onlyTheSafeArms() public {
         bytes32 id = keccak256("an operation");
         address[3] memory others = [operator, guardian, stranger];
         for (uint256 i; i < others.length; i++) {
             vm.startPrank(others[i]);
             vm.expectRevert(SwitchGate.NotSafe.selector);
-            gate.setArmed(id, true);
+            gate.arm(id);
             vm.stopPrank();
         }
-        assertFalse(gate.armed(id));
+        assertEq(gate.armed(), bytes32(0));
 
         vm.expectEmit(true, false, false, true, address(gate));
-        emit SwitchGate.Armed(id, true);
+        emit SwitchGate.Armed(id);
         _arm(id);
-        assertTrue(gate.armed(id));
+        assertEq(gate.armed(), id);
 
         for (uint256 i; i < others.length; i++) {
             vm.startPrank(others[i]);
             vm.expectRevert(SwitchGate.NotSafe.selector);
-            gate.setArmed(id, false);
+            gate.arm(bytes32(0));
+            vm.expectRevert(SwitchGate.NotSafe.selector);
+            gate.arm(keccak256("theirs"));
             vm.stopPrank();
         }
-        assertTrue(gate.armed(id));
-
-        vm.expectEmit(true, false, false, true, address(gate));
-        emit SwitchGate.Armed(id, false);
-        vm.prank(safe);
-        gate.setArmed(id, false);
-        assertFalse(gate.armed(id));
+        assertEq(gate.armed(), id);
     }
 
-    function test_aDisarmedBatchIsRefused() public {
+    function test_armingZeroDisarms() public {
         (address[] memory t, bytes[] memory p) = _release(APP, OLD_APP);
         bytes32 id = _scheduleArmed(t, p, 0, SALT);
         skip(DELAY);
-        vm.prank(safe);
-        gate.setArmed(id, false);
+
+        vm.expectEmit(true, false, false, true, address(gate));
+        emit SwitchGate.Armed(bytes32(0));
+        _arm(bytes32(0));
+        assertEq(gate.armed(), bytes32(0));
 
         vm.prank(operator);
         vm.expectRevert(_notArmed(id));
         gate.execute(t, p, 0, SALT);
         assertTrue(timelock.isOperationReady(id));
+    }
+
+    function test_armingASecondBatchReplacesTheFirst() public {
+        (address[] memory t1, bytes[] memory p1) = _release(APP, OLD_APP);
+        bytes32 first = _scheduleArmed(t1, p1, 0, SALT);
+        (address[] memory t2, bytes[] memory p2) = _release(NEXT_APP, OLD_APP);
+        bytes32 second = _schedule(t2, p2, 0, SALT);
+        _arm(second);
+        skip(DELAY);
+        assertEq(gate.armed(), second);
+
+        vm.prank(operator);
+        vm.expectRevert(_notArmed(first));
+        gate.execute(t1, p1, 0, SALT);
+        vm.prank(operator);
+        gate.execute(t2, p2, 0, SALT);
+        _assertReleased(NEXT_APP, OLD_APP);
+        assertFalse(logA.allowedApp(APP));
+        assertTrue(timelock.isOperationReady(first));
+    }
+
+    function test_twoReadyReleasesRunOnlyInTheOrderTheSafeArmsThem() public {
+        (address[] memory t1, bytes[] memory p1) = _release(APP, OLD_APP);
+        bytes32 first = _schedule(t1, p1, 0, SALT);
+        (address[] memory t2, bytes[] memory p2) = _release(NEXT_APP, APP);
+        bytes32 second = _schedule(t2, p2, 0, SALT);
+        skip(DELAY);
+
+        _arm(first);
+        vm.prank(operator);
+        vm.expectRevert(_notArmed(second));
+        gate.execute(t2, p2, 0, SALT);
+        vm.prank(operator);
+        gate.execute(t1, p1, 0, SALT);
+
+        vm.prank(operator);
+        vm.expectRevert(_notArmed(second));
+        gate.execute(t2, p2, 0, SALT);
+
+        _arm(second);
+        vm.prank(operator);
+        gate.execute(t2, p2, 0, SALT);
+        _assertReleased(NEXT_APP, APP);
+        assertFalse(logA.allowedApp(OLD_APP));
     }
 
     function test_anArmedBatchRunsOnce() public {
@@ -239,7 +297,7 @@ contract SwitchGateTest is Test {
         skip(DELAY);
         vm.prank(operator);
         gate.execute(t, p, 0, SALT);
-        assertFalse(gate.armed(id));
+        assertEq(gate.armed(), bytes32(0));
 
         vm.prank(operator);
         vm.expectRevert(_notArmed(id));
@@ -249,42 +307,17 @@ contract SwitchGateTest is Test {
         vm.prank(operator);
         vm.expectRevert(_notReady(id));
         gate.execute(t, p, 0, SALT);
-        assertTrue(gate.armed(id), "the failed attempt rolled the delete back");
+        assertEq(gate.armed(), id, "the failed attempt rolled the clearing back");
     }
 
-    function test_withTwoReadyReleasesTheOperatorRunsOnlyTheArmedOne() public {
-        (address[] memory superseded, bytes[] memory sp) = _release(APP, OLD_APP);
-        bytes32 stale = _schedule(superseded, sp, 0, SALT);
-        bytes32 v18 = keccak256("v18 app");
-        (address[] memory current, bytes[] memory cp) = _release(v18, OLD_APP);
-        bytes32 next = _scheduleArmed(current, cp, 0, SALT);
-        skip(DELAY);
-        assertTrue(timelock.isOperationReady(stale));
-
-        vm.prank(operator);
-        vm.expectRevert(_notArmed(stale));
-        gate.execute(superseded, sp, 0, SALT);
-
-        vm.prank(operator);
-        gate.execute(current, cp, 0, SALT);
-        _assertReleased(v18, OLD_APP);
-
-        vm.prank(operator);
-        vm.expectRevert(_notArmed(stale));
-        gate.execute(superseded, sp, 0, SALT);
-        assertFalse(logA.allowedApp(APP));
-        assertTrue(timelock.isOperationDone(next));
-    }
-
-    function test_aFailedAttemptLeavesTheArmingInPlace() public {
+    function test_aFailedAttemptKeepsTheSlot() public {
         (address[] memory t, bytes[] memory p) = _release(APP, OLD_APP);
         bytes32 id = _scheduleArmed(t, p, 0, SALT);
-
         skip(DELAY - 1);
         vm.prank(operator);
         vm.expectRevert(_notReady(id));
         gate.execute(t, p, 0, SALT);
-        assertTrue(gate.armed(id));
+        assertEq(gate.armed(), id);
 
         (address[] memory bad, bytes[] memory bp) =
             _one(address(logA), abi.encodePacked(DecisionLog.allowApp.selector, APP, uint256(2)));
@@ -293,13 +326,14 @@ contract SwitchGateTest is Test {
         vm.prank(operator);
         vm.expectRevert(Address.FailedInnerCall.selector);
         gate.execute(bad, bp, 0, SALT);
-        assertTrue(gate.armed(badId));
+        assertEq(gate.armed(), badId);
         assertTrue(timelock.isOperationReady(badId));
         assertFalse(logA.allowedApp(APP));
 
+        _arm(id);
         vm.prank(operator);
         gate.execute(t, p, 0, SALT);
-        assertFalse(gate.armed(id));
+        assertEq(gate.armed(), bytes32(0));
     }
 
     function test_theTimelockRefusesBeforeTheDelayAndAfterExecution() public {
@@ -356,9 +390,13 @@ contract SwitchGateTest is Test {
         bytes32 paid = timelock.hashOperationBatch(t, v, p, 0, SALT);
         bytes32 unpaid = timelock.hashOperationBatch(t, new uint256[](t.length), p, 0, SALT);
         _arm(paid);
-        _arm(unpaid);
         skip(DELAY);
 
+        vm.prank(operator);
+        vm.expectRevert(_notArmed(unpaid));
+        gate.execute(t, p, 0, SALT);
+
+        _arm(unpaid);
         vm.prank(operator);
         vm.expectRevert(_notReady(unpaid));
         gate.execute(t, p, 0, SALT);
@@ -386,20 +424,23 @@ contract SwitchGateTest is Test {
 
     function test_aPredecessorHoldsTheOrderThroughTheGate() public {
         (address[] memory t1, bytes[] memory p1) = _release(APP, OLD_APP);
-        bytes32 first = _scheduleArmed(t1, p1, 0, SALT);
-        bytes32 v18 = keccak256("v18 app");
-        (address[] memory t2, bytes[] memory p2) = _release(v18, APP);
+        bytes32 first = _schedule(t1, p1, 0, SALT);
+        (address[] memory t2, bytes[] memory p2) = _release(NEXT_APP, APP);
         bytes32 second = _scheduleArmed(t2, p2, first, SALT);
         skip(DELAY);
 
-        vm.startPrank(operator);
+        vm.prank(operator);
         vm.expectRevert(abi.encodeWithSelector(TimelockController.TimelockUnexecutedPredecessor.selector, first));
         gate.execute(t2, p2, first, SALT);
-        assertTrue(gate.armed(second));
+        assertEq(gate.armed(), second);
+
+        _arm(first);
+        vm.prank(operator);
         gate.execute(t1, p1, 0, SALT);
+        _arm(second);
+        vm.prank(operator);
         gate.execute(t2, p2, first, SALT);
-        vm.stopPrank();
-        _assertReleased(v18, APP);
+        _assertReleased(NEXT_APP, APP);
         assertFalse(logA.allowedApp(OLD_APP));
     }
 
@@ -495,7 +536,7 @@ contract SwitchGateTest is Test {
         vm.expectRevert(SwitchGate.NotAllowed.selector);
         gate.execute(t, p, 0, SALT);
         assertTrue(timelock.isOperationReady(id));
-        assertTrue(gate.armed(id));
+        assertEq(gate.armed(), id);
     }
 
     function test_aPausedGateExecutesNothing() public {
@@ -708,7 +749,7 @@ contract SwitchGateTest is Test {
 
     function test_aListedTargetCannotReenterTheGate() public {
         (address[] memory inner, bytes[] memory innerCalls) = _release(APP, OLD_APP);
-        bytes32 innerId = _scheduleArmed(inner, innerCalls, 0, SALT);
+        bytes32 innerId = _schedule(inner, innerCalls, 0, SALT);
 
         ReenteringLog hostile = new ReenteringLog(address(timelock), address(gate));
         hostile.arm(abi.encodeCall(SwitchGate.execute, (inner, innerCalls, 0, SALT)));
@@ -725,8 +766,7 @@ contract SwitchGateTest is Test {
         gate.execute(t, p, 0, outer);
         assertTrue(timelock.isOperationReady(innerId));
         assertTrue(timelock.isOperationReady(outerId));
-        assertTrue(gate.armed(innerId));
-        assertTrue(gate.armed(outerId));
+        assertEq(gate.armed(), outerId);
     }
 
     function test_theConstructorRefusesZeroAddresses() public {
@@ -745,6 +785,7 @@ contract SwitchGateTest is Test {
         SwitchGate idle = new SwitchGate(safe, tl, address(0), address(0), logs);
         assertEq(idle.operator(), address(0));
         assertEq(idle.guardian(), address(0));
+        assertEq(idle.armed(), bytes32(0));
         assertTrue(idle.isLog(address(logB)));
     }
 }
