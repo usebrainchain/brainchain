@@ -131,7 +131,9 @@ cast send $GATE "arm(bytes32)" $OP --unlocked --from $SAFE
 cast call $GATE "armed()(bytes32)"
 ```
 
-The last line prints the operation id. On BrainChain the Safe can arm in the same Safe transaction that schedules, as a batch of two calls. Any other sender gets `NotSafe`. `arm` with `$ZERO` disarms.
+The last line prints the operation id. Any other sender gets `NotSafe`. `arm` with `$ZERO` disarms, at any time.
+
+Arming needs the operation scheduled first. `arm` refuses an id the timelock does not hold as pending (never scheduled, cancelled or already run), and `cast send` prints `Error: Failed to estimate gas` ending in `NotPending(<id>)`. On BrainChain the Safe can schedule and arm in one Safe transaction, as a batch of two calls with the schedule call first.
 
 ### Execute it as the operator
 

@@ -17,6 +17,8 @@ interface ISwitchTimelock {
         bytes32 predecessor,
         bytes32 salt
     ) external pure returns (bytes32);
+
+    function isOperationPending(bytes32 id) external view returns (bool);
 }
 
 interface ISwitchLog {
@@ -43,6 +45,7 @@ contract SwitchGate {
     error ForbiddenTarget(uint256 index);
     error ForbiddenCall(uint256 index);
     error NotArmed(bytes32 id);
+    error NotPending(bytes32 id);
     error NotTimelockOwned(address log);
 
     event OperatorSet(address indexed operator);
@@ -110,6 +113,8 @@ contract SwitchGate {
     /// among ready releases or run a superseded one.
     function arm(bytes32 id) external {
         if (msg.sender != safe) revert NotSafe();
+        // A mistyped id would otherwise wait unnoticed until the switch.
+        if (id != bytes32(0) && !timelock.isOperationPending(id)) revert NotPending(id);
         armed = id;
         emit Armed(id);
     }

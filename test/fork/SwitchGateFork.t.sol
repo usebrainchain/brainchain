@@ -76,6 +76,12 @@ contract SwitchGateForkTest is Test {
         gate.arm(id);
     }
 
+    function _refused(bytes32 id) internal {
+        vm.prank(SAFE);
+        vm.expectRevert(abi.encodeWithSelector(SwitchGate.NotPending.selector, id));
+        gate.arm(id);
+    }
+
     function _notReady(bytes32 id) internal pure returns (bytes memory) {
         return abi.encodeWithSelector(
             TimelockController.TimelockUnexpectedOperationState.selector,
@@ -153,24 +159,20 @@ contract SwitchGateForkTest is Test {
         p[0] = abi.encodeCall(DecisionLog.allowApp, (keccak256("an enclave nobody approved"), true));
         p[2] = p[0];
         bytes32 madeUp = TIMELOCK.hashOperationBatch(t, v, p, 0, SALT);
-        _arm(madeUp);
         vm.prank(operator);
-        vm.expectRevert(_notReady(madeUp));
+        vm.expectRevert(abi.encodeWithSelector(SwitchGate.NotArmed.selector, madeUp));
         gate.execute(t, p, 0, SALT);
+        _refused(madeUp);
 
         (t, p) = _release();
-        bytes32 resalted = TIMELOCK.hashOperationBatch(t, v, p, 0, keccak256("release 13"));
-        _arm(resalted);
-        vm.prank(operator);
-        vm.expectRevert(_notReady(resalted));
-        gate.execute(t, p, 0, keccak256("release 13"));
+        _refused(TIMELOCK.hashOperationBatch(t, v, p, 0, keccak256("release 13")));
 
         (p[0], p[1], p[2], p[3]) = (ALLOW_V16, DROP_V15, ALLOW_V16, DROP_V15);
         assertEq(TIMELOCK.hashOperationBatch(t, v, p, 0, V16_SALT), V16_OP);
         assertTrue(TIMELOCK.isOperationDone(V16_OP));
-        _arm(V16_OP);
+        _refused(V16_OP);
         vm.prank(operator);
-        vm.expectRevert(_notReady(V16_OP));
+        vm.expectRevert(abi.encodeWithSelector(SwitchGate.NotArmed.selector, V16_OP));
         gate.execute(t, p, 0, V16_SALT);
 
         assertTrue(TIMELOCK.isOperationReady(FEE_OP));
@@ -179,7 +181,8 @@ contract SwitchGateForkTest is Test {
         bytes[] memory feeCalls = new bytes[](1);
         feeTargets[0] = UPGRADE_EXECUTOR;
         feeCalls[0] = FEE_CALL;
-        _arm(TIMELOCK.hashOperationBatch(feeTargets, new uint256[](1), feeCalls, 0, FEE_SALT));
+        _refused(TIMELOCK.hashOperationBatch(feeTargets, new uint256[](1), feeCalls, 0, FEE_SALT));
+        _arm(FEE_OP);
         vm.prank(operator);
         vm.expectRevert(abi.encodeWithSelector(SwitchGate.ForbiddenTarget.selector, 0));
         gate.execute(feeTargets, feeCalls, 0, FEE_SALT);
