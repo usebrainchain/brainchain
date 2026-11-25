@@ -15,10 +15,11 @@ interface ISwitchTimelockRoles {
 /// gate can do nothing until the timelock grants it EXECUTOR_ROLE, which takes an operation the Safe schedules and,
 /// 48 hours later, executes (docs/switch-gate.md).
 ///
-/// Env: SAFE (the owners' Safe, the timelock's proposer), TIMELOCK (the admin timelock), OPERATOR (the guard's key),
-/// GUARDIAN (the key that may pause), LOGS (the DecisionLogs, comma-separated, each owned by the timelock).
+/// Env: SAFE (the owners' Safe, the timelock's proposer), TIMELOCK (the admin timelock), OPERATOR (the guard's key, or
+/// `none` to deploy without one: the operator path stays shut until the Safe calls setOperator), GUARDIAN (the key that
+/// may pause), LOGS (the DecisionLogs, comma-separated, each owned by the timelock).
 /// Without --broadcast it simulates the deployment and prints the address:
-///   SAFE=<safe> TIMELOCK=<timelock> OPERATOR=<operator> GUARDIAN=<guardian> LOGS=<log>,<log> forge script \
+///   SAFE=<safe> TIMELOCK=<timelock> OPERATOR=<operator|none> GUARDIAN=<guardian> LOGS=<log>,<log> forge script \
 ///     script/DeploySwitchGate.s.sol --rpc-url https://rpc.usebrainchain.com
 /// Add --keystore <deployer keystore> --password-file <its password> --sender <deployer> --broadcast to deploy.
 contract DeploySwitchGate is Script {
@@ -26,14 +27,18 @@ contract DeploySwitchGate is Script {
         require(block.chainid == 274663, "not BrainChain (274663): pass --rpc-url https://rpc.usebrainchain.com");
         address safe = vm.envAddress("SAFE");
         address timelock = vm.envAddress("TIMELOCK");
-        address operator = vm.envAddress("OPERATOR");
+        string memory operatorEnv = vm.envOr("OPERATOR", string(""));
+        require(bytes(operatorEnv).length > 0, "OPERATOR is unset or empty: give the guard's address, or none");
+        // The zero address only as a spoken choice, never from a typo or a blank variable.
+        bool none = keccak256(bytes(operatorEnv)) == keccak256("none");
+        address operator = none ? address(0) : vm.parseAddress(operatorEnv);
         address guardian = vm.envAddress("GUARDIAN");
         address[] memory logs = vm.envAddress("LOGS", ",");
         require(safe.code.length > 0, "SAFE has no code");
         require(timelock.code.length > 0, "TIMELOCK has no code");
         ISwitchTimelockRoles roles = ISwitchTimelockRoles(timelock);
         require(roles.hasRole(roles.PROPOSER_ROLE(), safe), "SAFE is not the timelock's proposer");
-        require(operator != address(0) && operator != safe, "OPERATOR is zero or the Safe");
+        require(none || (operator != address(0) && operator != safe), "OPERATOR is zero or the Safe");
         require(guardian != address(0) && guardian != safe, "GUARDIAN is zero or the Safe");
         require(operator != guardian, "OPERATOR and GUARDIAN are the same key");
         require(logs.length > 0, "LOGS is empty");
@@ -48,7 +53,8 @@ contract DeploySwitchGate is Script {
         console2.log("SwitchGate", address(gate));
         console2.log("safe", safe);
         console2.log("timelock", timelock);
-        console2.log("operator", operator);
+        if (none) console2.log("operator none: the Safe sets one later");
+        else console2.log("operator", operator);
         console2.log("guardian", guardian);
         for (uint256 i; i < logs.length; i++) {
             require(gate.isLog(logs[i]), "a log is not listed");

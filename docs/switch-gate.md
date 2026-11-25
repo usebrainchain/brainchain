@@ -106,14 +106,16 @@ On BrainChain the deployer key pays the gas and gets no power over the gate. Sim
 ```sh
 SAFE=0xdFeFbdBF680568e8DC44abbbd657c0701964cC8c \
 TIMELOCK=0xB23F49390061B1E7Faf0F99B146E491Ee1574B1e \
-OPERATOR=<the guard's operator address> \
+OPERATOR=<the guard's operator address, or none> \
 GUARDIAN=<the guardian's address> \
 LOGS=0x2EF509bd9cA1e7C5FBe2C2FD7Ff25cE9F6f9cB68,0x53e0137e45C8bAc1018802aD36060cDda3B159F0 \
 forge script script/DeploySwitchGate.s.sol --rpc-url https://rpc.usebrainchain.com --sender <deployer address> \
   --keystore <deployer keystore file> --password-file <file with its password> --broadcast
 ```
 
-`LOGS` is comma-separated, without spaces. The script stops before deploying with one of these lines:
+`LOGS` is comma-separated, without spaces. `OPERATOR=none` deploys the gate with the zero address as its operator, and the script prints `operator none: the Safe sets one later` in place of the operator line. Until the Safe calls `setOperator`, only the Safe can call `execute`. The zero address is accepted only as `none`: an unset or empty `OPERATOR`, or `0x0000000000000000000000000000000000000000`, stops the script.
+
+The script stops before deploying with one of these lines:
 
 | Line | Cause |
 | --- | --- |
@@ -121,7 +123,9 @@ forge script script/DeploySwitchGate.s.sol --rpc-url https://rpc.usebrainchain.c
 | `Error: script failed: SAFE has no code` | `SAFE` is not a contract |
 | `Error: script failed: TIMELOCK has no code` | `TIMELOCK` is not a contract |
 | `Error: script failed: SAFE is not the timelock's proposer` | `SAFE` cannot schedule on `TIMELOCK` |
-| `Error: script failed: OPERATOR is zero or the Safe` | Pick another operator |
+| `Error: script failed: OPERATOR is unset or empty: give the guard's address, or none` | Set `OPERATOR` |
+| ``Error: script failed: vm.parseAddress: failed parsing "<value>" as type `address` `` | `OPERATOR` is neither an address nor `none` |
+| `Error: script failed: OPERATOR is zero or the Safe` | Pick another operator, or `none` |
 | `Error: script failed: GUARDIAN is zero or the Safe` | Pick another guardian |
 | `Error: script failed: OPERATOR and GUARDIAN are the same key` | The two must differ |
 | `Error: script failed: LOGS is empty` | `LOGS` names no log |
