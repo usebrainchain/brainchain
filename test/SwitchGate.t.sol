@@ -731,6 +731,38 @@ contract SwitchGateTest is Test {
         _assertReleased(APP, OLD_APP);
     }
 
+    function test_theOperatorAndTheGuardianAreNeverTheSameKey() public {
+        address[] memory logs = new address[](1);
+        logs[0] = address(logA);
+        vm.expectRevert(SwitchGate.SameKey.selector);
+        new SwitchGate(safe, ISwitchTimelock(address(timelock)), operator, operator, logs);
+
+        vm.startPrank(safe);
+        vm.expectRevert(SwitchGate.SameKey.selector);
+        gate.setOperator(guardian);
+        vm.expectRevert(SwitchGate.SameKey.selector);
+        gate.setGuardian(operator);
+        vm.stopPrank();
+        assertEq(gate.operator(), operator);
+        assertEq(gate.guardian(), guardian);
+    }
+
+    function test_aZeroOperatorGoesWithAnyGuardian() public {
+        address[] memory logs = new address[](1);
+        logs[0] = address(logA);
+        ISwitchTimelock tl = ISwitchTimelock(address(timelock));
+        assertEq(new SwitchGate(safe, tl, address(0), guardian, logs).guardian(), guardian);
+        assertEq(new SwitchGate(safe, tl, address(0), address(0), logs).guardian(), address(0));
+
+        vm.startPrank(safe);
+        gate.setOperator(address(0));
+        gate.setGuardian(address(0));
+        gate.setGuardian(stranger);
+        vm.stopPrank();
+        assertEq(gate.operator(), address(0));
+        assertEq(gate.guardian(), stranger);
+    }
+
     function test_aReplacedGuardianCannotPause() public {
         address next = makeAddr("next guardian");
         vm.prank(safe);

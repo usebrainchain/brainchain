@@ -34,8 +34,8 @@ interface ISwitchLog {
 /// It cannot schedule, cannot change what a batch holds, cannot choose among
 /// ready batches, and cannot reach roles, ownership or funds. The guardian
 /// can pause it; only the Safe arms, unpauses, lists logs and replaces the
-/// operator or the guardian. Removing the gate itself stays with the admin
-/// timelock.
+/// operator or the guardian, who are never the same key. Removing the gate
+/// itself stays with the admin timelock.
 contract SwitchGate {
     error NotSafe();
     error NotAllowed();
@@ -47,6 +47,7 @@ contract SwitchGate {
     error NotArmed(bytes32 id);
     error NotPending(bytes32 id);
     error NotTimelockOwned(address log);
+    error SameKey();
 
     event OperatorSet(address indexed operator);
     event GuardianSet(address indexed guardian);
@@ -73,6 +74,7 @@ contract SwitchGate {
         if (safe_ == address(0) || address(timelock_) == address(0)) revert ZeroAddress();
         safe = safe_;
         timelock = timelock_;
+        _separate(operator_, guardian_);
         operator = operator_;
         guardian = guardian_;
         emit OperatorSet(operator_);
@@ -82,8 +84,8 @@ contract SwitchGate {
         }
     }
 
-    /// @notice Executes a scheduled release batch. The timelock itself checks
-    /// that this exact batch was scheduled and that its delay has passed.
+    /// @notice The timelock itself checks that this exact batch was scheduled
+    /// and that its delay has passed.
     function execute(address[] calldata targets, bytes[] calldata payloads, bytes32 predecessor, bytes32 salt)
         external
     {
@@ -128,12 +130,14 @@ contract SwitchGate {
 
     function setOperator(address operator_) external {
         if (msg.sender != safe) revert NotSafe();
+        _separate(operator_, guardian);
         operator = operator_;
         emit OperatorSet(operator_);
     }
 
     function setGuardian(address guardian_) external {
         if (msg.sender != safe) revert NotSafe();
+        _separate(operator, guardian_);
         guardian = guardian_;
         emit GuardianSet(guardian_);
     }
@@ -146,6 +150,11 @@ contract SwitchGate {
             isLog[log] = false;
             emit LogSet(log, false);
         }
+    }
+
+    // The key that acts must never be the key that stops it.
+    function _separate(address operator_, address guardian_) private pure {
+        if (operator_ != address(0) && operator_ == guardian_) revert SameKey();
     }
 
     // A call to an address without code succeeds silently, so a listed log
