@@ -350,9 +350,8 @@ contract FeeShareTransferModuleTest is Test {
         assertEq(address(module).balance, 0);
     }
 
-    /// No call outside the module's thirteen functions does anything: there is no fallback, owner, setter or upgrade.
-    function testFuzz_nothingElseCanBeCalled(bytes4 selector, bytes calldata rest) public {
-        bytes4[13] memory known = [
+    function _functions() private view returns (bytes4[13] memory) {
+        return [
             module.SAFE.selector,
             module.LEDGER.selector,
             module.FEE_TOKEN.selector,
@@ -367,6 +366,11 @@ contract FeeShareTransferModuleTest is Test {
             module.due.selector,
             module.take.selector
         ];
+    }
+
+    /// No call outside the module's thirteen functions does anything: there is no fallback.
+    function testFuzz_nothingElseCanBeCalled(bytes4 selector, bytes calldata rest) public {
+        bytes4[13] memory known = _functions();
         for (uint256 i; i < known.length; i++) {
             vm.assume(selector != known[i]);
         }
@@ -380,20 +384,35 @@ contract FeeShareTransferModuleTest is Test {
         assertEq(address(safe).balance, FUNDED);
     }
 
-    /// The deployed code has no SELFDESTRUCT, DELEGATECALL or CALLCODE, so it can neither vanish nor run other code
-    /// as itself. Push data and the compiler's metadata are skipped, as they are never executed.
-    function test_theCodeCannotSelfDestructOrDelegate() public view {
+    /// The deployed code dispatches on the thirteen functions and nothing else, so it has no owner, setter or upgrade,
+    /// and has no SELFDESTRUCT, DELEGATECALL or CALLCODE, so it can neither vanish nor run other code as itself. Push
+    /// data and the compiler's metadata are skipped, as they are never executed.
+    function test_theCodeHasNoOtherFunctionAndCannotSelfDestructOrDelegate() public view {
         bytes memory code = address(module).code;
         uint256 metadata = uint16(bytes2(bytes.concat(code[code.length - 2], code[code.length - 1])));
         uint256 end = code.length - metadata - 2;
-        uint256 ops;
+        bytes4[13] memory known = _functions();
+        uint256 dispatched;
         for (uint256 i; i < end; i++) {
             uint8 op = uint8(code[i]);
             assertTrue(op != 0xff && op != 0xf4 && op != 0xf2);
+            // A selector with a leading zero byte is pushed in three bytes.
+            uint256 width = op == 0x63 ? 4 : op == 0x62 ? 3 : 0;
+            if (width > 0 && uint8(code[i + width + 1]) == 0x14) {
+                uint32 selector;
+                for (uint256 k = 1; k <= width; k++) {
+                    selector = selector << 8 | uint8(code[i + k]);
+                }
+                bool found;
+                for (uint256 k; k < known.length; k++) {
+                    found = found || bytes4(selector) == known[k];
+                }
+                assertTrue(found, "the code dispatches a function outside the thirteen");
+                dispatched++;
+            }
             if (op >= 0x60 && op <= 0x7f) i += op - 0x5f;
-            ops++;
         }
-        assertGt(ops, 100);
+        assertEq(dispatched, known.length);
     }
 
     function test_aLedgerThatReadsLowerLeavesNothingDue() public {
