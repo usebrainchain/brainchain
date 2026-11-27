@@ -604,10 +604,12 @@ interface Fetched {
 
 /** What is being fetched: names it in messages, and caps it. */
 interface Wanted {
-  what: "record" | "brief" | "receipt" | "network manifest" | "agent record" | "record entry" | "licence list" | "papers file" | "exam item" | "gateway attestation" | "session record" | "kept attestation";
+  what: "record" | "brief" | "receipt" | "network manifest" | "agent record" | "record entry" | "licence list" | "papers file" | "exam item" | "gateway attestation" | "session record" | "kept attestation" | "desk log" | "quote record";
   limit: number;
   /** The caller's RPC is on a private address, so what it names may be too. */
   allowPrivate: boolean;
+  /** For a host that works out its answer before it sends a byte: how long one try, and the whole read, may take. */
+  slowMs?: number;
 }
 
 /** A location or payment network the tool will not read. Trying again would not help. */
@@ -686,7 +688,8 @@ function readOnce(uri: string, url: URL, wanted: Wanted, signal: AbortSignal): P
   return new Promise((resolve, reject) => {
     const send = url.protocol === "https:" ? httpsRequest : httpRequest;
     // Redirects are not followed: the brain reads without following them, so the location on chain is the one read here too.
-    const request = send(url, { signal, agent: agentFor(url.protocol, wanted.allowPrivate), timeout: STALL_MS, headers: { "user-agent": "brainchain-verify" } }, (response) => {
+    const stall = wanted.slowMs ?? STALL_MS;
+    const request = send(url, { signal, agent: agentFor(url.protocol, wanted.allowPrivate), timeout: stall, headers: { "user-agent": "brainchain-verify" } }, (response) => {
       const chunks: Buffer[] = [];
       let size = 0;
       response.on("data", (chunk: Buffer) => {
@@ -703,7 +706,7 @@ function readOnce(uri: string, url: URL, wanted: Wanted, signal: AbortSignal): P
       );
       response.on("error", reject);
     });
-    request.on("timeout", () => request.destroy(new Error(`${display(uri)} went ${STALL_MS / 1000} seconds without answering`)));
+    request.on("timeout", () => request.destroy(new Error(`${display(uri)} went ${stall / 1000} seconds without answering`)));
     request.on("error", reject);
     request.end();
   });
@@ -713,7 +716,7 @@ function readOnce(uri: string, url: URL, wanted: Wanted, signal: AbortSignal): P
 async function get(uri: string, url: URL, wanted: Wanted, deadline: AbortSignal): Promise<Fetched & { status: number }> {
   for (let attempt = 1; ; attempt++) {
     try {
-      const response = await readOnce(uri, url, wanted, AbortSignal.any([deadline, AbortSignal.timeout(ATTEMPT_MS)]));
+      const response = await readOnce(uri, url, wanted, AbortSignal.any([deadline, AbortSignal.timeout(wanted.slowMs ?? ATTEMPT_MS)]));
       const transient = response.status === 408 || response.status === 429 || response.status >= 500;
       if (!transient || attempt === 3) return response;
     } catch (error) {
@@ -763,7 +766,7 @@ async function fetchBytes(uri: string, wanted: Wanted): Promise<Fetched> {
   // A literal address never reaches the lookup below.
   if (!wanted.allowPrivate && isIP(bareHost(url)) !== 0 && isPrivate(bareHost(url))) throw privateAddress(uri, bareHost(url));
   const started = Date.now();
-  const deadline = AbortSignal.timeout(FETCH_MS);
+  const deadline = AbortSignal.timeout(wanted.slowMs ?? FETCH_MS);
   // Raced as well as passed down, so no stage of the transport can outlast the deadline.
   const expired = new Promise<never>((_, reject) => deadline.addEventListener("abort", () => reject(deadline.reason), { once: true }));
   try {
@@ -2225,12 +2228,21 @@ async function readCapped(path: string, limit: number): Promise<Uint8Array> {
   }
 }
 
+/**
+ * A file, or what an http(s) URL serves, of at most `limit` bytes. A URL on a private address is read only when the
+ * client's RPC is on one too. `slowMs` is for a host that takes that long to start answering.
+ */
+export async function readSource(client: PublicClient, source: string, what: Wanted["what"], limit: number, slowMs?: number): Promise<Uint8Array> {
+  const bytes = /^https?:\/\//i.test(source)
+    ? (await fetchBytes(source, { what, limit, allowPrivate: await allowsPrivate(client), ...(slowMs === undefined ? {} : { slowMs }) })).bytes
+    : await readCapped(source, limit);
+  if (bytes.length > limit) throw new TooLarge(`${display(source)} is larger than the ${Math.round(limit / 1024)} KB a ${what} may be, so it was not read`);
+  return bytes;
+}
+
 /** Reads a receipt from a file or an http(s) URL: the receipt itself, or a reply that carries it as `receipt`. */
 export async function readReceipt(client: PublicClient, source: string): Promise<GivenReceipt> {
-  const bytes = /^https?:\/\//i.test(source)
-    ? (await fetchBytes(source, { what: "receipt", limit: MAX_RECEIPT_BYTES, allowPrivate: await allowsPrivate(client) })).bytes
-    : await readCapped(source, MAX_RECEIPT_BYTES);
-  if (bytes.length > MAX_RECEIPT_BYTES) throw new TooLarge(`${display(source)} is larger than the ${MAX_RECEIPT_BYTES / 1024} KB a receipt may be, so it was not read`);
+  const bytes = await readSource(client, source, "receipt", MAX_RECEIPT_BYTES);
   const text = decodeText(bytes);
   const value = text === undefined ? undefined : parseJson(text);
   if (value === undefined) throw new Error(`${display(source)} is not JSON`);
