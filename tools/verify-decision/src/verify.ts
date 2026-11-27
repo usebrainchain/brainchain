@@ -2036,9 +2036,9 @@ function signatureOf(receipt: AciReceipt, recordedAt: bigint, gateway: Attestati
   }
   if (typeof kept === "object" && "unattested" in kept) return { status: "fail", message: `it does not verify under the receipt key ${GATEWAY_HOST} attests now, and the report ${KEPT_HOST} kept for the keyset it cites, ${digestShort(cited)}, does not hold: ${kept.unattested}` };
   if (typeof kept === "object") {
-    const keptKey = kept.receiptKeys.find((k) => k.keyId === receipt.key_id);
-    if (!keptKey || !signedBy(receipt, keptKey)) return { status: "fail", message: `its signature does not verify under the keyset it cites, ${digestShort(cited)}, as the report ${KEPT_HOST} kept attests it` };
-    return { status: "ok", message: `${digestShort(keptKey.publicKey)} of keyset ${digestShort(cited)}, which the gateway no longer serves: the report ${KEPT_HOST} kept for it is a TDX quote that Intel's SGX root certifies, binding that keyset to the nonce it was read with, as of when the answer was served` };
+    const found = kept.receiptKeys.find((k) => k.keyId === receipt.key_id);
+    if (!found || !signedBy(receipt, found)) return { status: "fail", message: `its signature does not verify under the keyset it cites, ${digestShort(cited)}, as the report ${KEPT_HOST} kept attests it` };
+    return { status: "ok", message: `${digestShort(found.publicKey)} of keyset ${digestShort(cited)}, which the gateway no longer serves: the report ${KEPT_HOST} kept for it is a TDX quote that Intel's SGX root certifies, binding that keyset to the nonce it was read with, as of when the answer was served` };
   }
   if (typeof kept === "string") return { status: "error", message: `it does not verify under the receipt key ${GATEWAY_HOST} attests now, and the keyset it cites, ${digestShort(cited)}, is no longer served: the report ${KEPT_HOST} kept for it could not be read: ${kept}` };
   if (recordedAt < GATEWAY_MOVED) return { status: "skip", message: `it was signed before Phala's gateway moved to a new app on 2026-11-06, with a key that is no longer published. See ${HISTORY}` };
