@@ -7,7 +7,7 @@
 
 import { createHash, createPublicKey, ECDH, verify, X509Certificate, type KeyObject } from "node:crypto";
 
-import { keccak256, recoverPublicKey } from "viem";
+import { createPublicClient, fallback, http, keccak256, parseAbi, recoverPublicKey, type Transport } from "viem";
 
 import { canonicalStringify } from "./canonical.js";
 
@@ -23,6 +23,19 @@ export const PHALA_APP = "89c51ab856bee41efe78c40309a4deb277a02a0f";
  * the KMS's CA key, not this one.
  */
 export const KMS_ROOT = "02a335aea3df11d46ae0a373d3f26fbd1d208572ecc87e630e618dac693b7af721";
+
+/** Base's public RPCs, in the order they are asked. */
+export const BASE_RPCS = ["https://mainnet.base.org", "https://base-rpc.publicnode.com"];
+const ALLOWED_COMPOSES = parseAbi(["function allowedComposeHashes(bytes32) view returns (bool)"]);
+
+/**
+ * Whether Phala's app contract on Base allows `compose` (hex) to boot, as it stands now. Phala publishes each release of
+ * its gateway with its compose hash at least three days ahead, and adds the hash here before the release can boot.
+ */
+export function allowedOnBase(compose: string, transport: Transport = fallback(BASE_RPCS.map((url) => http(url, { timeout: 8_000, retryCount: 1 })))): Promise<boolean> {
+  const client = createPublicClient({ transport });
+  return client.readContract({ address: `0x${PHALA_APP}`, abi: ALLOWED_COMPOSES, functionName: "allowedComposeHashes", args: [`0x${compose}`] });
+}
 
 /**
  * The SHA-256 fingerprint of the Intel SGX Root CA certificate, which certifies every platform's PCK certificate, as

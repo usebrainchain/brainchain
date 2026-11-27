@@ -42,7 +42,7 @@ import { decisionExecutorAbi, decisionLogAbi, modelRegistryAbi, taskBoardAbi } f
 import { canonicalStringify } from "./canonical.js";
 import { checkShape, schemaIn, type Shape } from "./shape.js";
 import type { ContractSet, Network } from "./deployments.js";
-import { attest, citedSession, eventOf, KMS_ROOT, parseAciReceipt, PHALA_APP, PHALA_GATEWAY, sessionProblems, signedBy, Unattested, type AciReceipt, type Attestation } from "./phala.js";
+import { allowedOnBase, attest, BASE_RPCS, citedSession, eventOf, KMS_ROOT, parseAciReceipt, PHALA_GATEWAY, sessionProblems, signedBy, Unattested, type AciReceipt, type Attestation } from "./phala.js";
 
 /** `error` is a check that could not complete, such as a record host that did not answer. */
 export type Status = "ok" | "fail" | "skip" | "error";
@@ -1859,12 +1859,9 @@ async function readAttestation(): Promise<Attestation> {
   return attest(report, nonce, Date.now());
 }
 
-// Phala publishes each release of its gateway with its compose hash at least three days ahead, and its app contract on
-// Base says which composes may boot. It is read as it stands now, so a release Phala later withdraws reads as withdrawn.
-const BASE_RPCS = ["https://mainnet.base.org", "https://base-rpc.publicnode.com"];
-const ALLOWED_COMPOSES = parseAbi(["function allowedComposeHashes(bytes32) view returns (bool)"]);
-let baseClient: PublicClient | undefined;
+// Phala's app contract on Base is read as it stands now, so a release Phala later withdraws reads as withdrawn.
 const releaseReads = new WeakMap<Context, Map<string, Promise<boolean>>>();
+const baseTransport = fallback(BASE_RPCS.map((url) => rpcTransport("Base", url)));
 
 /** Whether Phala's app contract on Base allows `compose`, read once per context. */
 function releaseOf(ctx: Context, compose: string): Promise<boolean> {
@@ -1872,11 +1869,7 @@ function releaseOf(ctx: Context, compose: string): Promise<boolean> {
   if (!reads) releaseReads.set(ctx, (reads = new Map()));
   let found = reads.get(compose);
   if (!found) {
-    found = Promise.resolve().then(() => {
-      if (ctx.releases) return ctx.releases(compose);
-      baseClient ??= createPublicClient({ transport: fallback(BASE_RPCS.map((url) => rpcTransport("Base", url))) }) as PublicClient;
-      return baseClient.readContract({ address: `0x${PHALA_APP}`, abi: ALLOWED_COMPOSES, functionName: "allowedComposeHashes", args: [`0x${compose}`] });
-    });
+    found = Promise.resolve().then(() => (ctx.releases ? ctx.releases(compose) : allowedOnBase(compose, baseTransport)));
     reads.set(compose, found);
   }
   return found;
