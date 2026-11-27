@@ -202,3 +202,27 @@ export function signedBy(receipt: AciReceipt, key: ReceiptKey): boolean {
     return false;
   }
 }
+
+/** The session the gateway's upstream.verified event cites: the hex id of the record in which it verified the TEE upstream. */
+export function citedSession(receipt: AciReceipt): string | undefined {
+  const id = eventOf(receipt, "upstream.verified")?.session_id;
+  return typeof id === "string" && /^[0-9a-f]{64}$/.test(id) ? id : undefined;
+}
+
+/**
+ * What does not hold of a session record against the receipt that cites it, as ACI's upstream check reads it: the record
+ * hashes, in JCS form, to the cited id, it is an aci/1 record, the answer was served inside its window, and its evidence
+ * hashes to the digest it states. The evidence is the upstream's own attestation, which ACI leaves to the gateway.
+ */
+export function sessionProblems(receipt: AciReceipt, id: string, session: unknown): string[] {
+  if (!isObject(session)) return ["it is not a session record"];
+  const wrong: string[] = [];
+  if (sha256(canonicalStringify(session)).toString("hex") !== id) wrong.push("it does not hash to the id the receipt cites");
+  if (session.api_version !== "aci/1") wrong.push("it is not an aci/1 record");
+  const { established_at: from, expires_at: until } = session;
+  if (typeof from !== "number" || typeof until !== "number" || receipt.served_at < from || receipt.served_at >= until) wrong.push("the answer was served outside its window");
+  const evidence = isObject(session.evidence) ? session.evidence : {};
+  const data = typeof evidence.data === "string" ? /^data:[^,]*;base64,(.*)$/s.exec(evidence.data)?.[1] : undefined;
+  if (data === undefined || `sha256:${sha256(Buffer.from(data, "base64")).toString("hex")}` !== evidence.digest) wrong.push("its evidence does not hash to the digest it states");
+  return wrong;
+}
