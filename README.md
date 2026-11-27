@@ -35,7 +35,7 @@ This repository holds the Solidity contracts that keep the money and enforce tho
 
 Mainnet runs contract set **3.6.0**, active since 21 November 2026. Its core contracts are on BrainChain (chain ID `274663`, RPC `https://rpc.usebrainchain.com`), an Arbitrum Orbit chain that settles to Robinhood Chain. Its payout and fee contracts are on Robinhood Chain (chain ID `4663`). Testnet (chain ID `274630`, RPC `https://rpc.testnet.usebrainchain.com`) runs 3.5.0 with test tokens.
 
-Sets up to 3.5.0 have a source tag (`v3.5.0` is the latest), and `main` can be ahead of the deployed set. Addresses are in [`deployments/`](deployments) and in the tables below.
+Every set from 3.3.0 on has a source tag: `v3.6.0` is the commit the live set was deployed from, and `main` can be ahead of it. Addresses are in [`deployments/`](deployments) and in the tables below.
 
 These contracts are in this repository but not deployed yet:
 
