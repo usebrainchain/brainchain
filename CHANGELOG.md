@@ -152,7 +152,8 @@ Deployed on BrainChain mainnet (chain 274663) and testnet (274630) with an 85% c
 - `DecisionExecutor`: timelocked changes adopted by decision, a guardian veto and capped house tasks.
 - Unit tests for every settlement path and fuzzed invariants for escrow conservation and payout rules.
 
-[Unreleased]: https://github.com/usebrainchain/brainchain/compare/v3.5.0...main
+[Unreleased]: https://github.com/usebrainchain/brainchain/compare/v3.6.0...main
+[3.6.0]: https://github.com/usebrainchain/brainchain/releases/tag/v3.6.0
 [3.5.0]: https://github.com/usebrainchain/brainchain/releases/tag/v3.5.0
 [3.4.0]: https://github.com/usebrainchain/brainchain/releases/tag/v3.4.0
 [3.3.0]: https://github.com/usebrainchain/brainchain/releases/tag/v3.3.0
