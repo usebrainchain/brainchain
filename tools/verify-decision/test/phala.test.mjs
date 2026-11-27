@@ -4,7 +4,10 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import { canonicalStringify } from "../dist/canonical.js";
-import { INTEL_SGX_ROOT_SHA256, parseAciReceipt, signedBy, Unattested, verifyAttestation, verifyTdxQuote } from "../dist/phala.js";
+import { keccak256 } from "viem";
+import { privateKeyToAccount, sign as signHash } from "viem/accounts";
+
+import { attest, custodyOf, INTEL_SGX_ROOT_SHA256, KMS_ROOT, parseAciReceipt, PHALA_APP, replayRtmr3, signedBy, Unattested, verifyAttestation, verifyTdxQuote } from "../dist/phala.js";
 
 // Recorded on 2026-11-22: Phala's gateway attestation for a fresh nonce, and BrainChain mainnet records whose second
 // grader answered through it, as brain.usebrainchain.com serves them.
@@ -95,5 +98,89 @@ describe("the gateway's receipts", () => {
     const receipt = receiptOf("record-v3-6-400");
     assert.ok(parseAciReceipt(receipt));
     for (const body of [null, { result: "verified" }, { ...receipt, api_version: "aci/2" }, { ...receipt, signature: "0x5151" }, { ...receipt, event_log: "none" }]) assert.equal(parseAciReceipt(body), undefined);
+  });
+});
+
+describe("the receipt key's custody", () => {
+  const receiptKey = (report) => report.attestation.evidence.key_custody.keys.find((key) => key.role === "receipt");
+
+  it("holds on the gateway's report: the dstack KMS chain runs from the receipt key through Phala's app to the KMS root on Base", async () => {
+    assert.equal(await custodyOf(REPORT, PHALA_APP), undefined);
+    const attested = await attest(REPORT, NONCE, AT);
+    assert.deepEqual(attested.custody, { holds: true });
+    assert.equal(attested.compose, "261760d004c92eab0b6bed59a55cf3214c65d2cb543a1bed6dff371cd2650a7a");
+    // kmsInfo().k256Pubkey of 0x2f83172A49584C017F2B256F0FB2Dca14126Ba9C on Base, read on 27 Nov 2026.
+    assert.equal(KMS_ROOT, "02a335aea3df11d46ae0a373d3f26fbd1d208572ecc87e630e618dac693b7af721");
+  });
+
+  it("fails a well formed chain that ends at another root", async () => {
+    const appKey = `0x${"22".repeat(32)}`;
+    const point = privateKeyToAccount(appKey).publicKey;
+    const app = `${BigInt(`0x${point.slice(-2)}`) % 2n === 0n ? "02" : "03"}${point.slice(4, 68)}`;
+    const other = copy(REPORT);
+    const entry = receiptKey(other);
+    const purpose = await signHash({ hash: keccak256(Buffer.from(`aci.receipt.ed25519.v1:${entry.kms_public_key}`)), privateKey: appKey, to: "hex" });
+    const issued = await signHash({ hash: keccak256(Buffer.concat([Buffer.from("dstack-kms-issued:"), Buffer.from(PHALA_APP, "hex"), Buffer.from(app, "hex")])), privateKey: `0x${"11".repeat(32)}`, to: "hex" });
+    entry.signature_chain = [purpose.slice(2), issued.slice(2)];
+    assert.match(await custodyOf(other, PHALA_APP), /^the custody chain ends at 0[23][0-9a-f]{64}, not the root of Phala's KMS contract on Base, 02a335ae/);
+    assert.deepEqual((await attest(other, NONCE, AT)).custody.holds, false);
+  });
+
+  it("fails a changed signature, another app, another purpose and a chain of one", async () => {
+    const changed = copy(REPORT);
+    const chain = receiptKey(changed).signature_chain;
+    chain[0] = `${chain[0].slice(0, 6)}${chain[0][6] === "0" ? "1" : "0"}${chain[0].slice(7)}`;
+    assert.match(await custodyOf(changed, PHALA_APP), /ends at|does not verify/);
+    assert.equal(await custodyOf(REPORT, "cd".repeat(20)), `the boot measured app ${"cd".repeat(20)}, not Phala's gateway, ${PHALA_APP}`);
+    const purpose = copy(REPORT);
+    receiptKey(purpose).purpose = "aci.e2ee.v1";
+    assert.equal(await custodyOf(purpose, PHALA_APP), "the custody chain is for aci.e2ee.v1, not aci.receipt.ed25519.v1");
+    const short = copy(REPORT);
+    receiptKey(short).signature_chain.pop();
+    assert.equal(await custodyOf(short, PHALA_APP), "the custody chain is not two signatures");
+  });
+
+  it("fails a keyset with a receipt key outside the chain, another subject, or no custody evidence", async () => {
+    const extra = copy(REPORT);
+    extra.attestation.workload_keyset.receipt_signing_keys.push({ key_id: "other", algo: "ed25519", public_key: "11".repeat(32) });
+    assert.equal(await custodyOf(extra, PHALA_APP), "the keyset lists a receipt key the custody chain does not cover");
+    const subject = copy(REPORT);
+    subject.attestation.workload_keyset.subject = "app-id:0xcdcd";
+    assert.equal(await custodyOf(subject, PHALA_APP), "the keyset names subject app-id:0xcdcd, not the app the boot measured");
+    const none = copy(REPORT);
+    delete none.attestation.evidence.key_custody;
+    assert.equal(await custodyOf(none, PHALA_APP), "the report carries no evidence of who holds its keys");
+    const elsewhere = copy(REPORT);
+    elsewhere.attestation.evidence.key_custody.provider = "local";
+    assert.equal(await custodyOf(elsewhere, PHALA_APP), "its keys are held by local, not the dstack KMS");
+  });
+});
+
+describe("the boot event replay", () => {
+  const RUNTIME = 0x08000001;
+  const sha384 = (data) => createHash("sha384").update(data).digest();
+  const v1 = (event, payload) => {
+    const head = Buffer.alloc(4);
+    head.writeUInt32LE(RUNTIME);
+    return { imr: 3, event_type: RUNTIME, event, event_payload: payload, digest: sha384(Buffer.concat([head, Buffer.from(`:${event}:`), Buffer.from(payload, "hex")])).toString("hex") };
+  };
+  const v2 = (event, payload) => {
+    const preimage = Buffer.from(canonicalStringify({ name: event, payload, type: RUNTIME }));
+    return { imr: 3, event_type: RUNTIME, event, event_payload: payload, version: 2, preimage: preimage.toString("hex"), digest: sha384(preimage).toString("hex") };
+  };
+  const rtmr3 = (events) => events.reduce((register, e) => sha384(Buffer.concat([register, Buffer.from(e.digest, "hex")])), Buffer.alloc(48));
+
+  it("reads version 2 events and the first of each name before system-ready, as dstack's find_event does", () => {
+    const events = [v2("app-id", "ab".repeat(20)), v1("compose-hash", "11".repeat(32)), v1("system-ready", ""), v1("compose-hash", "22".repeat(32))];
+    assert.deepEqual(replayRtmr3(JSON.stringify(events), rtmr3(events)), { "app-id": "ab".repeat(20), "compose-hash": "11".repeat(32) });
+  });
+
+  it("refuses a version 2 preimage that is not its event, an event of another type, and a version 1 name with a colon", () => {
+    const forged = { ...v2("app-id", "ab".repeat(20)), event_payload: "cd".repeat(20) };
+    assert.throws(() => replayRtmr3([forged], rtmr3([forged])), /its boot event "app-id" states a preimage that is not the event$/);
+    const other = { ...v1("app-id", "ab"), event_type: 1 };
+    assert.throws(() => replayRtmr3([other], rtmr3([other])), /holds an RTMR3 event it cannot replay/);
+    const colon = v1("app:id", "ab");
+    assert.throws(() => replayRtmr3([colon], rtmr3([colon])), /is of a form dstack does not write/);
   });
 });

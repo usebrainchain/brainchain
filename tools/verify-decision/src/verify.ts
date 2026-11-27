@@ -15,6 +15,7 @@ import {
   decodeFunctionData,
   encodeAbiParameters,
   encodeFunctionData,
+  fallback,
   getAddress,
   hexToBytes,
   http,
@@ -41,7 +42,7 @@ import { decisionExecutorAbi, decisionLogAbi, modelRegistryAbi, taskBoardAbi } f
 import { canonicalStringify } from "./canonical.js";
 import { checkShape, schemaIn, type Shape } from "./shape.js";
 import type { ContractSet, Network } from "./deployments.js";
-import { citedSession, eventOf, parseAciReceipt, PHALA_GATEWAY, sessionProblems, signedBy, Unattested, verifyAttestation, type AciReceipt, type Attestation } from "./phala.js";
+import { allowedOnBase, attest, BASE_RPCS, citedSession, eventOf, KMS_ROOT, parseAciReceipt, PHALA_GATEWAY, sessionProblems, signedBy, Unattested, type AciReceipt, type Attestation } from "./phala.js";
 
 /** `error` is a check that could not complete, such as a record host that did not answer. */
 export type Status = "ok" | "fail" | "skip" | "error";
@@ -134,6 +135,8 @@ export interface Context {
   sessions?: (id: string) => Promise<CitedSession | undefined>;
   /** A keyset the gateway no longer serves, attested by the report BrainChain's inference gateway kept for it, as of `servedAt` (Unix seconds). Read from the gateway when absent. */
   keysets?: (digest: string, servedAt: number) => Promise<Attestation | undefined>;
+  /** Whether Phala's app contract on Base allows a compose hash (hex) to boot. Read from Base's public RPCs when absent. */
+  releases?: (compose: string) => Promise<boolean>;
 }
 
 /** A session record a judge's receipt cites, and the host it was read from. */
@@ -1831,7 +1834,7 @@ async function readKeptKeyset(digest: string, servedAt: number): Promise<Attesta
   }
   const kept = parseJson(Buffer.from(bytes).toString("utf8")) as { report?: unknown; nonce?: unknown } | undefined;
   if (typeof kept?.nonce !== "string") throw new Unattested("the kept report names no nonce");
-  const attestation = verifyAttestation(kept.report, kept.nonce, servedAt * 1000);
+  const attestation = await attest(kept.report, kept.nonce, servedAt * 1000);
   if (attestation.keysetDigest !== digest) throw new Unattested(`the kept report attests keyset ${digestShort(attestation.keysetDigest)}, not ${digestShort(digest)}`);
   return attestation;
 }
@@ -1853,8 +1856,48 @@ async function readAttestation(): Promise<Attestation> {
   const text = decodeText(bytes);
   const report = text === undefined ? undefined : parseJson(text);
   if (report === undefined) throw new Error(`${GATEWAY_HOST} sent something other than JSON, such as an error page`);
-  return verifyAttestation(report, nonce, Date.now());
+  return attest(report, nonce, Date.now());
 }
+
+// Phala's app contract on Base is read as it stands now, so a release Phala later withdraws reads as withdrawn.
+const releaseReads = new WeakMap<Context, Map<string, Promise<boolean>>>();
+const baseTransport = fallback(BASE_RPCS.map((url) => rpcTransport("Base", url)));
+
+/** Whether Phala's app contract on Base allows `compose`, read once per context. */
+function releaseOf(ctx: Context, compose: string): Promise<boolean> {
+  let reads = releaseReads.get(ctx);
+  if (!reads) releaseReads.set(ctx, (reads = new Map()));
+  let found = reads.get(compose);
+  if (!found) {
+    found = Promise.resolve().then(() => (ctx.releases ? ctx.releases(compose) : allowedOnBase(compose, baseTransport)));
+    reads.set(compose, found);
+  }
+  return found;
+}
+
+/** What Base said of a compose: allowed or not, or why it could not be read. */
+type Released = boolean | string;
+
+/**
+ * The standing of the keyset an attestation establishes, as a status and the words for it: its compose against
+ * Phala's list on Base and its receipt key's custody. A list that does not allow the compose, or custody that does not
+ * hold, fails; a Base that could not be read leaves it an error.
+ */
+function standing(attestation: Attestation, released: Released | undefined): { status: Status; message: string } {
+  const compose = digestShort(attestation.compose);
+  const { custody } = attestation;
+  const wrong: string[] = [];
+  if (!custody.holds) wrong.push(`its receipt key's custody does not hold: ${clean(custody.reason ?? "no reason given")}`);
+  if (released === false) wrong.push(`Phala's app contract on Base does not allow its compose, ${compose}`);
+  if (wrong.length > 0) return { status: "fail", message: list(wrong) };
+  if (typeof released !== "boolean") return { status: "error", message: `whether Phala's app contract on Base allows its compose, ${compose}, could not be read: ${released ?? "it was not read"}` };
+  return {
+    status: "ok",
+    message: `Phala's app contract on Base allows its compose, ${compose}, and its receipt key's custody holds: the dstack KMS chain runs from that key through app ${digestShort(attestation.app)} to the root of Phala's KMS contract on Base, ${digestShort(KMS_ROOT)}`,
+  };
+}
+
+const released = (ctx: Context, compose: string): Promise<Released> => releaseOf(ctx, compose).catch((error: unknown) => errorMessage(error));
 
 // The brain's promptFor and askOpinion (judges.ts): the bytes a judge is sent, hashed as the record keeps them. max_tokens was 2000 until 2026-11-03.
 const JUDGE_SYSTEM =
@@ -1906,10 +1949,11 @@ async function checkJudgeReceipts(ctx: Context, c: Checks, record: Published, re
       try {
         gateway = await attestationOf(ctx);
         const keys = list(gateway.receiptKeys.map((k) => digestShort(k.publicKey)));
+        const held = standing(gateway, await released(ctx, gateway.compose));
         c.add(
           "gateway",
-          "ok",
-          `gateway: ${GATEWAY_HOST} attests receipt key ${keys}: a TDX quote that Intel's SGX root certifies binds its keyset, ${digestShort(gateway.keysetDigest)}, to this run's nonce, and measures app ${digestShort(gateway.app)} and compose ${digestShort(gateway.compose)}`,
+          held.status,
+          `gateway: ${GATEWAY_HOST} attests receipt key ${keys}: a TDX quote that Intel's SGX root certifies binds its keyset, ${digestShort(gateway.keysetDigest)}, to this run's nonce, and measures app ${digestShort(gateway.app)} and compose ${digestShort(gateway.compose)}. ${held.status === "ok" ? held.message : `But ${held.message}`}`,
         );
       } catch (error) {
         const failed = error instanceof Unattested;
@@ -1938,9 +1982,15 @@ async function checkJudgeReceipts(ctx: Context, c: Checks, record: Published, re
       earlier.set(at, await read.catch((error: unknown) => (error instanceof Unattested ? { unattested: clean(error.message) } : errorMessage(error))));
     }
   }
+  // The composes of the keysets that may have signed: the live one and each kept one.
+  const releases = new Map<string, Released>();
+  for (const attestation of [gateway, ...earlier.values()]) {
+    if (typeof attestation !== "object" || "unattested" in attestation || releases.has(attestation.compose)) continue;
+    releases.set(attestation.compose, await released(ctx, attestation.compose));
+  }
   const asked = withheld ? undefined : askedState(record.request.state);
   for (const [name, who, judge] of judges) {
-    c.add(name, ...judgeReceipt(who, judge, record.request.questions.decision, asked, recordedAt, gateway, sessions, earlier));
+    c.add(name, ...judgeReceipt(who, judge, record.request.questions.decision, asked, recordedAt, gateway, sessions, earlier, releases));
   }
 }
 
@@ -1978,6 +2028,7 @@ function judgeReceipt(
   gateway: Attestation | string,
   sessions: Map<string, CitedSession | string | undefined>,
   earlier: Map<string, Kept>,
+  releases: Map<string, Released>,
 ): [Status, string] {
   const kept = judge.receipt as { id?: unknown; body?: unknown } | null | undefined;
   if (!kept) return ["skip", `${who} answered without a receipt, so nothing shows that its gateway served the answer`];
@@ -2014,6 +2065,9 @@ function judgeReceipt(
 
   const signature = signatureOf(receipt, recordedAt, gateway, earlier.get(keptKey(receipt)));
   if (signature.status === "fail") wrong.push(signature.message);
+  // Held as the keyset that signed it stands: its compose on Phala's list on Base, its receipt key's custody.
+  const held = signature.by && standing(signature.by, releases.get(signature.by.compose));
+  if (held?.status === "fail") wrong.push(`the keyset that signed it fails: ${held.message}`);
   if (wrong.length > 0) return ["fail", `${who}'s receipt ${id}: ${list(wrong)}`];
 
   // The rest of the receipt holds, but nothing here shows that the request it names was Jev's question and state.
@@ -2023,22 +2077,25 @@ function judgeReceipt(
     : "";
   const request = `the request the record names, ${digestShort(judge.requestHash)}${rebuilt ? `, which is Jev's question and state put to ${model}` : fingerprints ? "" : ", which a record served without the work cannot rebuild"}`;
   if (signature.status !== "ok") return [signature.status, `${who}'s receipt ${id} says the gateway received ${request}, but its signature ${signature.status === "error" ? "could not be" : "was not"} checked: ${signature.message}${unbuilt}`];
-  return [fingerprints ? "skip" : "ok", `${who}'s receipt ${id} is signed by ${GATEWAY_HOST}'s receipt key ${signature.message}. The gateway received ${request}, and served it at ${utc(BigInt(receipt.served_at))} UTC from a TEE upstream it verified${sessionNote}${unbuilt}`];
+  const signed = `${who}'s receipt ${id} is signed by ${GATEWAY_HOST}'s receipt key ${signature.message}. The gateway received ${request}, and served it at ${utc(BigInt(receipt.served_at))} UTC from a TEE upstream it verified${sessionNote}`;
+  if (held?.status === "error") return ["error", `${signed}. Of the keyset that signed it, ${held.message}${unbuilt}`];
+  return [fingerprints ? "skip" : "ok", `${signed}. Of the keyset that signed it, ${held!.message}${unbuilt}`];
 }
 
-function signatureOf(receipt: AciReceipt, recordedAt: bigint, gateway: Attestation | string, kept: Kept): { status: Status; message: string } {
+/** Whether the receipt's signature verifies, and under which attestation's keyset when it does. */
+function signatureOf(receipt: AciReceipt, recordedAt: bigint, gateway: Attestation | string, kept: Kept): { status: Status; message: string; by?: Attestation } {
   if (typeof gateway === "string") return { status: "skip", message: gateway };
   const key = gateway.receiptKeys.find((k) => k.keyId === receipt.key_id);
   const cited = clean(receipt.workload_keyset_digest);
   if (key && signedBy(receipt, key)) {
     const since = cited === gateway.keysetDigest ? "" : `; it cites keyset ${digestShort(cited)}, which the gateway has since replaced with ${digestShort(gateway.keysetDigest)} under the same key`;
-    return { status: "ok", message: `${digestShort(key.publicKey)}${since}` };
+    return { status: "ok", message: `${digestShort(key.publicKey)}${since}`, by: gateway };
   }
   if (typeof kept === "object" && "unattested" in kept) return { status: "fail", message: `it does not verify under the receipt key ${GATEWAY_HOST} attests now, and the report ${KEPT_HOST} kept for the keyset it cites, ${digestShort(cited)}, does not hold: ${kept.unattested}` };
   if (typeof kept === "object") {
     const found = kept.receiptKeys.find((k) => k.keyId === receipt.key_id);
     if (!found || !signedBy(receipt, found)) return { status: "fail", message: `its signature does not verify under the keyset it cites, ${digestShort(cited)}, as the report ${KEPT_HOST} kept attests it` };
-    return { status: "ok", message: `${digestShort(found.publicKey)} of keyset ${digestShort(cited)}, which the gateway no longer serves: the report ${KEPT_HOST} kept for it is a TDX quote that Intel's SGX root certifies, binding that keyset to the nonce it was read with, as of when the answer was served` };
+    return { status: "ok", message: `${digestShort(found.publicKey)} of keyset ${digestShort(cited)}, which the gateway no longer serves: the report ${KEPT_HOST} kept for it is a TDX quote that Intel's SGX root certifies, binding that keyset to the nonce it was read with, as of when the answer was served`, by: kept };
   }
   if (typeof kept === "string") return { status: "error", message: `it does not verify under the receipt key ${GATEWAY_HOST} attests now, and the keyset it cites, ${digestShort(cited)}, is no longer served: the report ${KEPT_HOST} kept for it could not be read: ${kept}` };
   if (recordedAt < GATEWAY_MOVED) return { status: "skip", message: `it was signed before Phala's gateway moved to a new app on 2026-11-06, with a key that is no longer published. See ${HISTORY}` };
