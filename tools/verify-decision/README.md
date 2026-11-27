@@ -661,6 +661,8 @@ Amounts are bigints in the token's smallest units. A plain number fails `quote-i
 
 `slippageBps` says what the query asked 0x for, so it must be in the query too, with the same value: give it in both or in neither.
 
+`txOrigin` is the account that sends the transaction when the taker is a contract, which 0x asks for then. A BrainChain desk's quote names its mandate contract as the taker and the desk key that sends the order as `txOrigin`. Like `slippageBps`, give it in both the query and the intent, or in neither.
+
 `maxGasCost` is optional and holds the quote's `gas` times its `gasPrice` to a limit. Those two are 0x's estimate, and `report.quote.transaction` carries both: send the transaction with fee fields of your own.
 
 `settlers` is the chain's Settlers, or a function that reads them. `readSettlers(client, chainId)` reads them from 0x's registry and throws when the client is on another chain. When the read throws, as an RPC that does not answer does, the report fails `quote-settler` with its error rather than throwing, so `verifyQuote` throws only for arguments it cannot use: an unknown URL, a body that is not bytes, or missing options.
@@ -676,7 +678,7 @@ The signature checks run in order and stop at the first that fails. The quote's 
 | `zerox-digest` | The body's SHA-256 is the one in `Content-Digest`. |
 | `zerox-signature` | The signature verifies over the rebuilt signature base. When it would verify with the same parameters in another order, the line says so. |
 | `quote-intent` | The intent is one the checks can hold a quote to: exactly one of `sellAmount` and `buyAmount`, the caller's limit for it, bigint amounts, addresses, and a known AllowanceHolder. |
-| `quote-request` | The query 0x answered asks for this trade and nothing else: `chainId`, `sellToken`, `buyToken`, `taker` and one of `sellAmount` and `buyAmount`, each once with the intent's value, plus `recipient` and `slippageBps` only when the intent names them. Any other parameter, such as a fee, a surplus recipient or `gasPrice`, fails, and so does a percent-encoded part, since 0x decodes it. |
+| `quote-request` | The query 0x answered asks for this trade and nothing else: `chainId`, `sellToken`, `buyToken`, `taker` and one of `sellAmount` and `buyAmount`, each once with the intent's value, plus `recipient`, `txOrigin` and `slippageBps` only when the intent names them. Any other parameter, such as a fee, a surplus recipient or `gasPrice`, fails, and so does a percent-encoded part, since 0x decodes it. |
 | `quote-response` | HTTP 200, a route, a transaction, and the mode, tokens and amounts asked for. A refusal names 0x's error. |
 | `quote-target` | The transaction calls AllowanceHolder (`0x0000000000001fF3684f28c67538d4D072C22734` on Ethereum, Base and Robinhood Chain, pinned here; `allowanceHolder` in the intent names it on other chains). |
 | `quote-spender` | `allowanceTarget` is null or AllowanceHolder, and so is the spender in `issues.allowance` when 0x asks for an approval. Never approve the Settler. |
