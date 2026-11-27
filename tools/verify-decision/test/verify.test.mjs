@@ -50,6 +50,7 @@ import {
   receiptDecision,
   recordUrl,
   REPUTATION,
+  responsesHeld,
   rpcTransport,
   SERVICES,
   verifyDecision,
@@ -1712,6 +1713,167 @@ describe("records under prompt version 3: delivered data and cited pages", () =>
     }
     assert.deepEqual(lines(await run(fixture("plain"))).slice(-8), ["second-grader ok", "panel ok", "confidence-recomputed ok", "threshold skip", "evidence ok", "gateway ok", "second-grader-receipt ok", "versions ok"]);
     assert.deepEqual((await run(fixture("checked"))).run, { language: "python", outcome: "passed" });
+  });
+});
+
+describe("judges' responses", () => {
+  // Paid grades by the brain's own decideGrade, createJudge (with JUDGE_RESPONSES on), createPanel and withEvidence,
+  // Jev stubbed and Phala's gateway signing each receipt with JUDGE_KEY over the request it received and the response
+  // it returned: the second grader's in one line with its reasoning, the third judge's spaced out as some upstreams send.
+  const fixture = (name) => JSON.parse(readFileSync(new URL(`./fixtures/responses/${name}.json`, import.meta.url), "utf8"));
+  const run = ({ record, chain }, options = {}) => verify({ publish: record, subject: chain.subject, answer: chain.answer, bps: chain.confidenceBps, recordedAt: 1_795_000_000n, ...options });
+  const bytesOf = (judge) => Buffer.from(judge.response, "base64");
+  const short = (hash) => `sha256:${hash.slice(7, 11)}…${hash.slice(-4)}`;
+  const hashOf = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  /** The brain's evidenceHash (evidence.ts) over a paid grade with a panel under median, which these are. */
+  const sealed = (record, input) => {
+    const judges = [record.second, ...record.panel.judges].filter(Boolean).map(({ model, probabilities, requestHash, receipt }) => ({ model, probabilities, requestHash, receipt }));
+    const evidence = { version: 2, input, judges: [{ model: record.model, probabilities: record.probabilities }, ...judges], payments: [], versions: record.versions, panel: { rule: record.panel.rule }, passFrom: record.passFrom };
+    return { ...record, evidence: keccak256(toBytes(canonicalStringify(evidence))) };
+  };
+  /** The record with its second grader changed, as a brain would have recorded it: its payload hash and evidence on chain are the changed record's. */
+  const secondAs = (record, change) => sealed({ ...record, second: change(record.second) }, fixture("grade").chain.inputHash);
+  /** A response that gives other probabilities, with a receipt the gateway signed for it: an answer the record misstates. */
+  const otherAnswer = (judge, content) => {
+    const reply = JSON.parse(bytesOf(judge).toString("utf8"));
+    reply.choices[0].message.content = content;
+    const bytes = Buffer.from(JSON.stringify(reply));
+    const { signature: _, ...body } = judge.receipt.body;
+    const signed = { ...body, event_log: body.event_log.map((e) => (e.type === "response.returned" ? { ...e, body_hash: hashOf(bytes) } : e)) };
+    return { ...judge, response: bytes.toString("base64"), receipt: { ...judge.receipt, body: { ...signed, signature: sign(null, Buffer.from(canonicalStringify(signed)), JUDGE_KEY).toString("hex") } } };
+  };
+
+  it("holds each response the record keeps to the hash its receipt signs, and to the probabilities the record states", async () => {
+    const f = fixture("grade");
+    const report = await run(f);
+    assert.deepEqual(failed(report), []);
+    assert.equal(outcomeOf([report]), "match");
+    assert.deepEqual([status(report, "second-grader-receipt"), status(report, "judge-receipt"), status(report, "evidence")], ["ok", "ok", "ok"]);
+    const second = f.record.second;
+    assert.equal(hashOf(bytesOf(second)), second.receipt.body.event_log.find((e) => e.type === "response.returned").body_hash);
+    assert.ok(check(report, "second-grader-receipt").message.endsWith(`from a TEE upstream it verified. It returned the response the record keeps, ${short(hashOf(bytesOf(second)))}, whose probabilities are the ones the record states`));
+    assert.match(check(report, "judge-receipt").message, /\. It returned the response the record keeps, sha256:\w{4}…\w{4}, whose probabilities are the ones the record states$/);
+    assert.deepEqual(report.responses, { judges: 2, held: 2 });
+    assert.equal(responsesHeld([report]), true);
+  });
+
+  it("fails a judge whose kept response is not the one its receipt hashes, by a single byte", async () => {
+    const f = fixture("grade");
+    const signed = f.record.second.receipt.body.event_log.find((e) => e.type === "response.returned").body_hash;
+    // One bit of the reasoning, which leaves the probabilities as they were.
+    const bytes = bytesOf(f.record.second);
+    bytes[bytes.indexOf("revenue")] ^= 1;
+    const tampered = secondAs(f.record, (judge) => ({ ...judge, response: bytes.toString("base64") }));
+    const report = await run({ ...f, record: tampered });
+    assert.deepEqual(failed(report), ["second-grader-receipt"]);
+    assert.match(check(report, "second-grader-receipt").message, new RegExp(`: the gateway returned a response hashing to ${short(signed)}, not the ${short(hashOf(bytes))} the record keeps$`));
+    assert.equal(status(report, "judge-receipt"), "ok");
+    assert.deepEqual(report.responses, { judges: 2, held: 1 });
+    assert.equal(responsesHeld([report]), false);
+    // One bit of the answer: 0.45 read as 1.45.
+    const answer = bytesOf(f.record.second);
+    answer[answer.indexOf("0.45")] ^= 1;
+    const changed = await run({ ...f, record: secondAs(f.record, (judge) => ({ ...judge, response: answer.toString("base64") })) });
+    assert.match(check(changed, "second-grader-receipt").message, /, not the sha256:\w{4}…\w{4} the record keeps, and the response the record keeps gives 0 0\.075, 1 0\.725, 2 0\.2, not the 0 0\.15, 1 0\.45, 2 0\.4 the record states$/);
+    // Served so by a host, a copy also misses the record's hash on chain.
+    const served = await run(f, { serve: tampered });
+    assert.deepEqual(failed(served), ["record-hash", "second-grader-receipt"]);
+  });
+
+  it("fails a judge whose probabilities are not the ones read from the response its receipt hashes", async () => {
+    const f = fixture("grade");
+    const misstated = secondAs(f.record, (judge) => otherAnswer(judge, '{"probabilities": {"0": 0.5, "1": 0.3, "2": 0.2}}'));
+    const report = await run({ ...f, record: misstated });
+    assert.deepEqual(failed(report), ["second-grader-receipt"]);
+    assert.match(check(report, "second-grader-receipt").message, /: the response the record keeps gives 0 0\.5, 1 0\.3, 2 0\.2, not the 0 0\.15, 1 0\.45, 2 0\.4 the record states$/);
+    // Read as the brain reads it: scaled by the sum and rounded to four places, so 3 to 9 to 8 is the record's 0.15, 0.45, 0.4 once scaled.
+    const scaled = secondAs(f.record, (judge) => otherAnswer(judge, '{"probabilities": {"0": 3, "1": 9, "2": 8}}'));
+    assert.equal(status(await run({ ...f, record: scaled }), "second-grader-receipt"), "ok");
+    const prose = secondAs(f.record, (judge) => otherAnswer(judge, "About even."));
+    assert.match(check(await run({ ...f, record: prose }), "second-grader-receipt").message, /: the response the record keeps gives no probabilities over the question's options$/);
+  });
+
+  it("fails a response that is not base64 as the brain writes it", async () => {
+    const f = fixture("grade");
+    const text = f.record.second.response;
+    for (const response of [`${text}!`, text.replace(/=+$/, ""), `${text.slice(0, 8)}\n${text.slice(8)}`, 7]) {
+      const report = await run({ ...f, record: secondAs(f.record, (judge) => ({ ...judge, response })) });
+      assert.deepEqual(failed(report), ["second-grader-receipt"], String(response).slice(0, 12));
+      assert.match(check(report, "second-grader-receipt").message, /: the response the record keeps is not base64$/);
+    }
+  });
+
+  it("checks a record that keeps no response as before, and says the probabilities rest on the record", async () => {
+    const f = fixture("grade");
+    const { response: _, ...second } = f.record.second;
+    const report = await run({ ...f, record: { ...f.record, second } });
+    assert.deepEqual(failed(report), []);
+    assert.match(check(report, "second-grader-receipt").message, /from a TEE upstream it verified$/);
+    assert.match(check(report, "judge-receipt").message, /whose probabilities are the ones the record states$/);
+    assert.deepEqual(report.responses, { judges: 2, held: 1 });
+    const plain = JSON.parse(readFileSync(new URL("./fixtures/prompt3/plain.json", import.meta.url), "utf8"));
+    const before = await run(plain);
+    assert.deepEqual(failed(before), []);
+    assert.deepEqual(before.responses, { judges: 1, held: 0 });
+    assert.equal(responsesHeld([before]), false);
+    // A decision with no judges beside Jev changes nothing, and neither does one whose signatures went unchecked.
+    assert.equal(responsesHeld([{ responses: undefined }]), false);
+    assert.equal(responsesHeld([await run(f, { offline: true })]), false);
+    assert.equal(responsesHeld([report, await run(f)]), false);
+  });
+
+  it("leaves the response out of the evidence hash, so version 2 rebuilds from a record with or without it", async () => {
+    const f = fixture("grade");
+    const strip = ({ response: _, ...judge }) => judge;
+    const stripped = { ...f.record, second: strip(f.record.second), panel: { ...f.record.panel, judges: f.record.panel.judges.map(strip) } };
+    const judges = [stripped.second, ...stripped.panel.judges].map(({ model, probabilities, requestHash, receipt }) => ({ model, probabilities, requestHash, receipt }));
+    const evidence = { version: 2, input: f.chain.inputHash, judges: [{ model: f.record.model, probabilities: f.record.probabilities }, ...judges], payments: [], versions: f.record.versions, panel: { rule: "median" }, passFrom: 1 };
+    assert.equal(f.record.evidence, keccak256(toBytes(canonicalStringify(evidence))));
+    for (const record of [f.record, stripped]) {
+      const report = await run({ ...f, record });
+      assert.equal(status(report, "evidence"), "ok");
+      assert.equal(report.evidence, f.record.evidence);
+    }
+  });
+
+  it("checks a copy served without the work against the evidence, its responses withheld with it", async () => {
+    const f = fixture("rejected");
+    const withheld = (record, response = () => MARK) => {
+      const state = JSON.parse(record.request.state);
+      const judged = (judge) => ({ ...judge, response: response(judge) });
+      return {
+        ...record,
+        request: { ...record.request, state: canonicalStringify({ ...state, result: MARK }) },
+        second: judged(record.second),
+        panel: { ...record.panel, judges: record.panel.judges.map(judged) },
+      };
+    };
+    const report = await run(f, { serve: withheld(f.record), withheld: true });
+    assert.equal(report.withheld, true);
+    assert.deepEqual(failed(report), []);
+    assert.equal(outcomeOf([report]), "withheld");
+    assert.deepEqual([status(report, "second-grader-receipt"), status(report, "judge-receipt"), status(report, "evidence")], ["ok", "ok", "ok"]);
+    assert.match(check(report, "second-grader-receipt").message, /which a record served without the work cannot rebuild, and served it at .* from a TEE upstream it verified$/);
+    assert.deepEqual(report.responses, { judges: 2, held: 0 });
+    // A copy that leaves a response readable is not the service's.
+    const leaked = await run(f, { serve: withheld(f.record, (judge) => judge.response), withheld: true });
+    assert.equal(leaked.withheld, undefined);
+    assert.equal(check(leaked, "withheld").message, "withheld: the host says this copy leaves out the work, but a judge's response is not marked as withheld where the service does");
+    assert.deepEqual(failed(leaked), ["withheld", "record-hash", "input-hash", "second-grader-receipt", "judge-receipt"]);
+  });
+
+  it("holds a response kept without a receipt to the probabilities, and skips the rest as before", async () => {
+    const f = fixture("grade");
+    const bare = await run({ ...f, record: secondAs(f.record, (judge) => ({ ...judge, receipt: null })) });
+    assert.equal(status(bare, "second-grader-receipt"), "skip");
+    assert.equal(
+      check(bare, "second-grader-receipt").message,
+      "the second grader answered without a receipt, so nothing shows that its gateway served the answer. The response the record keeps gives the probabilities it states, but no receipt hashes it",
+    );
+    const misstated = secondAs(f.record, (judge) => ({ ...judge, receipt: null, probabilities: { 0: 0.2, 1: 0.4, 2: 0.4 } }));
+    const report = await run({ ...f, record: misstated });
+    assert.ok(failed(report).includes("second-grader-receipt"));
+    assert.equal(check(report, "second-grader-receipt").message, "the second grader answered without a receipt, and the response the record keeps gives 0 0.15, 1 0.45, 2 0.4, not the 0 0.2, 1 0.4, 2 0.4 the record states");
   });
 });
 

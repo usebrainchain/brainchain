@@ -97,6 +97,8 @@ export interface DecisionReport {
   evidence?: Hex;
   /** The receipt checked for the paid job this decision settled, with the job and outcome it states. */
   receipt?: { from: string; job?: string; outcome?: string };
+  /** On a grade or ruling with judges beside Jev: how many, and how many of their responses the record keeps and were held to receipts whose signatures verified. */
+  responses?: { judges: number; held: number };
   checks: Check[];
 }
 
@@ -165,6 +167,8 @@ interface Judge {
   paid: number;
   receipt: { id: string } | null;
   requestHash: string;
+  /** The response body as its gateway returned it, in base64, where the brain keeps it. */
+  response?: unknown;
 }
 
 interface Panel {
@@ -1053,7 +1057,7 @@ export async function verifyDecision(ctx: Context, id: bigint, receipt?: GivenRe
   const decided: Decided = { id, decision, record, task, outside, block: recorded.blockNumber, payloadURI: e.payloadURI, sender };
   const anchored = checkEvidence(c, record, decision.inputHash, e.payloadURI);
   if (anchored) report.evidence = anchored;
-  if (judged) await checkJudgeReceipts(ctx, c, record, decision.recordedAt, report.withheld === true);
+  if (judged) await checkJudgeReceipts(ctx, c, record, decision.recordedAt, report.withheld === true, report);
   if (record.versions !== undefined) await checkVersions(ctx, c, record.versions, await sender(), recorded.blockNumber);
   const kept = receipt ?? (await servedReceipt(ctx, c, decided));
   if (kept) report.receipt = await checkReceipt(ctx, c, decided, kept, receipt === undefined);
@@ -1081,6 +1085,10 @@ async function withholding(ctx: Context, decision: Decision, record: Published, 
   if (state.result !== WITHHELD || !withheldField(state.data) || !withheldField(state.execution?.output) || !withheldField(state.execution?.error) || !pages) {
     return refuse("the request does not mark the work as withheld where the service does");
   }
+  // A reasoning model's response can quote the work, so the service withholds each judge's with it.
+  const panel = record.panel as { judges?: unknown } | undefined;
+  const judges = [record.second, ...(Array.isArray(panel?.judges) ? panel.judges : [])] as ({ response?: unknown } | null | undefined)[];
+  if (!judges.every((judge) => withheldField(judge?.response))) return refuse("a judge's response is not marked as withheld where the service does");
   if (outside?.rule === "acp-evaluation") return { allowed: true, why: "the delivery in an ACP evaluation is never published" };
   if (outside) {
     if (decision.answer !== YES) return { allowed: true, why: `a paid grade is published only once accepted, and BrainChain answered ${named(record.answer)}` };
@@ -1887,10 +1895,10 @@ const digestShort = (value: string): string => {
 /**
  * Each judge's receipt in a grade or ruling: Phala's gateway signed it with a key its attestation holds, it names the
  * request the record keeps, that request is Jev's question and state as the brain puts them to a judge, and the
- * gateway verified the TEE upstream that answered. The record keeps no judge's response, so nothing ties the
- * probabilities it records to the response the receipt hashes.
+ * gateway verified the TEE upstream that answered. Where the record keeps a judge's response, the receipt must hash
+ * it, and the probabilities it records must be the ones read from it. Without it, nothing ties them to the receipt.
  */
-async function checkJudgeReceipts(ctx: Context, c: Checks, record: Published, recordedAt: bigint, withheld: boolean): Promise<void> {
+async function checkJudgeReceipts(ctx: Context, c: Checks, record: Published, recordedAt: bigint, withheld: boolean, report: DecisionReport): Promise<void> {
   const judges: [string, string, Judge][] = [];
   if (record.second && isJudge(record.second)) judges.push(["second-grader-receipt", "the second grader", record.second]);
   if (hasPanel(record)) for (const judge of record.panel.judges) judges.push(["judge-receipt", `the judge ${clean(judge.model)}`, judge]);
@@ -1939,9 +1947,13 @@ async function checkJudgeReceipts(ctx: Context, c: Checks, record: Published, re
     }
   }
   const asked = withheld ? undefined : askedState(record.request.state);
+  let held = 0;
   for (const [name, who, judge] of judges) {
-    c.add(name, ...judgeReceipt(who, judge, record.request.questions.decision, asked, recordedAt, gateway, sessions, earlier));
+    const [status, message, tied] = judgeReceipt(who, judge, record.request.questions.decision, asked, recordedAt, gateway, sessions, earlier);
+    c.add(name, status, message);
+    if (tied) held += 1;
   }
+  report.responses = { judges: judges.length, held };
 }
 
 /** A kept keyset report: attested, one that does not hold (a failure), one that could not be read (an error), or none. */
@@ -1978,12 +1990,16 @@ function judgeReceipt(
   gateway: Attestation | string,
   sessions: Map<string, CitedSession | string | undefined>,
   earlier: Map<string, Kept>,
-): [Status, string] {
+): [Status, string, boolean] {
+  const answer = keptResponse(judge, question);
   const kept = judge.receipt as { id?: unknown; body?: unknown } | null | undefined;
-  if (!kept) return ["skip", `${who} answered without a receipt, so nothing shows that its gateway served the answer`];
+  if (!kept) {
+    if (answer?.problem) return ["fail", `${who} answered without a receipt, and ${answer.problem}`, false];
+    return ["skip", `${who} answered without a receipt, so nothing shows that its gateway served the answer${answer ? ". The response the record keeps gives the probabilities it states, but no receipt hashes it" : ""}`, false];
+  }
   const id = typeof kept.id === "string" ? clean(kept.id) : "without an id";
   const receipt = parseAciReceipt(kept.body);
-  if (!receipt) return ["fail", `${who}'s receipt ${id} is not a receipt as Phala's gateway signs one`];
+  if (!receipt) return ["fail", `${who}'s receipt ${id} is not a receipt as Phala's gateway signs one`, false];
 
   const wrong: string[] = [];
   const model = clean(judge.model);
@@ -2012,9 +2028,13 @@ function judgeReceipt(
         ? `; the session record it cites, ${digestShort(sessionId)}, could not be read: ${session}`
         : "";
 
+  const returned = eventOf(receipt, "response.returned")?.body_hash;
+  if (answer?.hash && returned !== answer.hash) wrong.push(`the gateway returned a response hashing to ${typeof returned === "string" ? digestShort(clean(returned)) : "nothing it states"}, not the ${digestShort(answer.hash)} the record keeps`);
+  if (answer?.problem) wrong.push(answer.problem);
+
   const signature = signatureOf(receipt, recordedAt, gateway, earlier.get(keptKey(receipt)));
   if (signature.status === "fail") wrong.push(signature.message);
-  if (wrong.length > 0) return ["fail", `${who}'s receipt ${id}: ${list(wrong)}`];
+  if (wrong.length > 0) return ["fail", `${who}'s receipt ${id}: ${list(wrong)}`, false];
 
   // The rest of the receipt holds, but nothing here shows that the request it names was Jev's question and state.
   const fingerprints = asked && "fingerprints" in asked ? asked.fingerprints.map((f) => digestShort(f)) : undefined;
@@ -2022,8 +2042,61 @@ function judgeReceipt(
     ? `. The request cannot be rebuilt from the record: the judge's signed request covers page text the record keeps only as ${fingerprints.length === 1 ? "a fingerprint" : "fingerprints"}, ${list(fingerprints)}`
     : "";
   const request = `the request the record names, ${digestShort(judge.requestHash)}${rebuilt ? `, which is Jev's question and state put to ${model}` : fingerprints ? "" : ", which a record served without the work cannot rebuild"}`;
-  if (signature.status !== "ok") return [signature.status, `${who}'s receipt ${id} says the gateway received ${request}, but its signature ${signature.status === "error" ? "could not be" : "was not"} checked: ${signature.message}${unbuilt}`];
-  return [fingerprints ? "skip" : "ok", `${who}'s receipt ${id} is signed by ${GATEWAY_HOST}'s receipt key ${signature.message}. The gateway received ${request}, and served it at ${utc(BigInt(receipt.served_at))} UTC from a TEE upstream it verified${sessionNote}${unbuilt}`];
+  const response = answer?.hash ? `the response the record keeps, ${digestShort(answer.hash)}, whose probabilities are the ones the record states` : undefined;
+  if (signature.status !== "ok") {
+    return [signature.status, `${who}'s receipt ${id} says the gateway received ${request}${response ? ` and returned ${response}` : ""}, but its signature ${signature.status === "error" ? "could not be" : "was not"} checked: ${signature.message}${unbuilt}`, false];
+  }
+  const served = `${who}'s receipt ${id} is signed by ${GATEWAY_HOST}'s receipt key ${signature.message}. The gateway received ${request}, and served it at ${utc(BigInt(receipt.served_at))} UTC from a TEE upstream it verified${sessionNote}`;
+  return [fingerprints ? "skip" : "ok", `${served}${response ? `. It returned ${response}` : ""}${unbuilt}`, response !== undefined];
+}
+
+/**
+ * A judge's response as the record keeps it, in base64: the SHA-256 of its bytes, and what does not hold of it, which
+ * is that it is base64 and that the brain reads the record's probabilities from it. Undefined when the record keeps
+ * none, or a copy served without the work marks it withheld.
+ */
+function keptResponse(judge: Judge, question: Question): { hash?: string; problem?: string } | undefined {
+  const text = judge.response;
+  if (text === undefined || text === WITHHELD) return undefined;
+  // Node's decoder skips what is not base64, so the bytes must encode back to exactly the text the record holds.
+  const bytes = typeof text === "string" && /^[A-Za-z0-9+/]*={0,2}$/.test(text) ? Buffer.from(text, "base64") : undefined;
+  if (!bytes || bytes.toString("base64") !== text) return { problem: "the response the record keeps is not base64" };
+  const hash = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  const read = opinionOf(question, bytes);
+  if (!read) return { hash, problem: "the response the record keeps gives no probabilities over the question's options" };
+  const recorded = judge.probabilities;
+  const matches = same(Object.keys(read).sort(), Object.keys(recorded).sort()) && Object.entries(read).every(([option, p]) => recorded[option] === p);
+  return matches ? { hash } : { hash, problem: `the response the record keeps gives ${probabilitiesText(read)}, not the ${probabilitiesText(recorded)} the record states` };
+}
+
+const probabilitiesText = (p: Record<string, number>): string => Object.entries(p).map(([option, value]) => `${clean(option)} ${value}`).join(", ");
+
+/**
+ * The brain's parseOpinion over a chat completion (judges.ts): the reply's first message, read as JSON, gives a
+ * probability for exactly each of the question's options, each scaled by their sum and rounded to four places.
+ * Undefined where the brain finds no usable probabilities.
+ */
+function opinionOf(question: Question, body: Uint8Array): Record<string, number> | undefined {
+  const { criteria } = question;
+  if (typeof criteria !== "object" || criteria === null || (question.type === "choice") === Array.isArray(criteria)) return undefined;
+  const options = Array.isArray(criteria) ? criteria.map((_, i) => String(i)) : Object.keys(criteria);
+  let content: unknown;
+  let parsed: unknown;
+  try {
+    // As fetch's json() reads a body: UTF-8, a byte order mark dropped, bad sequences replaced.
+    const reply = JSON.parse(new TextDecoder().decode(body)) as { choices?: { message?: { content?: unknown } }[] };
+    content = reply.choices?.[0]?.message?.content ?? "";
+    parsed = JSON.parse(content as string);
+  } catch {
+    return undefined;
+  }
+  const raw = (parsed as { probabilities?: unknown } | null)?.probabilities;
+  if (!raw || typeof raw !== "object") return undefined;
+  const values = options.map((o) => Number((raw as Record<string, unknown>)[o]));
+  if (values.some((v) => !Number.isFinite(v) || v < 0)) return undefined;
+  const sum = values.reduce((a, b) => a + b, 0);
+  if (sum <= 0) return undefined;
+  return Object.fromEntries(options.map((o, i) => [o, Number((values[i]! / sum).toFixed(4))]));
 }
 
 function signatureOf(receipt: AciReceipt, recordedAt: bigint, gateway: Attestation | string, kept: Kept): { status: Status; message: string } {
@@ -2483,6 +2556,15 @@ export function outcomeOf(reports: Pick<DecisionReport, "checks" | "withheld">[]
   if (checks.some((c) => c.status === "fail")) return "mismatch";
   if (checks.some((c) => c.status === "error")) return "unverified";
   return reports.some((r) => r.withheld) ? "withheld" : "match";
+}
+
+/**
+ * Whether every judge's probabilities in these decisions are tied to its receipt: some decision has judges beside
+ * Jev, and each one's response is in its record and was held to a receipt whose signature verified.
+ */
+export function responsesHeld(reports: Pick<DecisionReport, "responses">[]): boolean {
+  const judged = reports.flatMap((r) => (r.responses && r.responses.judges > 0 ? [r.responses] : []));
+  return judged.length > 0 && judged.every((r) => r.held === r.judges);
 }
 
 /** What a withheld copy leaves unchecked. A grade of outside work has no task here, so nothing on chain backs its brief or levels. */
