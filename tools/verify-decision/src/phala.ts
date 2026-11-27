@@ -1,14 +1,28 @@
 // Phala Private AI's gateway serves the judges beside Jev and signs a receipt for every answer it returns. The key it
 // signs with is published in its attestation: a keyset that a TDX quote binds to the caller's nonce, certified by
-// Intel. Both are checked here with Node's own crypto. Intel's root certificate is the only thing pinned.
+// Intel. Both are checked here with Node's own crypto. Pinned: Intel's root certificate, Phala's gateway app and the
+// root of the dstack KMS that issues its keys, which hold the receipt key's custody chain (pap's check id-5, from
+// crates/aci-verify/src/dstack.rs in Dstack-TEE/private-ai-gateway, ported).
 // See https://docs.phala.com/phala-cloud/confidential-ai/verify/verify-attestation and the receipt reference beside it.
 
-import { createHash, createPublicKey, verify, X509Certificate, type KeyObject } from "node:crypto";
+import { createHash, createPublicKey, ECDH, verify, X509Certificate, type KeyObject } from "node:crypto";
+
+import { keccak256, recoverPublicKey } from "viem";
 
 import { canonicalStringify } from "./canonical.js";
 
 /** The gateway the brain asks its judges through. */
 export const PHALA_GATEWAY = "https://inference.phala.com/v1";
+
+/** Phala's gateway as a dstack app: the app id its boot measures, which is also its app contract on Base. */
+export const PHALA_APP = "89c51ab856bee41efe78c40309a4deb277a02a0f";
+
+/**
+ * The root that signs every app key Phala's on-chain dstack KMS issues: kmsInfo().k256Pubkey of the KMS contract on Base,
+ * 0x2f83172A49584C017F2B256F0FB2Dca14126Ba9C, as read on 27 Nov 2026. The P-256 key in the boot's key-provider event is
+ * the KMS's CA key, not this one.
+ */
+export const KMS_ROOT = "02a335aea3df11d46ae0a373d3f26fbd1d208572ecc87e630e618dac693b7af721";
 
 /**
  * The SHA-256 fingerprint of the Intel SGX Root CA certificate, which certifies every platform's PCK certificate, as
@@ -25,6 +39,12 @@ export interface ReceiptKey {
   publicKey: string;
 }
 
+/** Whether the receipt key's custody chain holds, and why not when it does not. */
+export interface Custody {
+  holds: boolean;
+  reason?: string;
+}
+
 /** What a verified attestation says about the gateway. */
 export interface Attestation {
   /** `sha256:` and the hex digest of the keyset in JCS form, which the quote binds with the nonce. */
@@ -37,11 +57,14 @@ export interface Attestation {
   app: string;
   compose: string;
   os: string;
+  /** The receipt key's custody: its dstack KMS chain from Phala's app to KMS_ROOT. */
+  custody: Custody;
 }
 
 const sha256 = (data: string | Uint8Array): Buffer => createHash("sha256").update(data).digest();
 const sha384 = (data: Uint8Array): Buffer => createHash("sha384").update(data).digest();
 const HEX = /^(?:[0-9a-f]{2})*$/;
+const RUNTIME_EVENT = 0x08000001;
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const p256 = (key: KeyObject, data: Uint8Array, signature: Uint8Array): boolean => verify("sha256", data, { key, dsaEncoding: "ieee-p1363" }, signature);
 
@@ -109,7 +132,7 @@ const reportData = (keysetDigest: string, nonce: string): Buffer => sha256(JSON.
  * at `now`, the TD is not a debug TD, and the boot event log replays to the quote's RTMR3 with the compose file it
  * measured. Throws Unattested when any of it fails.
  */
-export function verifyAttestation(report: unknown, nonce: string, now: number): Attestation {
+export function verifyAttestation(report: unknown, nonce: string, now: number): Omit<Attestation, "custody"> {
   const r = isObject(report) ? report : {};
   const attestation = isObject(r.attestation) ? r.attestation : {};
   const keyset = attestation.workload_keyset;
@@ -138,11 +161,12 @@ export function verifyAttestation(report: unknown, nonce: string, now: number): 
 }
 
 /**
- * Replays dstack's boot events into RTMR3: each event's digest is SHA-384 over its type (u32, little-endian), ":",
- * its name, ":" and its payload, and the register extends by each digest in turn. Returns each named event's payload,
- * as hex or, for the ids and hashes, as dstack writes them.
+ * Replays dstack's boot events into RTMR3: each event's digest is SHA-384 over its preimage, the register extends by
+ * each digest in turn, and each digest stated must be the one computed. A version 1 event's preimage is its type (u32,
+ * little-endian), ":", its name, ":" and its payload; a version 2 event's is the JCS form of its name, payload and
+ * type. Returns the payload of the first event of each name before system-ready, as dstack's find_event reads them.
  */
-function replayRtmr3(eventLog: unknown, rtmr3: Buffer): Record<string, string> {
+export function replayRtmr3(eventLog: unknown, rtmr3: Buffer): Record<string, string> {
   let events: unknown;
   try {
     events = typeof eventLog === "string" ? JSON.parse(eventLog) : eventLog;
@@ -152,19 +176,82 @@ function replayRtmr3(eventLog: unknown, rtmr3: Buffer): Record<string, string> {
   if (!Array.isArray(events)) throw new Unattested("its boot event log is not a list of events");
   let register: Buffer = Buffer.alloc(48);
   const payloads: Record<string, string> = {};
+  let ready = false;
   for (const e of events) {
     if (!isObject(e) || e.imr !== 3) continue;
     const { event_type: type, event, event_payload: payload, digest } = e;
-    if (typeof type !== "number" || typeof event !== "string" || typeof payload !== "string" || !HEX.test(payload) || typeof digest !== "string") throw new Unattested("its boot event log holds an RTMR3 event it cannot replay");
-    const head = Buffer.alloc(4);
-    head.writeUInt32LE(type);
-    const computed = sha384(Buffer.concat([head, Buffer.from(`:${event}:`), Buffer.from(payload, "hex")]));
-    if (computed.toString("hex") !== digest) throw new Unattested(`its boot event "${event}" does not hash to the digest it states`);
+    const version = Object.hasOwn(e, "version") ? e.version : 1;
+    if (type !== RUNTIME_EVENT || typeof event !== "string" || typeof payload !== "string" || !HEX.test(payload) || (digest !== undefined && typeof digest !== "string")) {
+      throw new Unattested("its boot event log holds an RTMR3 event it cannot replay");
+    }
+    let preimage: Buffer;
+    if (version === 2) {
+      preimage = Buffer.from(canonicalStringify({ name: event, payload, type: RUNTIME_EVENT }));
+      if (e.preimage !== preimage.toString("hex")) throw new Unattested(`its boot event "${event}" states a preimage that is not the event`);
+    } else if (version === 1 && !event.includes(":")) {
+      const head = Buffer.alloc(4);
+      head.writeUInt32LE(RUNTIME_EVENT);
+      preimage = Buffer.concat([head, Buffer.from(`:${event}:`), Buffer.from(payload, "hex")]);
+    } else {
+      throw new Unattested(`its boot event "${event}" is of a form dstack does not write`);
+    }
+    const computed = sha384(preimage);
+    if (digest && computed.toString("hex") !== digest) throw new Unattested(`its boot event "${event}" does not hash to the digest it states`);
     register = sha384(Buffer.concat([register, computed]));
-    payloads[event] = payload;
+    if (event === "system-ready") ready = true;
+    if (!ready && !Object.hasOwn(payloads, event)) payloads[event] = payload;
   }
   if (!register.equals(rtmr3)) throw new Unattested("its boot event log does not replay to the quote's RTMR3");
   return payloads;
+}
+
+const PURPOSE = "aci.receipt.ed25519.v1";
+/** A secp256k1 public key in compressed hex; throws on one that is not on the curve. */
+const compressed = (hex: string): string => ECDH.convertKey(hex, "secp256k1", "hex", "hex", "compressed") as string;
+
+async function recovered(message: Uint8Array, signature: string): Promise<string> {
+  if (!/^[0-9a-f]{130}$/i.test(signature)) throw new Error("a signature in it is not 65 bytes of hex");
+  return compressed((await recoverPublicKey({ hash: keccak256(message), signature: `0x${signature}` })).slice(2));
+}
+
+/**
+ * Why the receipt key's custody does not hold, or undefined when it does: the report's dstack KMS chain must lead from
+ * the receipt key, through the app key the KMS issued to `app` (the app id the boot measured), to KMS_ROOT, and `app`
+ * must be Phala's gateway. Every receipt key the keyset lists must be the one the chain covers. What a chain cannot show
+ * is that the Ed25519 receipt key is derived from the KMS key it names: that rests on the code the compose runs.
+ */
+export async function custodyOf(report: unknown, app: string): Promise<string | undefined> {
+  const attestation = isObject(report) && isObject(report.attestation) ? report.attestation : {};
+  const evidence = isObject(attestation.evidence) ? attestation.evidence : {};
+  const keyset = isObject(attestation.workload_keyset) ? attestation.workload_keyset : {};
+  const held = isObject(evidence.key_custody) ? evidence.key_custody : undefined;
+  if (!held) return "the report carries no evidence of who holds its keys";
+  if (held.provider !== "dstack-kms") return `its keys are held by ${String(held.provider)}, not the dstack KMS`;
+  const entry = (Array.isArray(held.keys) ? held.keys : []).find((key) => isObject(key) && key.role === "receipt") as Record<string, unknown> | undefined;
+  if (!entry) return "it names no custody for the receipt key";
+  const { public_key: key, kms_public_key: kms, purpose, signature_chain: chain } = entry;
+  if (typeof key !== "string" || typeof kms !== "string") return "the receipt key's custody names no key";
+  if (purpose !== PURPOSE) return `the custody chain is for ${String(purpose)}, not ${PURPOSE}`;
+  const keys = Array.isArray(keyset.receipt_signing_keys) ? keyset.receipt_signing_keys : [];
+  if (keys.length === 0 || !keys.every((listed) => isObject(listed) && listed.public_key === key)) return "the keyset lists a receipt key the custody chain does not cover";
+  if (app !== PHALA_APP) return `the boot measured app ${app || "none"}, not Phala's gateway, ${PHALA_APP}`;
+  if (keyset.subject != null && keyset.subject !== `app-id:0x${app}`) return `the keyset names subject ${String(keyset.subject)}, not the app the boot measured`;
+  if (!Array.isArray(chain) || chain.length !== 2 || !chain.every((sig) => typeof sig === "string")) return "the custody chain is not two signatures";
+  try {
+    const appKey = await recovered(Buffer.from(`${PURPOSE}:${compressed(kms)}`), chain[0] as string);
+    const root = await recovered(Buffer.concat([Buffer.from("dstack-kms-issued:"), Buffer.from(app, "hex"), Buffer.from(appKey, "hex")]), chain[1] as string);
+    if (root !== KMS_ROOT) return `the custody chain ends at ${root}, not the root of Phala's KMS contract on Base, ${KMS_ROOT}`;
+  } catch (error) {
+    return `the custody chain does not verify: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  return undefined;
+}
+
+/** verifyAttestation, and the receipt key's custody beside it. */
+export async function attest(report: unknown, nonce: string, now: number): Promise<Attestation> {
+  const attested = verifyAttestation(report, nonce, now);
+  const reason = await custodyOf(report, attested.app);
+  return { ...attested, custody: reason ? { holds: false, reason } : { holds: true } };
 }
 
 /** A receipt as GET /v1/aci/receipts/<id> answers it: the fields read here. The signature covers every field. */

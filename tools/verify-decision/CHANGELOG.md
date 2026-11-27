@@ -2,14 +2,29 @@
 
 Changes to `brainchain-verify`, the npm package built from this directory. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are npm publish dates, in UTC.
 
-## [0.14.0] - unreleased
+## [0.15.0] - 2026-11-27
+
+### Added
+
+- `gateway` holds Phala's gateway to the releases Phala publishes: its app contract on Base, `0x89c51ab856bee41efe78c40309a4deb277a02a0f`, must allow the compose hash the gateway's boot measured (`allowedComposeHashes`). It is read once per run per compose, as it stands now, through `mainnet.base.org` and then `base-rpc.publicnode.com`. A compose it does not allow fails the line; no answer from Base makes it an `ERROR`.
+- `gateway` checks the receipt key's custody, as Phala's `pap` does in check id-5: the report's dstack KMS chain must lead from the receipt key, through the app key the KMS issued to Phala's app id, to `02a335ae…f721`, the root that Phala's KMS contract on Base (`0x2f83172A49584C017F2B256F0FB2Dca14126Ba9C`) names in `kmsInfo()`. Every receipt key the keyset lists must be the one the chain covers. A chain that does not hold fails the line. The check reads only the report.
+- `second-grader-receipt` and `judge-receipt` hold the keyset that signed each receipt, the live one or one BrainChain's gateway kept, to the same two checks, and say what they found. A keyset that fails either fails the receipt; a Base that cannot be read makes the line an `ERROR`.
+- `brainchain-verify/phala` exports the gateway checks: `attest`, `verifyAttestation`, `custodyOf`, `replayRtmr3` and the pinned `PHALA_APP` and `KMS_ROOT`.
+
+### Changed
+
+- The boot event replay recomputes each digest as dstack writes it, version 1 or version 2 (whose preimage must be the event's JCS form), refuses an RTMR3 event that is not a dstack runtime event, and reads the app id and compose hash as dstack does: the first of each before `system-ready`.
+
+0.14.0 and earlier do not read Base or the custody chain, so their `gateway` line passes a compose Phala's list does not allow and a receipt key whose chain does not hold.
+
+## [0.14.0] - 2026-11-27
 
 ### Added
 
 - `second-grader-receipt` and `judge-receipt` check the session record each receipt cites: it hashes to the cited id, is an `aci/1` record, was in force when the answer was served, and its evidence hashes to the digest it states. The record is read from `inference.phala.com` while Phala serves it, about an hour, then from BrainChain's inference gateway, which keeps the records the brain's receipts cite from 2026-11-27. A record that does not hold fails the receipt. One that neither serves leaves the line as in 0.13.0.
 - A receipt signed under a key Phala's gateway no longer serves is checked against the attestation report BrainChain's inference gateway kept for its keyset, held to Intel's root as of when the answer was served. A kept report that does not hold fails the receipt. Without a kept report the line is an `ERROR`, as before. Receipts on decisions recorded before 2026-11-06 03:39 UTC still skip their signatures, and no kept report is read for them.
 
-## [0.13.0] - unreleased
+## [0.13.0] - 2026-11-22
 
 ### Added
 

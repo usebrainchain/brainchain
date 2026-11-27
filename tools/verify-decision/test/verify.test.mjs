@@ -60,7 +60,7 @@ import {
   verifyRecord,
   withheldNotChecked,
 } from "../dist/verify.js";
-import { Unattested, verifyAttestation } from "../dist/phala.js";
+import { attest, Unattested } from "../dist/phala.js";
 
 const YES = `0x${"0".repeat(63)}1`;
 const NO = `0x${"0".repeat(64)}`;
@@ -110,7 +110,10 @@ const GATEWAY = {
   app: "89c51ab856bee41efe78c40309a4deb277a02a0f",
   compose: "261760d004c92eab0b6bed59a55cf3214c65d2cb543a1bed6dff371cd2650a7a",
   os: "8db40cb23008d6213668b5816702d100b37b859a8a5bfd18d938ae3a1b3715bd",
+  custody: { holds: true },
 };
+// What the gateway and each judge's receipt say of a keyset Phala's list on Base allows and whose custody holds.
+const HELD = "Phala's app contract on Base allows its compose, 2617…0a7a, and its receipt key's custody holds: the dstack KMS chain runs from that key through app 89c5…2a0f to the root of Phala's KMS contract on Base, 02a3…f721";
 // The brain's promptFor and askOpinion (judges.ts), copied: the bytes a judge is sent, as the record hashes them.
 function judgeRequest(model, question, state, maxTokens = 8000) {
   const choice = question.type === "choice";
@@ -276,6 +279,8 @@ function onChain({
   // The session records judges' receipts cite, and keysets the gateway no longer serves: none, unless a test gives them.
   sessions = async () => undefined,
   keysets = async () => undefined,
+  // What Phala's app contract on Base says of a compose: allowed, unless a test says otherwise.
+  releases = async () => true,
   // Each key the log named its brain, with the block that named it and that block's time.
   brains = [{ brain, block: 1n, at: 1_793_000_000n }],
   // brain() on another set's log, by its address.
@@ -316,7 +321,7 @@ function onChain({
       return [];
     },
   };
-  return { client, network: { ...network, sets }, set, briefs: new Map(), offline, balances, gateway, sessions, keysets };
+  return { client, network: { ...network, sets }, set, briefs: new Map(), offline, balances, gateway, sessions, keysets, releases };
 }
 
 const verify = (options) => verifyDecision(onChain(options), 1n, options.receipt);
@@ -1237,12 +1242,12 @@ describe("judges' receipts", () => {
     assert.deepEqual(report.checks.map((c) => c.name).slice(-3), ["gateway", "second-grader-receipt", "judge-receipt"]);
     assert.equal(
       check(report, "gateway").message,
-      `gateway: inference.phala.com attests receipt key ${KEY}: a TDX quote that Intel's SGX root certifies binds its keyset, sha256:abab…abab, to this run's nonce, and measures app 89c5…2a0f and compose 2617…0a7a`,
+      `gateway: inference.phala.com attests receipt key ${KEY}: a TDX quote that Intel's SGX root certifies binds its keyset, sha256:abab…abab, to this run's nonce, and measures app 89c5…2a0f and compose 2617…0a7a. ${HELD}`,
     );
     const hash = judgeRequest(SECOND, twice().request.questions.decision, twice().request.state);
     assert.equal(
       receiptLine(report).message,
-      `the second grader's receipt rcpt-deepseek-v4.1-flash-1017 is signed by inference.phala.com's receipt key ${KEY}. The gateway received the request the record names, sha256:${hash.slice(7, 11)}…${hash.slice(-4)}, which is Jev's question and state put to ${SECOND}, and served it at 2026-10-26 07:33:18 UTC from a TEE upstream it verified`,
+      `the second grader's receipt rcpt-deepseek-v4.1-flash-1017 is signed by inference.phala.com's receipt key ${KEY}. The gateway received the request the record names, sha256:${hash.slice(7, 11)}…${hash.slice(-4)}, which is Jev's question and state put to ${SECOND}, and served it at 2026-10-26 07:33:18 UTC from a TEE upstream it verified. Of the keyset that signed it, ${HELD}`,
     );
     assert.match(check(report, "judge-receipt").message, new RegExp(`^the judge ${THIRD}'s receipt rcpt-qwen3-235b-a22b-instruct-2507 is signed by`));
   });
@@ -1256,16 +1261,16 @@ describe("judges' receipts", () => {
 
   it("holds a record BrainChain published to the attestation Phala's gateway gave, as recorded", async () => {
     const attested = JSON.parse(readFileSync(new URL("./fixtures/phala/attestation.json", import.meta.url), "utf8"));
-    const gateway = async () => verifyAttestation(attested.report, attested.nonce, attested.fetchedAt);
+    const gateway = async () => attest(attested.report, attested.nonce, attested.fetchedAt);
     const record = (name) => JSON.parse(readFileSync(new URL(`./fixtures/phala/${name}.json`, import.meta.url), "utf8"));
     const live = await run(record("record-v3-6-400"), { recordedAt: 1_795_334_729n, gateway });
     assert.equal(
       check(live, "gateway").message,
-      "gateway: inference.phala.com attests receipt key c9bd…f34e: a TDX quote that Intel's SGX root certifies binds its keyset, sha256:b7f8…6301, to this run's nonce, and measures app 89c5…2a0f and compose 2617…0a7a",
+      `gateway: inference.phala.com attests receipt key c9bd…f34e: a TDX quote that Intel's SGX root certifies binds its keyset, sha256:b7f8…6301, to this run's nonce, and measures app 89c5…2a0f and compose 2617…0a7a. ${HELD}`,
     );
     assert.equal(
       receiptLine(live).message,
-      `the second grader's receipt rcpt-37e77d3e69df7cf34629dfab is signed by inference.phala.com's receipt key c9bd…f34e. The gateway received the request the record names, sha256:c425…0e5f, which is Jev's question and state put to ${SECOND}, and served it at 2026-11-22 08:05:27 UTC from a TEE upstream it verified`,
+      `the second grader's receipt rcpt-37e77d3e69df7cf34629dfab is signed by inference.phala.com's receipt key c9bd…f34e. The gateway received the request the record names, sha256:c425…0e5f, which is Jev's question and state put to ${SECOND}, and served it at 2026-11-22 08:05:27 UTC from a TEE upstream it verified. Of the keyset that signed it, ${HELD}`,
     );
     assert.equal(receiptLine(live).status, "ok");
 
@@ -1292,7 +1297,7 @@ describe("judges' receipts", () => {
     const held = await run(citing(id), { sessions: async (cited) => (asked.push(cited), { record: session, from: "inference.usebrainchain.com" }) });
     assert.deepEqual(failed(held), []);
     assert.deepEqual(asked, [id]);
-    assert.ok(receiptLine(held).message.endsWith(`from a TEE upstream it verified, in session ${id.slice(0, 4)}…${id.slice(-4)}, whose record, as inference.usebrainchain.com serves it, hashes to that id and was in force when it served the answer`));
+    assert.ok(receiptLine(held).message.endsWith(`from a TEE upstream it verified, in session ${id.slice(0, 4)}…${id.slice(-4)}, whose record, as inference.usebrainchain.com serves it, hashes to that id and was in force when it served the answer. Of the keyset that signed it, ${HELD}`));
 
     // Another record than the one cited, an answer served after the session ended, and evidence that is not what it states.
     const ended = { ...session, expires_at: 1_792_999_500 };
@@ -1312,7 +1317,7 @@ describe("judges' receipts", () => {
     // Served by neither, the receipt stands on its own word for the session; unreadable, the line says so; offline, nothing is read.
     assert.equal(status(await run(citing(id)), "second-grader-receipt"), "ok");
     const unreadable = await run(citing(id), { sessions: async () => Promise.reject(new Error("socket hang up")) });
-    assert.match(receiptLine(unreadable).message, new RegExp(`; the session record it cites, ${id.slice(0, 4)}…${id.slice(-4)}, could not be read: socket hang up$`));
+    assert.match(receiptLine(unreadable).message, new RegExp(`; the session record it cites, ${id.slice(0, 4)}…${id.slice(-4)}, could not be read: socket hang up\\. Of the keyset that signed it, `));
     let read = 0;
     await run(citing(id), { offline: true, sessions: async () => (read++, undefined) });
     assert.equal(read, 0);
@@ -1359,6 +1364,50 @@ describe("judges' receipts", () => {
     const odd = resigned(throughGateway(twice()), (body) => ({ ...body, workload_keyset_digest: "sha256:../sessions/x" }), OLD);
     await run(odd, { keysets: async () => (asks++, kept) });
     assert.equal(asks, 0);
+  });
+
+  it("holds the gateway and each receipt to Phala's list on Base and to the receipt key's custody", async () => {
+    const record = throughGateway(twice());
+    const revoked = await run(record, { releases: async () => false });
+    assert.deepEqual(failed(revoked), ["gateway", "second-grader-receipt"]);
+    assert.match(check(revoked, "gateway").message, /and compose 2617…0a7a\. But Phala's app contract on Base does not allow its compose, 2617…0a7a$/);
+    assert.match(receiptLine(revoked).message, /^the second grader's receipt rcpt-deepseek-v4\.1-flash-1017: the keyset that signed it fails: Phala's app contract on Base does not allow its compose, 2617…0a7a$/);
+    assert.equal(outcomeOf([revoked]), "mismatch");
+
+    const unheld = await run(record, { gateway: async () => ({ ...GATEWAY, custody: { holds: false, reason: "the custody chain ends at 03ab, not the root of Phala's KMS contract on Base" } }) });
+    assert.deepEqual(failed(unheld), ["gateway", "second-grader-receipt"]);
+    assert.match(check(unheld, "gateway").message, /\. But its receipt key's custody does not hold: the custody chain ends at 03ab, not the root of Phala's KMS contract on Base$/);
+    assert.match(receiptLine(unheld).message, /: the keyset that signed it fails: its receipt key's custody does not hold: the custody chain ends at 03ab/);
+
+    // Base not answering leaves both unchecked rather than failed, and says what could not be read.
+    const quiet = await run(record, { releases: async () => Promise.reject(new Error("Base RPC https://mainnet.base.org did not answer")) });
+    assert.deepEqual([status(quiet, "gateway"), status(quiet, "second-grader-receipt")], ["error", "error"]);
+    assert.match(check(quiet, "gateway").message, /\. But whether Phala's app contract on Base allows its compose, 2617…0a7a, could not be read: Base RPC https:\/\/mainnet\.base\.org did not answer$/);
+    assert.match(receiptLine(quiet).message, /from a TEE upstream it verified\. Of the keyset that signed it, whether Phala's app contract on Base allows its compose, 2617…0a7a, could not be read: Base RPC/);
+    assert.equal(outcomeOf([quiet]), "unverified");
+
+    // Offline, Base is not read and the lines skip as before.
+    let reads = 0;
+    const offline = await run(record, { offline: true, releases: async () => (reads++, true) });
+    assert.equal(status(offline, "gateway"), "skip");
+    assert.equal(reads, 0);
+  });
+
+  it("reads each compose from Base once a run, a kept keyset's beside the live one's", async () => {
+    const keyOf = (seed) => createPrivateKey({ key: Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), Buffer.alloc(32, seed)]), format: "der", type: "pkcs8" });
+    const hexOf = (key) => Buffer.from(createPublicKey(key).export({ format: "jwk" }).x, "base64url").toString("hex");
+    const OLD = keyOf(9);
+    const keyset = `sha256:${"cd".repeat(32)}`;
+    const compose = "04d79a230db9bb467ced4b3a0822042c5751c32d89a2b1c6801368e648356085";
+    const kept = { ...GATEWAY, keysetDigest: keyset, compose, receiptKeys: [{ keyId: "dstack-kms-receipt-ed25519-v1", publicKey: hexOf(OLD) }] };
+    const signed = resigned(throughGateway(twice()), (body) => ({ ...body, workload_keyset_digest: keyset }), OLD);
+    const asked = [];
+    const ctx = onChain({ publish: signed, answer: YES, bps: Math.round(signed.confidence * 10_000), recordedAt: AFTER, keysets: async () => kept, releases: async (hash) => (asked.push(hash), hash !== compose) });
+    const report = await verifyDecision(ctx, 1n);
+    await verifyDecision(ctx, 1n);
+    assert.deepEqual(asked, [GATEWAY.compose, compose]);
+    assert.equal(status(report, "gateway"), "ok");
+    assert.match(receiptLine(report).message, /: the keyset that signed it fails: Phala's app contract on Base does not allow its compose, 04d7…6085$/);
   });
 
   it("fails a receipt the gateway's key did not sign, and cannot check one whose key is gone", async () => {
@@ -1586,7 +1635,7 @@ describe("records under prompt version 3: delivered data and cited pages", () =>
     const short = (digest) => `sha256:${digest.slice(7, 11)}…${digest.slice(-4)}`;
     assert.equal(
       check(report, "second-grader-receipt").message,
-      `the second grader's receipt ${f.record.second.receipt.id} is signed by inference.phala.com's receipt key ${GATEWAY.receiptKeys[0].publicKey.slice(0, 4)}…${GATEWAY.receiptKeys[0].publicKey.slice(-4)}. The gateway received the request the record names, ${short(f.record.second.requestHash)}, and served it at 2026-10-26 07:33:18 UTC from a TEE upstream it verified. The request cannot be rebuilt from the record: the judge's signed request covers page text the record keeps only as a fingerprint, ${short(page.excerptSha256)}`,
+      `the second grader's receipt ${f.record.second.receipt.id} is signed by inference.phala.com's receipt key ${GATEWAY.receiptKeys[0].publicKey.slice(0, 4)}…${GATEWAY.receiptKeys[0].publicKey.slice(-4)}. The gateway received the request the record names, ${short(f.record.second.requestHash)}, and served it at 2026-10-26 07:33:18 UTC from a TEE upstream it verified. Of the keyset that signed it, ${HELD}. The request cannot be rebuilt from the record: the judge's signed request covers page text the record keeps only as a fingerprint, ${short(page.excerptSha256)}`,
     );
   });
 

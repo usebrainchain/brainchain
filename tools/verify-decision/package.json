@@ -1,6 +1,6 @@
 {
   "name": "brainchain-verify",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "Check a BrainChain decision against the chain: the published record, its hashes, its confidence and the thresholds the contracts applied.",
   "license": "MIT",
   "author": "BrainChain",
@@ -32,6 +32,10 @@
     "./deployments": {
       "types": "./dist/deployments.d.ts",
       "default": "./dist/deployments.js"
+    },
+    "./phala": {
+      "types": "./dist/phala.d.ts",
+      "default": "./dist/phala.js"
     },
     "./zerox": {
       "types": "./dist/zerox.d.ts",
