@@ -273,6 +273,9 @@ function onChain({
   recordedAt = 1793000000n,
   // The judges' gateway, attested; JUDGE_KEY is its receipt key.
   gateway = async () => GATEWAY,
+  // The session records judges' receipts cite, and keysets the gateway no longer serves: none, unless a test gives them.
+  sessions = async () => undefined,
+  keysets = async () => undefined,
   // Each key the log named its brain, with the block that named it and that block's time.
   brains = [{ brain, block: 1n, at: 1_793_000_000n }],
   // brain() on another set's log, by its address.
@@ -313,7 +316,7 @@ function onChain({
       return [];
     },
   };
-  return { client, network: { ...network, sets }, set, briefs: new Map(), offline, balances, gateway };
+  return { client, network: { ...network, sets }, set, briefs: new Map(), offline, balances, gateway, sessions, keysets };
 }
 
 const verify = (options) => verifyDecision(onChain(options), 1n, options.receipt);
@@ -1276,6 +1279,86 @@ describe("judges' receipts", () => {
     const before = await run(record("record-v3-4-22"), { recordedAt: 1_793_718_451n, gateway });
     assert.equal(receiptLine(before).status, "skip");
     assert.match(receiptLine(before).message, /which is Jev's question and state put to \S+, but its signature was not checked: it was signed before Phala's gateway moved to a new app on 2026-11-06, with a key that is no longer published\. See https:\S+#known-history$/);
+  });
+
+  it("holds each receipt to the session record it cites, read from Phala or as BrainChain's gateway kept it", async () => {
+    const evidence = Buffer.from('{"quote":"00"}');
+    const digest = `sha256:${createHash("sha256").update(evidence).digest("hex")}`;
+    const session = { api_version: "aci/1", established_at: 1_792_999_000, expires_at: 1_793_002_600, evidence: { digest, data: dataUri(evidence) }, upstream_name: "phala" };
+    const idOf = (record) => createHash("sha256").update(canonicalStringify(record)).digest("hex");
+    const citing = (id) => resigned(throughGateway(twice()), (body) => ({ ...body, event_log: body.event_log.map((e) => (e.type === "upstream.verified" ? { ...e, session_id: id } : e)) }));
+    const id = idOf(session);
+    const asked = [];
+    const held = await run(citing(id), { sessions: async (cited) => (asked.push(cited), { record: session, from: "inference.usebrainchain.com" }) });
+    assert.deepEqual(failed(held), []);
+    assert.deepEqual(asked, [id]);
+    assert.ok(receiptLine(held).message.endsWith(`from a TEE upstream it verified, in session ${id.slice(0, 4)}…${id.slice(-4)}, whose record, as inference.usebrainchain.com serves it, hashes to that id and was in force when it served the answer`));
+
+    // Another record than the one cited, an answer served after the session ended, and evidence that is not what it states.
+    const ended = { ...session, expires_at: 1_792_999_500 };
+    const swapped = { ...session, evidence: { digest: `sha256:${"00".repeat(32)}`, data: session.evidence.data } };
+    const padded = { ...session, evidence: { digest, data: session.evidence.data.replace(";base64,", ";base64,!") } };
+    for (const [cites, served, problem] of [
+      [id, { ...session, upstream_name: "other" }, "it does not hash to the id the receipt cites"],
+      [idOf(ended), ended, "the answer was served outside its window"],
+      [idOf(swapped), swapped, "its evidence does not hash to the digest it states"],
+      [idOf(padded), padded, "its evidence is not base64"],
+    ]) {
+      const report = await run(citing(cites), { sessions: async () => ({ record: served, from: "inference.phala.com" }) });
+      assert.deepEqual(failed(report), ["second-grader-receipt"]);
+      assert.match(receiptLine(report).message, new RegExp(`the session record it cites, as inference\\.phala\\.com serves it, does not hold: ${problem}$`));
+    }
+
+    // Served by neither, the receipt stands on its own word for the session; unreadable, the line says so; offline, nothing is read.
+    assert.equal(status(await run(citing(id)), "second-grader-receipt"), "ok");
+    const unreadable = await run(citing(id), { sessions: async () => Promise.reject(new Error("socket hang up")) });
+    assert.match(receiptLine(unreadable).message, new RegExp(`; the session record it cites, ${id.slice(0, 4)}…${id.slice(-4)}, could not be read: socket hang up$`));
+    let read = 0;
+    await run(citing(id), { offline: true, sessions: async () => (read++, undefined) });
+    assert.equal(read, 0);
+  });
+
+  it("checks a receipt under a key the gateway no longer serves against the keyset report BrainChain's gateway kept", async () => {
+    const keyOf = (seed) => createPrivateKey({ key: Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), Buffer.alloc(32, seed)]), format: "der", type: "pkcs8" });
+    const hexOf = (key) => Buffer.from(createPublicKey(key).export({ format: "jwk" }).x, "base64url").toString("hex");
+    const OLD = keyOf(9);
+    const keyset = `sha256:${"cd".repeat(32)}`;
+    const kept = { ...GATEWAY, keysetDigest: keyset, receiptKeys: [{ keyId: "dstack-kms-receipt-ed25519-v1", publicKey: hexOf(OLD) }] };
+    const signed = (key) => resigned(throughGateway(twice()), (body) => ({ ...body, workload_keyset_digest: keyset }), key);
+    const asked = [];
+    const report = await run(signed(OLD), { keysets: async (digest, servedAt) => (asked.push([digest, servedAt]), kept) });
+    assert.deepEqual(failed(report), []);
+    assert.deepEqual(asked, [[keyset, 1_792_999_998]]);
+    const old = hexOf(OLD);
+    assert.match(receiptLine(report).message, new RegExp(`is signed by inference\\.phala\\.com's receipt key ${old.slice(0, 4)}…${old.slice(-4)} of keyset sha256:cdcd…cdcd, which the gateway no longer serves: the report inference\\.usebrainchain\\.com kept for it is a TDX quote that Intel's SGX root certifies`));
+
+    // Signed by a key the kept keyset does not hold, or a kept report that cannot be read.
+    const forged = await run(signed(keyOf(11)), { keysets: async () => kept });
+    assert.deepEqual(failed(forged), ["second-grader-receipt"]);
+    assert.match(receiptLine(forged).message, /its signature does not verify under the keyset it cites, sha256:cdcd…cdcd, as the report inference\.usebrainchain\.com kept attests it$/);
+    const unread = await run(signed(OLD), { keysets: async () => Promise.reject(new Error("socket hang up")) });
+    assert.equal(receiptLine(unread).status, "error");
+    assert.match(receiptLine(unread).message, /is no longer served: the report inference\.usebrainchain\.com kept for it could not be read: socket hang up$/);
+    const unheld = await run(signed(OLD), { keysets: async () => Promise.reject(new Unattested("its quote does not bind this run's nonce and the keyset")) });
+    assert.deepEqual(failed(unheld), ["second-grader-receipt"]);
+    assert.match(receiptLine(unheld).message, /kept for the keyset it cites, sha256:cdcd…cdcd, does not hold: its quote does not bind this run's nonce and the keyset$/);
+    const thrown = await run(signed(OLD), {
+      keysets: () => {
+        throw new Error("no reader");
+      },
+    });
+    assert.match(receiptLine(thrown).message, /could not be read: no reader$/);
+
+    // Recorded before the gateway moved: no kept report is asked for, and the line skips as before.
+    let asks = 0;
+    const before = await run(signed(OLD), { recordedAt: BEFORE, keysets: async () => (asks++, Promise.reject(new Error("timeout"))) });
+    assert.equal(receiptLine(before).status, "skip");
+    assert.equal(asks, 0);
+
+    // A keyset digest that is not one is never put into an address.
+    const odd = resigned(throughGateway(twice()), (body) => ({ ...body, workload_keyset_digest: "sha256:../sessions/x" }), OLD);
+    await run(odd, { keysets: async () => (asks++, kept) });
+    assert.equal(asks, 0);
   });
 
   it("fails a receipt the gateway's key did not sign, and cannot check one whose key is gone", async () => {

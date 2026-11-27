@@ -2,6 +2,13 @@
 
 Changes to `brainchain-verify`, the npm package built from this directory. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are npm publish dates, in UTC.
 
+## [0.14.0] - unreleased
+
+### Added
+
+- `second-grader-receipt` and `judge-receipt` check the session record each receipt cites: it hashes to the cited id, is an `aci/1` record, was in force when the answer was served, and its evidence hashes to the digest it states. The record is read from `inference.phala.com` while Phala serves it, about an hour, then from BrainChain's inference gateway, which keeps the records the brain's receipts cite from 2026-11-27. A record that does not hold fails the receipt. One that neither serves leaves the line as in 0.13.0.
+- A receipt signed under a key Phala's gateway no longer serves is checked against the attestation report BrainChain's inference gateway kept for its keyset, held to Intel's root as of when the answer was served. A kept report that does not hold fails the receipt. Without a kept report the line is an `ERROR`, as before. Receipts on decisions recorded before 2026-11-06 03:39 UTC still skip their signatures, and no kept report is read for them.
+
 ## [0.13.0] - unreleased
 
 ### Added
