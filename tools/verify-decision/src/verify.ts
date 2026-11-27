@@ -1793,7 +1793,9 @@ const attestations = new WeakMap<Context, Promise<Attestation>>();
 // signed receipt cites, and a keyset report is held to Intel's root here, so neither copy is taken on BrainChain's word.
 const KEPT = "https://inference.usebrainchain.com/v1/served";
 const KEPT_HOST = new URL(KEPT).host;
-const MAX_SESSION_BYTES = 2 * 1024 * 1024;
+// A session record carries the upstream's evidence. A per-instance provider's runs past 2 MB (2.4 MB seen for Kimi on
+// 27 Nov 2026); the cap only keeps a hostile host from sending without end.
+const MAX_SESSION_BYTES = 16 * 1024 * 1024;
 const MAX_KEPT_BYTES = 1024 * 1024;
 const sessionReads = new WeakMap<Context, Map<string, Promise<CitedSession | undefined>>>();
 

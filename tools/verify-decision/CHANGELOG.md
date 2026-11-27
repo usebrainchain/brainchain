@@ -2,6 +2,12 @@
 
 Changes to `brainchain-verify`, the npm package built from this directory. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are npm publish dates, in UTC.
 
+## [0.15.1] - unreleased
+
+### Fixed
+
+- A judge's session record of up to 16 MB is read. The cap was 2 MB, and session records whose upstream is verified per instance, such as Kimi's, run past it (2.4 MB on 27 Nov 2026), so their line said the record could not be read.
+
 ## [0.15.0] - 2026-11-27
 
 ### Added
