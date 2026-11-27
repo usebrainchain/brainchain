@@ -1337,6 +1337,23 @@ describe("judges' receipts", () => {
     const unread = await run(signed(OLD), { keysets: async () => Promise.reject(new Error("socket hang up")) });
     assert.equal(receiptLine(unread).status, "error");
     assert.match(receiptLine(unread).message, /is no longer served: the report inference\.usebrainchain\.com kept for it could not be read: socket hang up$/);
+    const thrown = await run(signed(OLD), {
+      keysets: () => {
+        throw new Error("no reader");
+      },
+    });
+    assert.match(receiptLine(thrown).message, /could not be read: no reader$/);
+
+    // Recorded before the gateway moved: no kept report is asked for, and the line skips as before.
+    let asks = 0;
+    const before = await run(signed(OLD), { recordedAt: BEFORE, keysets: async () => (asks++, Promise.reject(new Error("timeout"))) });
+    assert.equal(receiptLine(before).status, "skip");
+    assert.equal(asks, 0);
+
+    // A keyset digest that is not one is never put into an address.
+    const odd = resigned(throughGateway(twice()), (body) => ({ ...body, workload_keyset_digest: "sha256:../sessions/x" }), OLD);
+    await run(odd, { keysets: async () => (asks++, kept) });
+    assert.equal(asks, 0);
   });
 
   it("fails a receipt the gateway's key did not sign, and cannot check one whose key is gone", async () => {

@@ -1927,11 +1927,15 @@ async function checkJudgeReceipts(ctx: Context, c: Checks, record: Published, re
       const receipt = parseAciReceipt((judge.receipt as { body?: unknown } | null | undefined)?.body);
       if (!receipt) continue;
       const id = citedSession(receipt);
-      if (id && !sessions.has(id)) sessions.set(id, await sessionOf(ctx, id).catch((error: unknown) => errorMessage(error)));
+      // The readers may be the caller's, so a throw becomes the line's error, not the run's.
+      if (id && !sessions.has(id)) sessions.set(id, await Promise.resolve().then(() => sessionOf(ctx, id)).catch((error: unknown) => errorMessage(error)));
+      // Before the gateway moved, no kept report can hold the key, and the line skips as it always has.
       const cited = receipt.workload_keyset_digest;
-      if (typeof gateway === "string" || cited === gateway.keysetDigest || earlier.has(cited) || liveSigned(receipt, gateway)) continue;
-      const read = ctx.keysets ? ctx.keysets(cited, receipt.served_at) : readKeptKeyset(cited, receipt.served_at);
-      earlier.set(cited, await read.catch((error: unknown) => (error instanceof Unattested ? `the report ${KEPT_HOST} kept for it does not hold: ${clean(error.message)}` : `the report ${KEPT_HOST} kept for it could not be read: ${errorMessage(error)}`)));
+      if (typeof gateway === "string" || recordedAt < GATEWAY_MOVED || !KEYSET.test(cited) || cited === gateway.keysetDigest || liveSigned(receipt, gateway)) continue;
+      const at = keptKey(receipt);
+      if (earlier.has(at)) continue;
+      const read = Promise.resolve().then(() => (ctx.keysets ? ctx.keysets(cited, receipt.served_at) : readKeptKeyset(cited, receipt.served_at)));
+      earlier.set(at, await read.catch((error: unknown) => (error instanceof Unattested ? `the report ${KEPT_HOST} kept for it does not hold: ${clean(error.message)}` : `the report ${KEPT_HOST} kept for it could not be read: ${errorMessage(error)}`)));
     }
   }
   const asked = withheld ? undefined : askedState(record.request.state);
@@ -1940,6 +1944,9 @@ async function checkJudgeReceipts(ctx: Context, c: Checks, record: Published, re
   }
 }
 
+const KEYSET = /^sha256:[0-9a-f]{64}$/;
+// A kept report is held to Intel's root as of the answer it is read for, so each answer served gets its own reading.
+const keptKey = (receipt: AciReceipt): string => `${receipt.workload_keyset_digest}@${receipt.served_at}`;
 const liveSigned = (receipt: AciReceipt, gateway: Attestation): boolean => gateway.receiptKeys.some((k) => k.keyId === receipt.key_id && signedBy(receipt, k));
 
 type Asked = { state: string } | { fingerprints: string[] };
@@ -2003,7 +2010,7 @@ function judgeReceipt(
         ? `; the session record it cites, ${digestShort(sessionId)}, could not be read: ${session}`
         : "";
 
-  const signature = signatureOf(receipt, recordedAt, gateway, earlier.get(clean(receipt.workload_keyset_digest)));
+  const signature = signatureOf(receipt, recordedAt, gateway, earlier.get(keptKey(receipt)));
   if (signature.status === "fail") wrong.push(signature.message);
   if (wrong.length > 0) return ["fail", `${who}'s receipt ${id}: ${list(wrong)}`];
 
