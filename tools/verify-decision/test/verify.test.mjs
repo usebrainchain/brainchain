@@ -1297,10 +1297,12 @@ describe("judges' receipts", () => {
     // Another record than the one cited, an answer served after the session ended, and evidence that is not what it states.
     const ended = { ...session, expires_at: 1_792_999_500 };
     const swapped = { ...session, evidence: { digest: `sha256:${"00".repeat(32)}`, data: session.evidence.data } };
+    const padded = { ...session, evidence: { digest, data: session.evidence.data.replace(";base64,", ";base64,!") } };
     for (const [cites, served, problem] of [
       [id, { ...session, upstream_name: "other" }, "it does not hash to the id the receipt cites"],
       [idOf(ended), ended, "the answer was served outside its window"],
       [idOf(swapped), swapped, "its evidence does not hash to the digest it states"],
+      [idOf(padded), padded, "its evidence is not base64"],
     ]) {
       const report = await run(citing(cites), { sessions: async () => ({ record: served, from: "inference.phala.com" }) });
       assert.deepEqual(failed(report), ["second-grader-receipt"]);
@@ -1337,6 +1339,9 @@ describe("judges' receipts", () => {
     const unread = await run(signed(OLD), { keysets: async () => Promise.reject(new Error("socket hang up")) });
     assert.equal(receiptLine(unread).status, "error");
     assert.match(receiptLine(unread).message, /is no longer served: the report inference\.usebrainchain\.com kept for it could not be read: socket hang up$/);
+    const unheld = await run(signed(OLD), { keysets: async () => Promise.reject(new Unattested("its quote does not bind this run's nonce and the keyset")) });
+    assert.deepEqual(failed(unheld), ["second-grader-receipt"]);
+    assert.match(receiptLine(unheld).message, /kept for the keyset it cites, sha256:cdcd…cdcd, does not hold: its quote does not bind this run's nonce and the keyset$/);
     const thrown = await run(signed(OLD), {
       keysets: () => {
         throw new Error("no reader");

@@ -1921,7 +1921,7 @@ async function checkJudgeReceipts(ctx: Context, c: Checks, record: Published, re
   // Read ahead, since the checks below are synchronous: the session each receipt cites, and the keyset of a receipt
   // the gateway's current key did not sign.
   const sessions = new Map<string, CitedSession | string | undefined>();
-  const earlier = new Map<string, Attestation | string | undefined>();
+  const earlier = new Map<string, Kept>();
   if (!ctx.offline) {
     for (const [, , judge] of judges) {
       const receipt = parseAciReceipt((judge.receipt as { body?: unknown } | null | undefined)?.body);
@@ -1935,7 +1935,7 @@ async function checkJudgeReceipts(ctx: Context, c: Checks, record: Published, re
       const at = keptKey(receipt);
       if (earlier.has(at)) continue;
       const read = Promise.resolve().then(() => (ctx.keysets ? ctx.keysets(cited, receipt.served_at) : readKeptKeyset(cited, receipt.served_at)));
-      earlier.set(at, await read.catch((error: unknown) => (error instanceof Unattested ? `the report ${KEPT_HOST} kept for it does not hold: ${clean(error.message)}` : `the report ${KEPT_HOST} kept for it could not be read: ${errorMessage(error)}`)));
+      earlier.set(at, await read.catch((error: unknown) => (error instanceof Unattested ? { unattested: clean(error.message) } : errorMessage(error))));
     }
   }
   const asked = withheld ? undefined : askedState(record.request.state);
@@ -1944,6 +1944,8 @@ async function checkJudgeReceipts(ctx: Context, c: Checks, record: Published, re
   }
 }
 
+/** A kept keyset report: attested, one that does not hold (a failure), one that could not be read (an error), or none. */
+type Kept = Attestation | { unattested: string } | string | undefined;
 const KEYSET = /^sha256:[0-9a-f]{64}$/;
 // A kept report is held to Intel's root as of the answer it is read for, so each answer served gets its own reading.
 const keptKey = (receipt: AciReceipt): string => `${receipt.workload_keyset_digest}@${receipt.served_at}`;
@@ -1975,7 +1977,7 @@ function judgeReceipt(
   recordedAt: bigint,
   gateway: Attestation | string,
   sessions: Map<string, CitedSession | string | undefined>,
-  earlier: Map<string, Attestation | string | undefined>,
+  earlier: Map<string, Kept>,
 ): [Status, string] {
   const kept = judge.receipt as { id?: unknown; body?: unknown } | null | undefined;
   if (!kept) return ["skip", `${who} answered without a receipt, so nothing shows that its gateway served the answer`];
@@ -2024,7 +2026,7 @@ function judgeReceipt(
   return [fingerprints ? "skip" : "ok", `${who}'s receipt ${id} is signed by ${GATEWAY_HOST}'s receipt key ${signature.message}. The gateway received ${request}, and served it at ${utc(BigInt(receipt.served_at))} UTC from a TEE upstream it verified${sessionNote}${unbuilt}`];
 }
 
-function signatureOf(receipt: AciReceipt, recordedAt: bigint, gateway: Attestation | string, kept: Attestation | string | undefined): { status: Status; message: string } {
+function signatureOf(receipt: AciReceipt, recordedAt: bigint, gateway: Attestation | string, kept: Kept): { status: Status; message: string } {
   if (typeof gateway === "string") return { status: "skip", message: gateway };
   const key = gateway.receiptKeys.find((k) => k.keyId === receipt.key_id);
   const cited = clean(receipt.workload_keyset_digest);
@@ -2032,12 +2034,13 @@ function signatureOf(receipt: AciReceipt, recordedAt: bigint, gateway: Attestati
     const since = cited === gateway.keysetDigest ? "" : `; it cites keyset ${digestShort(cited)}, which the gateway has since replaced with ${digestShort(gateway.keysetDigest)} under the same key`;
     return { status: "ok", message: `${digestShort(key.publicKey)}${since}` };
   }
+  if (typeof kept === "object" && "unattested" in kept) return { status: "fail", message: `it does not verify under the receipt key ${GATEWAY_HOST} attests now, and the report ${KEPT_HOST} kept for the keyset it cites, ${digestShort(cited)}, does not hold: ${kept.unattested}` };
   if (typeof kept === "object") {
     const keptKey = kept.receiptKeys.find((k) => k.keyId === receipt.key_id);
     if (!keptKey || !signedBy(receipt, keptKey)) return { status: "fail", message: `its signature does not verify under the keyset it cites, ${digestShort(cited)}, as the report ${KEPT_HOST} kept attests it` };
     return { status: "ok", message: `${digestShort(keptKey.publicKey)} of keyset ${digestShort(cited)}, which the gateway no longer serves: the report ${KEPT_HOST} kept for it is a TDX quote that Intel's SGX root certifies, binding that keyset to the nonce it was read with, as of when the answer was served` };
   }
-  if (typeof kept === "string") return { status: "error", message: `it does not verify under the receipt key ${GATEWAY_HOST} attests now, and the keyset it cites, ${digestShort(cited)}, is no longer served: ${kept}` };
+  if (typeof kept === "string") return { status: "error", message: `it does not verify under the receipt key ${GATEWAY_HOST} attests now, and the keyset it cites, ${digestShort(cited)}, is no longer served: the report ${KEPT_HOST} kept for it could not be read: ${kept}` };
   if (recordedAt < GATEWAY_MOVED) return { status: "skip", message: `it was signed before Phala's gateway moved to a new app on 2026-11-06, with a key that is no longer published. See ${HISTORY}` };
   if (cited === gateway.keysetDigest) return { status: "fail", message: key ? `its signature does not verify under ${digestShort(key.publicKey)}, the receipt key of the keyset it cites` : `it names the key ${clean(receipt.key_id)}, which the keyset it cites does not hold` };
   return { status: "error", message: `it does not verify under the receipt key ${GATEWAY_HOST} attests now, and the keyset it cites, ${digestShort(cited)}, is no longer served, so the key that signed it cannot be read` };

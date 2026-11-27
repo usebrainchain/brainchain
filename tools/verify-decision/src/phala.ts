@@ -223,6 +223,9 @@ export function sessionProblems(receipt: AciReceipt, id: string, session: unknow
   if (typeof from !== "number" || typeof until !== "number" || receipt.served_at < from || receipt.served_at >= until) wrong.push("the answer was served outside its window");
   const evidence = isObject(session.evidence) ? session.evidence : {};
   const data = typeof evidence.data === "string" ? /^data:[^,]*;base64,(.*)$/s.exec(evidence.data)?.[1] : undefined;
-  if (data === undefined || `sha256:${sha256(Buffer.from(data, "base64")).toString("hex")}` !== evidence.digest) wrong.push("its evidence does not hash to the digest it states");
+  // Node's decoder skips what is not base64, so the bytes must encode back to the text the record holds.
+  const bytes = data === undefined ? undefined : Buffer.from(data, "base64");
+  if (!bytes || bytes.toString("base64").replace(/=+$/, "") !== data!.replace(/=+$/, "")) wrong.push("its evidence is not base64");
+  else if (`sha256:${sha256(bytes).toString("hex")}` !== evidence.digest) wrong.push("its evidence does not hash to the digest it states");
   return wrong;
 }
