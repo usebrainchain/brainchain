@@ -2,6 +2,20 @@
 
 Changes to `brainchain-verify`, the npm package built from this directory. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are npm publish dates, in UTC.
 
+## [0.16.0] - unreleased
+
+### Added
+
+- `second-grader-receipt` and `judge-receipt` check a judge's `response` where the record keeps one: the body exactly as Phala's gateway returned it, in base64. Its SHA-256 must be the receipt's `response.returned` hash, and reading it as the brain does must give the probabilities the record states. A changed byte, other probabilities, or text that is not base64 fails the receipt. A judge that answered without a receipt has its response held to its probabilities alone, and its line still skips.
+- `withheld` takes a copy as the records service's only when it also withholds each judge's response, which can quote the work.
+- `--json` carries `responses` on a grade or ruling with judges beside Jev: how many `judges`, and how many are `held`, their response kept and held to a receipt whose signature verified.
+
+### Changed
+
+- The `Not checked` line and the JSON's `notChecked` no longer name the judges' probabilities when every judge's response is in its record and held to a receipt whose signature verified. Otherwise they read as in 0.15.0.
+
+A judge's response is in neither evidence version, so the evidence hash is unchanged and no new version is needed. 0.15.0 and earlier ignore the response: on a record that keeps one, whole or served without the work, they give the verdict they gave before, never `MISMATCH`, and still say the judges' probabilities are not checked. Records that keep no response verify exactly as in 0.15.0.
+
 ## [0.15.0] - 2026-11-27
 
 ### Added

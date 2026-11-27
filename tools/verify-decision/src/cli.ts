@@ -21,6 +21,7 @@ import {
   readReceipt,
   receiptDecision,
   REPUTATION,
+  responsesHeld,
   rpcTransport,
   SERVICES,
   verifyDecision,
@@ -122,8 +123,13 @@ line, on stale papers or licences, or when what was asked for cannot be read,
 2 on bad arguments or an RPC that serves another chain.`;
 
 const TRUST_MODEL = "https://docs.usebrainchain.com/trust-model";
-const NOT_CHECKED =
-  "That Jev produced the answer, or that a judge's probabilities are the ones in the response its gateway hashed. BrainChain records Jev's answers and the judges' probabilities, and the contracts bound what a recorded answer can do.";
+// A record that keeps each judge's response, held to its receipt, leaves only Jev's answer on BrainChain's word.
+const notChecked = (held: boolean): string =>
+  held
+    ? "That Jev produced the answer. BrainChain records Jev's answers, and the contracts bound what a recorded answer can do."
+    : "That Jev produced the answer, or that a judge's probabilities are the ones in the response its gateway hashed. BrainChain records Jev's answers and the judges' probabilities, and the contracts bound what a recorded answer can do.";
+const notCheckedLine = (held: boolean): string =>
+  `Not checked: that Jev produced the answer${held ? "" : ", or that a judge's probabilities are the ones in the response its gateway hashed"}. See ${TRUST_MODEL}`;
 // Sets before 3.0.0 named tasks by id alone, which the subject check does not model, so the package carries none.
 const BEFORE_3 = /^(v2(-|$)|2\.|0x83b31d99fa31a9e5257955a737ef34c40f1c57bf$)/i;
 // The brain host answers 400 for any other spelling of an id, so the tool refuses it with the same rule.
@@ -330,6 +336,7 @@ async function main(): Promise<void> {
         ...(r.panel ? { panel: r.panel } : {}),
         ...(r.evidence ? { evidence: r.evidence } : {}),
         ...(r.receipt ? { receipt: r.receipt } : {}),
+        ...(r.responses ? { responses: r.responses } : {}),
         block: r.block,
         recordedAt: r.recordedAt,
         confidenceBps: r.confidenceBps,
@@ -348,7 +355,7 @@ async function main(): Promise<void> {
         skipped,
         decisions,
         ...(overall === "withheld" ? { withheldNotChecked: withheldNotChecked(reports) } : {}),
-        notChecked: NOT_CHECKED,
+        notChecked: notChecked(responsesHeld(reports)),
         trustModel: TRUST_MODEL,
       };
       console.log(JSON.stringify(out, null, 2));
@@ -360,7 +367,7 @@ async function main(): Promise<void> {
       for (const c of r.checks) console.log(`  ${TAGS[c.status].padEnd(5)} ${c.message}`);
     }
     console.log(`\n${verdict(reports)}`);
-    console.log(`Not checked: that Jev produced the answer, or that a judge's probabilities are the ones in the response its gateway hashed. See ${TRUST_MODEL}`);
+    console.log(notCheckedLine(responsesHeld(reports)));
     exit(failed + errors > 0 ? 1 : 0);
   }
 
@@ -419,7 +426,7 @@ async function main(): Promise<void> {
         verdict: entryOutcome(reports),
         summary,
         entries,
-        notChecked: NOT_CHECKED,
+        notChecked: notChecked(responsesHeld(reports.flatMap((r) => (r.decision ? [r.decision] : [])))),
         trustModel: TRUST_MODEL,
       };
       console.log(JSON.stringify(out, null, 2));
@@ -438,7 +445,7 @@ async function main(): Promise<void> {
       const { entries, withReceipt, verified, withheld, failed, unverified } = summary;
       console.log(`\n${entries} entr${entries === 1 ? "y" : "ies"}, ${withReceipt} with a receipt, ${verified} verified${withheld > 0 ? `, ${withheld} withheld` : ""}, ${failed} failed${unverified > 0 ? `, ${unverified} could not be checked` : ""}.`);
     }
-    console.log(`Not checked: that Jev produced the answer, or that a judge's probabilities are the ones in the response its gateway hashed. See ${TRUST_MODEL}`);
+    console.log(notCheckedLine(responsesHeld(reports.flatMap((r) => (r.decision ? [r.decision] : [])))));
     exit(status);
   }
 
