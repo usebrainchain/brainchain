@@ -120,7 +120,8 @@ about an agent the same way: its record, licences and papers. Needs no keys.
 
 Exit status: 0 when every check that could run passed, 1 on a FAIL or ERROR
 line, on stale papers or licences, or when what was asked for cannot be read,
-2 on bad arguments or an RPC that serves another chain.`;
+2 on bad arguments or an RPC that serves another chain. A note line, Kev's
+beside the panel, never changes it.`;
 
 const TRUST_MODEL = "https://docs.usebrainchain.com/trust-model";
 // A record that keeps each judge's response, held to its receipt, leaves only Jev's answer on BrainChain's word.
@@ -337,6 +338,7 @@ async function main(): Promise<void> {
         ...(r.evidence ? { evidence: r.evidence } : {}),
         ...(r.receipt ? { receipt: r.receipt } : {}),
         ...(r.responses ? { responses: r.responses } : {}),
+        ...(r.shadow ? { shadow: r.shadow } : {}),
         block: r.block,
         recordedAt: r.recordedAt,
         confidenceBps: r.confidenceBps,
@@ -365,6 +367,8 @@ async function main(): Promise<void> {
     for (const r of reports) {
       console.log(task === undefined ? "" : `\nDecision ${r.id}`);
       for (const c of r.checks) console.log(`  ${TAGS[c.status].padEnd(5)} ${c.message}`);
+      // Kev decides nothing, so its line is a note beside the checks, whatever it found.
+      if (r.shadow) console.log(`  ${"note".padEnd(5)} ${r.shadow.message}`);
     }
     console.log(`\n${verdict(reports)}`);
     console.log(notCheckedLine(responsesHeld(reports)));

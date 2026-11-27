@@ -2,6 +2,19 @@
 
 Changes to `brainchain-verify`, the npm package built from this directory. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are npm publish dates, in UTC.
 
+## [0.17.0] - unreleased
+
+### Added
+
+- Kev beside the panel. A grade or ruling can carry `shadow`, the answer of `jaredpalmer/kev-4b` asked through Phala's typed-decision endpoint at weight 0. Its receipt is checked as a judge's is, with `/v1/systemone` as its endpoint, the System One request rebuilt from the record's question and state, and the response the record keeps held to the receipt's hash and to Kev's probabilities and confidence. Kev's probability of paying must follow from its probabilities. A question the record says Kev was not sent must be longer than 8,192 bytes, measured again where the record holds the state.
+- The text output prints Kev's line as a `note` after the checks, and `--json` carries it as the decision's `shadow`, with its `model`, `status` and `message`.
+
+### Changed
+
+- Kev's line is never a check. Whatever it finds, it does not change the verdict, the exit status, or the counts of failed, unverified and skipped checks. On a grade or ruling with Kev and no judge beside Jev, the gateway's attestation is read for Kev's receipt alone and no `gateway` line is added.
+
+Kev's entry is in neither evidence version, so the evidence hash is unchanged and no new version is needed. 0.16.0 and earlier ignore `shadow`: on a record that holds it, whole or served without the work, they give the verdict they gave before, never `MISMATCH`. Records without it verify exactly as in 0.16.0.
+
 ## [0.15.0] - unreleased
 
 ### Added

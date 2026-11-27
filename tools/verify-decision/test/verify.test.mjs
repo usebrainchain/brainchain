@@ -1877,6 +1877,193 @@ describe("judges' responses", () => {
   });
 });
 
+describe("Kev beside the panel", () => {
+  // Grades and a ruling by the brain's own decideGrade, decideRuling, createJudge, createPanel, createShadowJudge and
+  // withEvidence, Jev stubbed and Phala's gateway signing each receipt with JUDGE_KEY over the request it received and
+  // the response it returned: a paid grade with a panel, one with Jev alone, and a ruling on task 7. Kev, asked through
+  // /v1/systemone at weight 0, is sure the work fails each time, and each decision is the one it would be without Kev.
+  const fixture = (name) => JSON.parse(readFileSync(new URL(`./fixtures/shadow/${name}.json`, import.meta.url), "utf8"));
+  const run = ({ brief, record, chain }, options = {}) =>
+    verify({ publish: record, kind: record.kind === "ruling" ? 3 : 2, subject: chain.subject, answer: chain.answer, bps: chain.confidenceBps, recordedAt: 1_795_000_000n, ...(brief ? posted(brief) : {}), ...options });
+  const lines = (report) => report.checks.map((c) => `${c.name} ${c.status}`);
+  const without = ({ shadow: _, ...record }) => record;
+  const hashOf = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  const bytesOf = (shadow) => Buffer.from(shadow.response, "base64");
+  /** Kev's receipt with `change` made to it, signed again with `key`: one the gateway could have signed for that change. */
+  const resigned = (shadow, change, key = JUDGE_KEY) => {
+    const { signature: _, ...body } = change(shadow.receipt.body);
+    return { ...shadow, receipt: { ...shadow.receipt, body: { ...body, signature: sign(null, Buffer.from(canonicalStringify(body)), key).toString("hex") } } };
+  };
+  const returning = (bytes) => (body) => ({ ...body, event_log: body.event_log.map((e) => (e.type === "response.returned" ? { ...e, body_hash: hashOf(bytes) } : e)) });
+  const kevAs = (f, change) => ({ ...f, record: { ...f.record, shadow: change(f.record.shadow) } });
+  const PREFIX = "Kev (jaredpalmer/kev-4b), beside the panel at weight 0 and outside the verdict, ";
+  const keyOf = (seed) => createPrivateKey({ key: Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), Buffer.alloc(32, seed)]), format: "der", type: "pkcs8" });
+
+  it("holds Kev's receipt, request and response as a judge's, in a line of its own outside the checks", async () => {
+    const f = fixture("grade");
+    const report = await run(f);
+    assert.deepEqual(failed(report), []);
+    assert.equal(outcomeOf([report]), "match");
+    assert.equal(report.shadow.status, "ok");
+    assert.equal(report.shadow.model, "jaredpalmer/kev-4b");
+    const shadow = f.record.shadow;
+    assert.equal(hashOf(bytesOf(shadow)), shadow.receipt.body.event_log.find((e) => e.type === "response.returned").body_hash);
+    assert.match(
+      report.shadow.message,
+      new RegExp(
+        `^${PREFIX.replace(/[()/]/g, "\\$&")}puts 0\\.364 on paying\\. Kev's receipt ${shadow.receipt.id} is signed by inference\\.phala\\.com's receipt key \\w{4}…\\w{4}\\. The gateway received the request the record names, sha256:\\w{4}…\\w{4}, which is Jev's question and state put to jaredpalmer/kev-4b, and served it at \\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d UTC from a TEE upstream it verified\\. It returned the response the record keeps, sha256:\\w{4}…\\w{4}, whose probabilities are the ones the record states$`,
+      ),
+    );
+    // Kev changes no check: the record without it reads line for line the same, and its judges' responses as before.
+    const bare = await run({ ...f, record: without(f.record) });
+    assert.deepEqual(lines(report), lines(bare));
+    // Each copy is its own file, so only where it was fetched and its hash differ.
+    const messages = (r) => r.checks.filter((c) => !["fetch", "record-hash"].includes(c.name)).map((c) => c.message);
+    assert.deepEqual(messages(report), messages(bare));
+    assert.equal(bare.shadow, undefined);
+    assert.deepEqual(report.responses, { judges: 2, held: 2 });
+    // The decision paid on the panel's 0.875; Kev's 0.364 is in no rule.
+    assert.equal(f.record.confidence, 0.875);
+    assert.match(check(report, "confidence-recomputed").message, /0\.875/);
+  });
+
+  it("never changes the verdict when Kev's entry does not hold, and says what does not", async () => {
+    const f = fixture("grade");
+    const flipped = bytesOf(f.record.shadow);
+    flipped[flipped.indexOf("0.636")] ^= 1;
+    const other = JSON.parse(bytesOf(f.record.shadow).toString("utf8"));
+    other.answers.decision.probabilities = { 0: 0.1, 1: 0.2, 2: 0.7 };
+    const otherBytes = Buffer.from(JSON.stringify(other));
+    const cases = [
+      ["a changed receipt", (s) => ({ ...s, receipt: { ...s.receipt, body: { ...s.receipt.body, served_at: s.receipt.body.served_at - 60 } } }), /: its signature does not verify under \w{4}…\w{4}, the receipt key of the keyset it cites$/],
+      ["a receipt signed by another key", (s) => resigned(s, (b) => b, keyOf(11)), /: its signature does not verify under \w{4}…\w{4}, the receipt key of the keyset it cites$/],
+      ["a changed byte in the response", (s) => ({ ...s, response: flipped.toString("base64") }), /: the gateway returned a response hashing to sha256:\w{4}…\w{4}, not the sha256:\w{4}…\w{4} the record keeps/],
+      ["probabilities the response does not give", (s) => ({ ...resigned(s, returning(otherBytes)), response: otherBytes.toString("base64") }), /: the response the record keeps gives 0 0\.1, 1 0\.2, 2 0\.7, not the 0 0\.636, 1 0\.2683, 2 0\.0957 the record states$/],
+      ["a confidence the response does not give", (s) => ({ ...s, confidence: 0.9 }), /: the response the record keeps gives a confidence of 0\.3103, not the 0\.9 the record states$/],
+      ["another request", (s) => resigned({ ...s, requestHash: `sha256:${"ef".repeat(32)}` }, (b) => ({ ...b, event_log: b.event_log.map((e) => (e.type === "request.received" ? { ...e, body_hash: `sha256:${"ef".repeat(32)}` } : e)) })), /: the request the record names is not Jev's question and state as the brain puts them to jaredpalmer\/kev-4b/],
+      ["a chat completion's receipt", (s) => resigned(s, (b) => ({ ...b, endpoint: "/v1/chat/completions" })), /: it is for POST \/v1\/chat\/completions, not a typed decision/],
+      ["another model's receipt", (s) => resigned(s, (b) => ({ ...b, model: "phala/qwen3-vl-30b" })), /: it is for the model phala\/qwen3-vl-30b, not jaredpalmer\/kev-4b/],
+      ["no verified upstream", (s) => resigned(s, (b) => ({ ...b, event_log: b.event_log.filter((e) => e.type !== "upstream.verified") })), /: it records no TEE upstream the gateway verified/],
+      ["a probability of paying its own does not give", (s) => ({ ...s, paid: 0.9 }), new RegExp(`^${PREFIX.replace(/[()/]/g, "\\$&")}puts 0\\.364 on paying by its probabilities, not the recorded 0\\.9\\. Kev's receipt`)],
+      ["a weight", (s) => ({ ...s, weight: 0.5 }), new RegExp(`^${PREFIX.replace(/[()/]/g, "\\$&")}carries weight 0\\.5, where Kev weighs nothing$`)],
+      ["no answer at all", () => ({ model: "jaredpalmer/kev-4b", weight: 0 }), /has an answer that is not probabilities, a confidence and a probability of paying as the brain records them$/],
+    ];
+    for (const [name, change, message] of cases) {
+      const report = await run(kevAs(f, change));
+      assert.equal(report.shadow.status, "fail", name);
+      assert.match(report.shadow.message, message, name);
+      assert.deepEqual(failed(report), [], name);
+      assert.equal(outcomeOf([report]), "match", name);
+    }
+  });
+
+  it("checks a ruling's Kev on paying, and Kev beside Jev alone without a gateway line of its own", async () => {
+    const ruling = await run(fixture("ruling"));
+    assert.deepEqual(failed(ruling), []);
+    assert.equal(ruling.shadow.status, "ok");
+    assert.ok(ruling.shadow.message.startsWith(`${PREFIX}puts 0.2171 on paying. Kev's receipt`));
+    const f = fixture("alone");
+    const alone = await run(f);
+    assert.deepEqual(failed(alone), []);
+    assert.equal(alone.shadow.status, "ok");
+    assert.equal(check(alone, "gateway"), undefined);
+    assert.equal(alone.responses, undefined);
+    // A gateway whose attestation does not hold, read for Kev alone, stays in Kev's line.
+    const unheld = await run(f, { gateway: async () => Promise.reject(new Unattested("its quote does not bind this run's nonce and the keyset")) });
+    assert.equal(check(unheld, "gateway"), undefined);
+    assert.equal(outcomeOf([unheld]), "match");
+    assert.equal(unheld.shadow.status, "skip");
+    assert.match(unheld.shadow.message, /, but its signature was not checked: its gateway's attestation does not hold$/);
+    const down = await run(f, { gateway: async () => Promise.reject(new Error("inference.phala.com did not answer")) });
+    assert.deepEqual([check(down, "gateway"), outcomeOf([down]), down.shadow.status], [undefined, "match", "skip"]);
+    const offline = await run(f, { offline: true });
+    assert.deepEqual([check(offline, "gateway"), outcomeOf([offline]), offline.shadow.status], [undefined, "match", "skip"]);
+    // The session record Kev's receipt cites is read for it too, and one that does not hold fails Kev's line alone.
+    const asked = [];
+    const session = await run(f, { sessions: async (id) => (asked.push(id), { record: { api_version: "aci/1" }, from: "inference.phala.com" }) });
+    assert.deepEqual(asked, ["44".repeat(32)]);
+    assert.equal(session.shadow.status, "fail");
+    assert.match(session.shadow.message, /: the session record it cites, as inference\.phala\.com serves it, does not hold: it does not hash to the id the receipt cites/);
+    assert.equal(outcomeOf([session]), "match");
+    // Beside judges, the gateway line is theirs, as before.
+    const judged = await run(fixture("grade"), { gateway: async () => Promise.reject(new Unattested("its quote does not bind this run's nonce and the keyset")) });
+    assert.equal(status(judged, "gateway"), "fail");
+    assert.equal(judged.shadow.status, "skip");
+  });
+
+  it("holds a question Kev was not sent to its length, and names a failure as the record states it", async () => {
+    const f = fixture("alone");
+    // The brain's resealing, over the record with its result made long enough that the brain does not send it.
+    const state = JSON.parse(f.record.request.state);
+    const long = { ...f.record, request: { ...f.record.request, state: canonicalStringify({ ...state, result: `${state.result} ${"and so on ".repeat(900)}` }) } };
+    const input = keccak256(toBytes(canonicalStringify(long.request)));
+    const bytes = Buffer.byteLength(long.request.state) + Buffer.byteLength(canonicalStringify(long.request.questions));
+    assert.ok(bytes > 8192);
+    const skipped = (n) => ({ model: "jaredpalmer/kev-4b", weight: 0, skipped: `the state and question are ${n} bytes, so they may run past the 8192 tokens Kev is validated for`, bytes: n });
+    const evidence = { version: 2, input, judges: [{ model: long.model, probabilities: long.probabilities }], payments: [], versions: long.versions, passFrom: long.passFrom };
+    const sealedLong = (shadow) => ({ ...long, shadow, evidence: keccak256(toBytes(canonicalStringify(evidence))) });
+    const chain = { ...f.chain, inputHash: input };
+    const ok = await run({ record: sealedLong(skipped(bytes)), chain });
+    assert.deepEqual(failed(ok), []);
+    assert.equal(ok.shadow.status, "ok");
+    assert.equal(ok.shadow.message, `${PREFIX}was not asked: the state and question are ${bytes} bytes, which may be more than the 8192 tokens Kev is validated for`);
+    const misstated = await run({ record: sealedLong(skipped(bytes + 1)), chain });
+    assert.equal(misstated.shadow.status, "fail");
+    assert.equal(misstated.shadow.message, `${PREFIX}was not asked because its state and question are ${bytes + 1} bytes, the record says, but they are ${bytes}`);
+    assert.equal(outcomeOf([misstated]), "match");
+    const short = await run(kevAs(f, () => skipped(812)));
+    assert.equal(short.shadow.status, "fail");
+    assert.equal(short.shadow.message, `${PREFIX}was not asked, though the 812 bytes of state and question the record names fit the 8192 tokens Kev is validated for`);
+    const failedAnswer = await run(kevAs(f, () => ({ model: "jaredpalmer/kev-4b", weight: 0, failed: "Phala answered 503" })));
+    assert.deepEqual([failedAnswer.shadow.status, failedAnswer.shadow.message, outcomeOf([failedAnswer])], ["skip", `${PREFIX}gave no answer: Phala answered 503`, "match"]);
+  });
+
+  it("checks a copy served without the work, Kev's response withheld with it, and does not ask the service to withhold it", async () => {
+    const f = fixture("grade");
+    const withheld = (record, response = () => MARK) => {
+      const state = JSON.parse(record.request.state);
+      const judged = (judge) => ({ ...judge, response: response(judge) });
+      return {
+        ...record,
+        request: { ...record.request, state: canonicalStringify({ ...state, result: MARK }) },
+        second: judged(record.second),
+        panel: { ...record.panel, judges: record.panel.judges.map(judged) },
+        shadow: judged(record.shadow),
+      };
+    };
+    // On chain the grade was not accepted at the bar: a paid grade at 87.5% under a 90% bar is withheld.
+    const report = await run(f, { serve: withheld(f.record), withheld: true, bar: 9000 });
+    assert.equal(report.withheld, true);
+    assert.deepEqual(failed(report), []);
+    assert.equal(outcomeOf([report]), "withheld");
+    assert.equal(report.shadow.status, "ok");
+    assert.match(report.shadow.message, /The gateway received the request the record names, sha256:\w{4}…\w{4}, which a record served without the work cannot rebuild, and served it at .* from a TEE upstream it verified$/);
+    // Kev's response quotes nothing of the work, so a copy that keeps it readable is still the service's; Kev's line then holds it to the receipt.
+    const kept = await run(f, { serve: withheld(f.record, (judge) => (judge.model === "jaredpalmer/kev-4b" ? judge.response : MARK)), withheld: true, bar: 9000 });
+    assert.equal(kept.withheld, true);
+    assert.equal(outcomeOf([kept]), "withheld");
+    assert.match(kept.shadow.message, /\. It returned the response the record keeps, sha256:\w{4}…\w{4}, whose probabilities are the ones the record states$/);
+  });
+
+  it("leaves Kev out of the evidence hash, and checks every record without it as before", async () => {
+    const f = fixture("grade");
+    const judges = [f.record.second, ...f.record.panel.judges].map(({ model, probabilities, requestHash, receipt }) => ({ model, probabilities, requestHash, receipt }));
+    const evidence = { version: 2, input: f.chain.inputHash, judges: [{ model: f.record.model, probabilities: f.record.probabilities }, ...judges], payments: [], versions: f.record.versions, panel: { rule: "median" }, passFrom: 1 };
+    assert.equal(f.record.evidence, keccak256(toBytes(canonicalStringify(evidence))));
+    for (const record of [f.record, without(f.record)]) {
+      const report = await run({ ...f, record });
+      assert.equal(status(report, "evidence"), "ok");
+      assert.equal(report.evidence, f.record.evidence);
+    }
+    for (const [dir, name] of [["responses", "grade"], ["prompt3", "plain"], ["prompt3", "sourced-ruling"]]) {
+      const old = JSON.parse(readFileSync(new URL(`./fixtures/${dir}/${name}.json`, import.meta.url), "utf8"));
+      const report = await run(old);
+      assert.equal(report.shadow, undefined, name);
+      assert.deepEqual(failed(report), [], name);
+    }
+  });
+});
+
 describe("evidence and receipts", () => {
   // The brain's shapes (evidence.ts, receipts.ts, network.ts), copied. The brain's own evidenceHash and receipts.issue give the pinned values for these records.
   const SECOND = "deepseek/deepseek-v4.1-flash-1017";

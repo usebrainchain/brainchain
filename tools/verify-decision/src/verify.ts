@@ -99,6 +99,12 @@ export interface DecisionReport {
   receipt?: { from: string; job?: string; outcome?: string };
   /** On a grade or ruling with judges beside Jev: how many, and how many of their responses the record keeps and were held to receipts whose signatures verified. */
   responses?: { judges: number; held: number };
+  /**
+   * On a grade or ruling that also asked Kev beside the panel at weight 0: its entry checked as a judge's is. It is
+   * never among `checks` and never changes the verdict or the exit status, since no rule reads it. `status` reads as
+   * a check's would.
+   */
+  shadow?: { model: string; status: Status; message: string };
   checks: Check[];
 }
 
@@ -200,6 +206,8 @@ interface Published {
   second?: Judge;
   /** Grades and rulings asked of a third judge, or decided by a rule other than lower-of. */
   panel?: unknown;
+  /** Kev's answer beside the panel at weight 0, or why it has none. No rule reads it, and the evidence leaves it out. */
+  shadow?: unknown;
   /** How the brief's checks ran on the delivered code; failed checks refund at full confidence. */
   checks?: "passed" | "failed";
   /** How the result matched the JSON schema the brief fences; a failed shape refunds at full confidence. */
@@ -1661,7 +1669,8 @@ const hostOf = (uri: string): string | undefined => (/^https?:\/\//i.test(uri) &
  * answer, each other judge's answer with the receipt its gateway signed, the
  * payments and the versions; since version 2 also the panel's rule, with its
  * weights under the weighted rule, the pass level and how the brief's checks
- * ran. None of it is withheld with the work.
+ * ran. None of it is withheld with the work. Kev beside the panel is not in it:
+ * nothing it says decides anything.
  */
 function evidenceOf(record: Published, inputHash: Hex, version: 1 | 2): Hex | undefined {
   try {
@@ -1902,26 +1911,30 @@ async function checkJudgeReceipts(ctx: Context, c: Checks, record: Published, re
   const judges: [string, string, Judge][] = [];
   if (record.second && isJudge(record.second)) judges.push(["second-grader-receipt", "the second grader", record.second]);
   if (hasPanel(record)) for (const judge of record.panel.judges) judges.push(["judge-receipt", `the judge ${clean(judge.model)}`, judge]);
-  if (judges.length === 0) return;
+  if (judges.length === 0 && record.shadow === undefined) return;
+  const shadowReceipt = isJudge(record.shadow) ? record.shadow.receipt : undefined;
 
-  // The attested gateway, or why each judge's signature goes unchecked.
+  // The attested gateway, or why each judge's signature goes unchecked. Read for Kev alone, its outcome stays in Kev's line.
   let gateway: Attestation | string = "";
-  if (judges.some(([, , judge]) => judge.receipt)) {
+  const judged = judges.some(([, , judge]) => judge.receipt);
+  if (judged || shadowReceipt) {
     if (ctx.offline) {
-      c.add("gateway", "skip", `gateway: --offline reads no attestation from ${GATEWAY_HOST}`);
+      if (judged) c.add("gateway", "skip", `gateway: --offline reads no attestation from ${GATEWAY_HOST}`);
       gateway = "--offline reads no attestation from its gateway";
     } else {
       try {
         gateway = await attestationOf(ctx);
         const keys = list(gateway.receiptKeys.map((k) => digestShort(k.publicKey)));
-        c.add(
-          "gateway",
-          "ok",
-          `gateway: ${GATEWAY_HOST} attests receipt key ${keys}: a TDX quote that Intel's SGX root certifies binds its keyset, ${digestShort(gateway.keysetDigest)}, to this run's nonce, and measures app ${digestShort(gateway.app)} and compose ${digestShort(gateway.compose)}`,
-        );
+        if (judged) {
+          c.add(
+            "gateway",
+            "ok",
+            `gateway: ${GATEWAY_HOST} attests receipt key ${keys}: a TDX quote that Intel's SGX root certifies binds its keyset, ${digestShort(gateway.keysetDigest)}, to this run's nonce, and measures app ${digestShort(gateway.app)} and compose ${digestShort(gateway.compose)}`,
+          );
+        }
       } catch (error) {
         const failed = error instanceof Unattested;
-        c.add("gateway", failed ? "fail" : "error", failed ? `gateway: ${GATEWAY_HOST}'s attestation does not hold: ${clean(error.message)}` : `gateway: could not read ${GATEWAY_HOST}'s attestation: ${errorMessage(error)}`);
+        if (judged) c.add("gateway", failed ? "fail" : "error", failed ? `gateway: ${GATEWAY_HOST}'s attestation does not hold: ${clean(error.message)}` : `gateway: could not read ${GATEWAY_HOST}'s attestation: ${errorMessage(error)}`);
         gateway = failed ? "its gateway's attestation does not hold" : "its gateway's attestation could not be read";
       }
     }
@@ -1931,8 +1944,8 @@ async function checkJudgeReceipts(ctx: Context, c: Checks, record: Published, re
   const sessions = new Map<string, CitedSession | string | undefined>();
   const earlier = new Map<string, Kept>();
   if (!ctx.offline) {
-    for (const [, , judge] of judges) {
-      const receipt = parseAciReceipt((judge.receipt as { body?: unknown } | null | undefined)?.body);
+    for (const kept of [...judges.map(([, , judge]) => judge.receipt), shadowReceipt]) {
+      const receipt = parseAciReceipt((kept as { body?: unknown } | null | undefined)?.body);
       if (!receipt) continue;
       const id = citedSession(receipt);
       // The readers may be the caller's, so a throw becomes the line's error, not the run's.
@@ -1947,13 +1960,16 @@ async function checkJudgeReceipts(ctx: Context, c: Checks, record: Published, re
     }
   }
   const asked = withheld ? undefined : askedState(record.request.state);
-  let held = 0;
-  for (const [name, who, judge] of judges) {
-    const [status, message, tied] = judgeReceipt(who, judge, record.request.questions.decision, asked, recordedAt, gateway, sessions, earlier);
-    c.add(name, status, message);
-    if (tied) held += 1;
+  if (judges.length > 0) {
+    let held = 0;
+    for (const [name, who, judge] of judges) {
+      const [status, message, tied] = judgeReceipt(who, judge, chatCall(record.request.questions.decision), asked, recordedAt, gateway, sessions, earlier);
+      c.add(name, status, message);
+      if (tied) held += 1;
+    }
+    report.responses = { judges: judges.length, held };
   }
-  report.responses = { judges: judges.length, held };
+  if (record.shadow !== undefined) report.shadow = shadowLine(record, asked, recordedAt, gateway, sessions, earlier);
 }
 
 /** A kept keyset report: attested, one that does not hold (a failure), one that could not be read (an error), or none. */
@@ -1981,17 +1997,35 @@ function askedState(state: string): Asked {
   return { state: canonicalStringify({ ...parsed, sources: shown }) };
 }
 
+/** How a judge is asked through the gateway: the endpoint its receipts name, the requests the brain sends, and how the brain reads the response. */
+interface Call {
+  endpoint: string;
+  /** What the endpoint serves, as a line names it. */
+  serves: string;
+  /** The hashes of the request bodies the brain may have sent `model` for this state. */
+  requests(model: string, state: string): string[];
+  /** The response the record keeps, read as the brain reads it; undefined when it keeps none. */
+  kept(judge: Judge): { hash?: string; problem?: string } | undefined;
+}
+
+const chatCall = (question: Question): Call => ({
+  endpoint: "/v1/chat/completions",
+  serves: "a chat completion",
+  requests: (model, state) => judgeRequestHashes(model, question, state),
+  kept: (judge) => keptResponse(judge, question),
+});
+
 function judgeReceipt(
   who: string,
   judge: Judge,
-  question: Question,
+  call: Call,
   asked: Asked | undefined,
   recordedAt: bigint,
   gateway: Attestation | string,
   sessions: Map<string, CitedSession | string | undefined>,
   earlier: Map<string, Kept>,
 ): [Status, string, boolean] {
-  const answer = keptResponse(judge, question);
+  const answer = call.kept(judge);
   const kept = judge.receipt as { id?: unknown; body?: unknown } | null | undefined;
   if (!kept) {
     if (answer?.problem) return ["fail", `${who} answered without a receipt, and ${answer.problem}`, false];
@@ -2005,7 +2039,7 @@ function judgeReceipt(
   const model = clean(judge.model);
   if (receipt.receipt_id !== kept.id) wrong.push(`it names receipt ${clean(receipt.receipt_id)}`);
   if (receipt.model !== judge.model) wrong.push(`it is for the model ${clean(String(receipt.model))}, not ${model}`);
-  if (receipt.method !== "POST" || receipt.endpoint !== "/v1/chat/completions") wrong.push(`it is for ${clean(String(receipt.method))} ${clean(String(receipt.endpoint))}, not a chat completion`);
+  if (receipt.method !== "POST" || receipt.endpoint !== call.endpoint) wrong.push(`it is for ${clean(String(receipt.method))} ${clean(String(receipt.endpoint))}, not ${call.serves}`);
   const received = eventOf(receipt, "request.received")?.body_hash;
   if (received !== judge.requestHash) wrong.push(`the gateway received a request hashing to ${typeof received === "string" ? digestShort(clean(received)) : "nothing it states"}, not the ${digestShort(clean(String(judge.requestHash)))} the record names`);
   const upstream = eventOf(receipt, "upstream.verified");
@@ -2013,7 +2047,7 @@ function judgeReceipt(
   if (upstream?.result !== "verified" || upstream.required !== true || typeof upstream.session_id !== "string" || !/^[0-9a-f]{64}$/.test(upstream.session_id)) wrong.push("it records no TEE upstream the gateway verified");
   if (BigInt(receipt.served_at) > recordedAt + SERVED_SLACK) wrong.push(`it was served at ${utc(BigInt(receipt.served_at))} UTC, after the decision was recorded at ${utc(recordedAt)} UTC`);
   const state = asked && "state" in asked ? asked.state : undefined;
-  const rebuilt = state !== undefined && judgeRequestHashes(judge.model, question, state).includes(judge.requestHash);
+  const rebuilt = state !== undefined && call.requests(judge.model, state).includes(judge.requestHash);
   if (state !== undefined && !rebuilt) wrong.push(`the request the record names is not Jev's question and state as the brain puts them to ${model}`);
 
   const sessionId = citedSession(receipt);
@@ -2056,17 +2090,23 @@ function judgeReceipt(
  * none, or a copy served without the work marks it withheld.
  */
 function keptResponse(judge: Judge, question: Question): { hash?: string; problem?: string } | undefined {
-  const text = judge.response;
-  if (text === undefined || text === WITHHELD) return undefined;
-  // Node's decoder skips what is not base64, so the bytes must encode back to exactly the text the record holds.
-  const bytes = typeof text === "string" && /^[A-Za-z0-9+/]*={0,2}$/.test(text) ? Buffer.from(text, "base64") : undefined;
-  if (!bytes || bytes.toString("base64") !== text) return { problem: "the response the record keeps is not base64" };
-  const hash = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  const kept = keptBytes(judge.response);
+  if (!kept || !("bytes" in kept)) return kept;
+  const { bytes, hash } = kept;
   const read = opinionOf(question, bytes);
   if (!read) return { hash, problem: "the response the record keeps gives no probabilities over the question's options" };
   const recorded = judge.probabilities;
   const matches = same(Object.keys(read).sort(), Object.keys(recorded).sort()) && Object.entries(read).every(([option, p]) => recorded[option] === p);
   return matches ? { hash } : { hash, problem: `the response the record keeps gives ${probabilitiesText(read)}, not the ${probabilitiesText(recorded)} the record states` };
+}
+
+/** A response the record keeps, in base64, as bytes with their SHA-256; undefined when it keeps none, or a copy served without the work marks it withheld. */
+function keptBytes(text: unknown): { bytes: Uint8Array; hash: string } | { problem: string } | undefined {
+  if (text === undefined || text === WITHHELD) return undefined;
+  // Node's decoder skips what is not base64, so the bytes must encode back to exactly the text the record holds.
+  const bytes = typeof text === "string" && /^[A-Za-z0-9+/]*={0,2}$/.test(text) ? Buffer.from(text, "base64") : undefined;
+  if (!bytes || bytes.toString("base64") !== text) return { problem: "the response the record keeps is not base64" };
+  return { bytes, hash: `sha256:${createHash("sha256").update(bytes).digest("hex")}` };
 }
 
 const probabilitiesText = (p: Record<string, number>): string => Object.entries(p).map(([option, value]) => `${clean(option)} ${value}`).join(", ");
@@ -2097,6 +2137,105 @@ function opinionOf(question: Question, body: Uint8Array): Record<string, number>
   const sum = values.reduce((a, b) => a + b, 0);
   if (sum <= 0) return undefined;
   return Object.fromEntries(options.map((o, i) => [o, Number((values[i]! / sum).toFixed(4))]));
+}
+
+// The brain's shadow.ts: the context Kev is validated for, in tokens, and the request it is sent. No token of its
+// byte-level tokenizer is shorter than a byte, so the brain sends no state and question longer than that in bytes.
+const KEV_CONTEXT = 8192;
+const shadowBytes = (state: string, questions: unknown): number => Buffer.byteLength(state) + Buffer.byteLength(canonicalStringify(questions));
+const shadowRequestHash = (model: string, state: string, questions: unknown): string =>
+  `sha256:${createHash("sha256").update(canonicalStringify({ model, state, questions, provider: { aci_verified: true } })).digest("hex")}`;
+
+/** Kev, asked through Phala's typed-decision endpoint: Jev's request naming Kev, and its answer read from `answers.decision`. */
+const systemOneCall = (record: Published): Call => ({
+  endpoint: "/v1/systemone",
+  serves: "a typed decision",
+  requests: (model, state) => [shadowRequestHash(model, state, record.request.questions)],
+  kept: (judge) => keptDecision(judge as Judge & { confidence?: unknown }, record.request.questions.decision),
+});
+
+/**
+ * Kev's response as the record keeps it, in base64: its SHA-256, and what does not hold of it, which is that it is
+ * base64 and that its answer gives exactly the probabilities and the confidence the record states.
+ */
+function keptDecision(judge: Judge & { confidence?: unknown }, question: Question): { hash?: string; problem?: string } | undefined {
+  const kept = keptBytes(judge.response);
+  if (!kept || !("bytes" in kept)) return kept;
+  const { bytes, hash } = kept;
+  const read = decisionOf(question, bytes);
+  if (!read) return { hash, problem: "the response the record keeps gives no answer over the question's options" };
+  const recorded = judge.probabilities;
+  if (!same(Object.keys(read.probabilities).sort(), Object.keys(recorded).sort()) || !Object.entries(read.probabilities).every(([option, p]) => recorded[option] === p)) {
+    return { hash, problem: `the response the record keeps gives ${probabilitiesText(read.probabilities)}, not the ${probabilitiesText(recorded)} the record states` };
+  }
+  if (read.confidence !== judge.confidence) return { hash, problem: `the response the record keeps gives a confidence of ${read.confidence}, not the ${clean(String(judge.confidence))} the record states` };
+  return { hash };
+}
+
+/**
+ * The answer in a System One response as the brain's parseAnswer takes it: of the question's type, a probability from
+ * 0 to 1 for exactly each option, summing to 1 within TypeSafe's rounding, and a confidence from 0 to 1.
+ */
+function decisionOf(question: Question, body: Uint8Array): { probabilities: Record<string, number>; confidence: number } | undefined {
+  let answer: { type?: unknown; probabilities?: unknown; confidence?: unknown } | undefined;
+  try {
+    answer = (JSON.parse(new TextDecoder().decode(body)) as { answers?: { decision?: typeof answer } }).answers?.decision;
+  } catch {
+    return undefined;
+  }
+  const unit = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
+  const probabilities = answer?.probabilities;
+  if (answer?.type !== question.type || !unit(answer.confidence) || !isNumbers(probabilities)) return undefined;
+  const options = optionsOf(question);
+  if (!same(Object.keys(probabilities).sort(), [...options].sort()) || !Object.values(probabilities).every(unit)) return undefined;
+  if (Math.abs(Object.values(probabilities).reduce((sum, p) => sum + p, 0) - 1) > ROUNDING) return undefined;
+  return { probabilities, confidence: answer.confidence };
+}
+
+/**
+ * Kev's line. Kev answers beside the panel at weight 0 and no rule reads it, so the decision's confidence recomputes
+ * without it, the evidence leaves it out, and whatever this finds stays out of the verdict. Its answer is checked as a
+ * judge's is: its probability of paying, then its receipt, the request rebuilt from the record, the upstream, the
+ * session record and the response the receipt hashes. A question it was not sent must be too long to send.
+ */
+function shadowLine(
+  record: Published,
+  asked: Asked | undefined,
+  recordedAt: bigint,
+  gateway: Attestation | string,
+  sessions: Map<string, CitedSession | string | undefined>,
+  earlier: Map<string, Kept>,
+): NonNullable<DecisionReport["shadow"]> {
+  const s = record.shadow as Record<string, unknown> | null;
+  const model = typeof s?.model === "string" ? clean(s.model) : "unnamed";
+  const line = (status: Status, message: string) => ({ model, status, message: clean(`Kev (${model}), beside the panel at weight 0 and outside the verdict, ${message}`) });
+  if (typeof s !== "object" || s === null || typeof s.model !== "string") return line("fail", "has an entry that is not one the brain records");
+  if (s.weight !== 0) return line("fail", `carries weight ${clean(String(s.weight))}, where Kev weighs nothing`);
+  if (typeof s.failed === "string") return line("skip", `gave no answer: ${clean(s.failed)}`);
+  if (typeof s.skipped === "string") {
+    const { bytes } = s;
+    if (typeof bytes !== "number" || !Number.isSafeInteger(bytes)) return line("fail", "was not asked, and the record does not say how long the state and question were");
+    if (bytes <= KEV_CONTEXT) return line("fail", `was not asked, though the ${bytes} bytes of state and question the record names fit the ${KEV_CONTEXT} tokens Kev is validated for`);
+    if (!asked) return line("skip", `was not asked: ${clean(s.skipped)}. A copy served without the work cannot show how long they were`);
+    if (!("state" in asked)) return line("skip", `was not asked: ${clean(s.skipped)}. The state it would have read holds page text the record keeps only as fingerprints, so its length cannot be measured`);
+    const measured = shadowBytes(asked.state, record.request.questions);
+    if (measured !== bytes) return line("fail", `was not asked because its state and question are ${bytes} bytes, the record says, but they are ${measured}`);
+    return line("ok", `was not asked: the state and question are ${bytes} bytes, which may be more than the ${KEV_CONTEXT} tokens Kev is validated for`);
+  }
+  if (!isJudge(s) || typeof s.confidence !== "number") return line("fail", "has an answer that is not probabilities, a confidence and a probability of paying as the brain records them");
+  const options = optionsOf(record.request.questions.decision);
+  const passFrom = typeof record.passFrom === "number" ? record.passFrom : undefined;
+  const paid = record.kind === "ruling" ? s.probabilities.pay ?? 0 : passFrom === undefined ? undefined : share(Object.entries(s.probabilities).flatMap(([level, p]) => (Number(level) >= passFrom ? [p] : [])));
+  const own = !same(Object.keys(s.probabilities).sort(), [...options].sort())
+    ? "has probabilities that do not cover exactly the options Jev was asked"
+    : paid === undefined
+      ? "has an answer the record names no pass level to measure"
+      : !close(s.paid, paid)
+        ? `puts ${paid} on paying by its probabilities, not the recorded ${s.paid}`
+        : undefined;
+  const [status, message] = judgeReceipt("Kev", s, systemOneCall(record), asked, recordedAt, gateway, sessions, earlier);
+  if (own) return line("fail", `${own}. ${message}`);
+  return line(status, `puts ${paid} on paying. ${message}`);
 }
 
 function signatureOf(receipt: AciReceipt, recordedAt: bigint, gateway: Attestation | string, kept: Kept): { status: Status; message: string } {
