@@ -2,7 +2,18 @@
 
 Changes to `brainchain-verify`, the npm package built from this directory. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are npm publish dates, in UTC.
 
-## [0.15.1] - unreleased
+## [0.16.0] - 2026-11-28
+
+### Added
+
+- `desk-order <tx>` checks an order a BrainChain desk sent on Robinhood Chain against the 0x quote it was sent on. It reads the quote record the desk log names for the order, or the one given with `--quote <file|url>`, and checks that the record is the one the order carries, that 0x signed it for this order, that the order handed 0x the quote's calldata byte for byte, and that the mandate spent and received what the quote said. The registry's Settlers are read as of the order's block, from the registry's own events. See [desk orders](README.md#desk-orders).
+- `txOrigin` in a `QuoteIntent`, for a taker that is a contract: the account that sends the transaction. `quote-request` passes a query that carries it only when the intent names it, with the same value.
+
+### Fixed
+
+- `verifyQuote` failed `quote-request` on every quote asked for with `txOrigin`, as each quote a BrainChain desk trades on is, since no intent could name it. 0x's signature is still checked over the query as it was sent.
+
+## [0.15.1] - 2026-11-27
 
 ### Fixed
 
