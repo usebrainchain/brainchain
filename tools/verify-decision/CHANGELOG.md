@@ -2,6 +2,22 @@
 
 Changes to `brainchain-verify`, the npm package built from this directory. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are npm publish dates, in UTC.
 
+## [Unreleased]
+
+### Added
+
+- `key` checks a grade or ruling on a brief that seals an answer key (a fenced `answer key` block). The request's comparison must hold exactly the sealed SHA-256, in lowercase hex, the match, the level the result reached and the outcome that level gives, and the hash and match must be the ones the brief seals. No text in the record may hash to the seal and no object in it may carry the key's `salt` and `answer`. A missed key makes the answer reject, or refund, at 10,000 bps, the record's `key` field must give the same outcome, and the question must carry BrainChain's line for the comparison. A task whose brief seals a key and whose record holds no comparison skips the line.
+- `quotes` checks a grade or ruling whose brief's Python checks set `FETCH_SOURCES = True`. Each claim keeps its source, whether its quote was found, not found or its page unreachable, and the fetch time; a page read keeps its final address, a 2xx status and the SHA-256 of its body, and one not read keeps the reason and no hash. Claims citing one page keep one reading of it, at most 20 pages are opened, and a `problem` fails the work with no claims. A quote not found or a problem makes the answer reject, or refund, at 10,000 bps. A quote check on a brief that does not ask for one fails; a brief that asks, with no check, skips the line.
+- `record-work` checks the kind of work an agent's record entries name: `{ kind, rules }` on a task or an audit, with a kind from BrainChain's list and rules numbered from 1. Only a record whose entries name one gets the line.
+
+### Changed
+
+- `evidence` rebuilds version 2 with the record's `key` and `quotes` where it holds them, and `confidence-recomputed` sets the probability of paying to 0 when either failed. A record with either field reads `MISMATCH` on 0.15.1 and earlier.
+- The question's lines are held in the order the brain writes them: the checks' run, the schema, the sealed key, the quote check, then the cited pages.
+- A copy served without the work must withhold each checked claim's source, final address and error, and a problem reading the claims, as the records service does.
+
+Records without these fields read exactly as on 0.15.1: side by side over every mainnet decision and the house agents' records and reputation entries on 2026-11-28, every report was identical.
+
 ## [0.15.1] - unreleased
 
 ### Fixed

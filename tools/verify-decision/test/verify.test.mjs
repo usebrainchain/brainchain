@@ -1527,7 +1527,7 @@ describe("records under prompt version 3: delivered data and cited pages", () =>
   /** withEvidence again, over a record changed after the brain made it, so nothing but the change can fail. */
   function resealed(record) {
     const judges = [record.second, ...(record.panel?.judges ?? [])].filter(Boolean).map(({ model, probabilities, requestHash, receipt }) => ({ model, probabilities, requestHash, receipt }));
-    const { panel, passFrom, checks, shape } = record;
+    const { panel, passFrom, checks, shape, key, quotes } = record;
     const evidence = {
       version: 2,
       input: keccak256(toBytes(canonicalStringify(record.request))),
@@ -1538,6 +1538,8 @@ describe("records under prompt version 3: delivered data and cited pages", () =>
       ...(passFrom !== undefined ? { passFrom } : {}),
       ...(checks !== undefined ? { checks } : {}),
       ...(shape !== undefined ? { shape } : {}),
+      ...(key !== undefined ? { key } : {}),
+      ...(quotes !== undefined ? { quotes } : {}),
     };
     return { ...record, evidence: keccak256(toBytes(canonicalStringify(evidence))) };
   }
@@ -1761,6 +1763,251 @@ describe("records under prompt version 3: delivered data and cited pages", () =>
     }
     assert.deepEqual(lines(await run(fixture("plain"))).slice(-8), ["second-grader ok", "panel ok", "confidence-recomputed ok", "threshold skip", "evidence ok", "gateway ok", "second-grader-receipt ok", "versions ok"]);
     assert.deepEqual((await run(fixture("checked"))).run, { language: "python", outcome: "passed" });
+  });
+
+  describe("with a sealed answer key or a quote check", () => {
+    // Made by the brain's own decideGrade, decideRuling, checkKey, createQuoteCheck, createJudge and withEvidence at
+    // 44aca41, from the inputs of its own tests (answer-key.test.ts, quotes.test.ts, decisions.test.ts), with Jev and the
+    // sandbox's page reads stubbed and Phala's gateway signing each judge's receipt with JUDGE_KEY over the request it
+    // received. The grades and rulings are on task 7; quoted-unread-paid is paid grade 7.
+    const focus = (name) => JSON.parse(readFileSync(new URL(`./fixtures/keys-quotes/${name}.json`, import.meta.url), "utf8"));
+    const NAMES = ["sealed-exact", "sealed-exact-missed", "sealed-fields-ruling", "sealed-fields-ruling-missed", "quoted", "quoted-missed-sourced", "quoted-unread-paid"];
+    // The brain's KEYED and QUOTED (decisions.ts), copied.
+    const KEYED =
+      "The key field is BrainChain's own comparison of the result with the answer key the poster sealed with the task. The key itself is not shown; the brief holds its SHA-256. Level exact means the result equals the key, tolerance that every field matches within the tolerance the brief states, and none that it does not match. Passed means the result reaches the match the brief asks for, so judge the rest of the brief; failed work is refunded whatever its content.";
+    const QUOTED =
+      "The quotes field is BrainChain's own check of each claim's quote against the page it cites, run before this question: BrainChain opened every cited page and looked for the quote's exact words in its text, with spacing, curly quotes and dashes evened out. found means the page holds the quote, so judge whether the quote supports its claim; not found means it does not, and such work is refunded whatever its content; unreachable means the page could not be read, and its error says why: a page that is gone weighs against the claim, while a timeout says nothing either way. A problem means the claims could not be read at all, and such work is refunded too.";
+    // The key the fixtures seal, as answer-key.test.ts writes it: the poster's salt and the invoice's right answer.
+    const SALT = "4f0c9a7e2b1d6e8f3a5c7b9d0e2f4a6c";
+    const INVOICE = { items: [{ description: "Hosting", total: 100 }, { description: "Support plan", total: 18.5 }], currency: "EUR" };
+    const KEY = JSON.stringify({ salt: SALT, answer: INVOICE });
+    const SEAL = createHash("sha256").update(KEY).digest("hex");
+    const without = (record, field) => {
+      const { [field]: _, ...rest } = record;
+      return rest;
+    };
+
+    it("are the records the brain committed, each holding a comparison with a sealed key or a quote check", () => {
+      for (const name of NAMES) {
+        const { record, chain } = focus(name);
+        const state = stateOf(record);
+        assert.equal(keccak256(toBytes(canonicalStringify(record.request))), chain.inputHash, name);
+        assert.equal(record.versions.prompt, 3, name);
+        assert.ok(name.startsWith("sealed") ? state.key && record.key : state.quotes && record.quotes, name);
+      }
+      // The brief seals the hash of the poster's exact key text, and the record holds that hash and never the text.
+      const { brief, record } = focus("sealed-exact");
+      assert.ok(brief.brief.includes(`"sha256":"${SEAL}"`));
+      assert.equal(stateOf(record).key.sha256, SEAL);
+      assert.ok(!JSON.stringify(record).includes(SALT));
+    });
+
+    it("holds a grade whose result matches the sealed key, and a ruling that matches it within the brief's tolerance", async () => {
+      const exact = await run(focus("sealed-exact"));
+      assert.deepEqual(failed(exact), []);
+      assert.equal(outcomeOf([exact]), "match");
+      assert.equal(
+        check(exact, "key").message,
+        `key: the result matches the answer key sealed as ${abbr(SEAL)} exactly, and passes the brief's exact match. The question shows the graders that comparison, and the record keeps only the key's SHA-256`,
+      );
+      assert.match(check(exact, "confidence-recomputed").message, /; the result reaches the answer key the poster sealed, so accept at 0\.8500$/);
+      assert.match(check(exact, "evidence").message, /^evidence: the hash over inputHash, .*, the checks, the shape and the answer key is /);
+      assert.deepEqual([status(exact, "second-grader-receipt"), status(exact, "versions")], ["ok", "ok"]);
+
+      const ruling = await run(focus("sealed-fields-ruling"));
+      assert.deepEqual(failed(ruling), []);
+      assert.equal(check(ruling, "key").message, `key: the result matches the answer key sealed as ${abbr(SEAL)} within the brief's tolerance, and passes the brief's fields match. The question shows the graders that comparison, and the record keeps only the key's SHA-256`);
+      assert.deepEqual([status(ruling, "panel"), status(ruling, "judge-receipt")], ["ok", "ok"]);
+    });
+
+    it("holds work that misses the sealed key as refunded at 100%, whatever the judges say, and fails any other answer", async () => {
+      const grade = focus("sealed-exact-missed");
+      const report = await run(grade);
+      assert.deepEqual(failed(report), []);
+      assert.equal(check(report, "key").message, `key: the result does not match the answer key sealed as ${abbr(SEAL)}, and fails the brief's exact match, so the answer is reject at 100%, as recorded`);
+      assert.match(check(report, "confidence-recomputed").message, /the result misses the answer key the poster sealed, so the probability of paying is 0, so reject at 1\.0000$/);
+      const accepted = await as(grade, { ...grade.record, answer: "accept", confidence: 0.8 });
+      assert.deepEqual(failed(accepted), ["confidence-recomputed", "key"]);
+      assert.match(check(accepted, "key").message, /so the answer must be reject at 100%, not accept at 80%$/);
+
+      const ruling = await run(focus("sealed-fields-ruling-missed"));
+      assert.deepEqual(failed(ruling), []);
+      assert.match(check(ruling, "key").message, /fails the brief's fields match, so the answer is refund at 100%, as recorded$/);
+    });
+
+    it("fails a record that holds the sealed key itself, anywhere, or a comparison other than the brief seals", async () => {
+      const f = focus("sealed-exact");
+      const key = (change) => (s) => ({ ...s, key: change(s.key) });
+      const cases = [
+        [{ state: key((k) => ({ ...k, key: KEY })) }, /^key: the request's key field is not BrainChain's comparison with a sealed answer key/],
+        [{ state: (s) => ({ ...s, reference: KEY }) }, new RegExp(`^key: the record holds the answer key sealed as ${abbr(SEAL)} itself, where BrainChain keeps only its SHA-256$`)],
+        [{ state: (s) => ({ ...s, task: { ...s.task, keyed: { salt: SALT, answer: INVOICE } } }) }, /holds the answer key sealed as .* itself/],
+        [{ state: key((k) => ({ ...k, sha256: k.sha256.toUpperCase() })) }, /is not BrainChain's comparison/],
+        [{ state: key((k) => ({ ...k, sha256: "ab".repeat(32) })) }, new RegExp(`with the key sealed as ababab…abab for an exact match, but the brief seals ${abbr(SEAL)} for an exact match$`)],
+        [{ state: key((k) => ({ ...k, match: "fields" })) }, /for a fields match, but the brief seals .* for an exact match$/],
+        [{ state: key((k) => ({ ...k, level: "tolerance" })) }, /is not BrainChain's comparison/],
+        [{ state: key((k) => ({ ...k, outcome: "failed" })) }, /is not BrainChain's comparison/],
+        [{ instructions: (i) => i.replace(` ${KEYED}`, "") }, /, but the question does not show the graders that comparison as BrainChain words it$/],
+      ];
+      for (const [change, pattern] of cases) {
+        const report = await run({ ...f, record: recordedAs(f.record, change) });
+        assert.ok(failed(report).includes("key"), String(pattern));
+        assert.match(check(report, "key").message, pattern);
+        assert.equal(outcomeOf([report]), "mismatch");
+      }
+      // Only the record's own field: the request and its judges' receipts still hold.
+      const unsaid = await run({ ...f, record: resealed({ ...f.record, key: "failed" }) });
+      assert.deepEqual(failed(unsaid), ["confidence-recomputed", "key"]);
+      assert.match(check(unsaid, "key").message, /, but the record's key field does not say passed$/);
+    });
+
+    it("fails a comparison on a brief that seals no key it can check, and skips a sealed brief whose record holds none", async () => {
+      const f = focus("sealed-exact");
+      const unsealed = { ...f.brief, brief: f.brief.brief.replace(/```answer key\n[\s\S]*?```/, "```answer key\nnot json\n```") };
+      const report = await run({ ...f, brief: unsealed, record: recordedAs(f.record, { state: (s) => ({ ...s, task: { brief: quoted(unsealed) } }) }) });
+      assert.deepEqual(failed(report), ["key"]);
+      assert.equal(check(report, "key").message, "key: the request compares the result with a sealed answer key, but the brief seals none BrainChain can check: the answer key block is not valid JSON");
+
+      // A brain that does not take sealed keys reads the block as text, so no comparison is no mismatch, and no match either.
+      const plain = recordedAs(without(f.record, "key"), { state: (s) => without(s, "key"), instructions: (i) => i.replace(` ${KEYED}`, "") });
+      const untaken = await run({ ...f, record: plain });
+      assert.deepEqual(failed(untaken), []);
+      assert.equal(status(untaken, "key"), "skip");
+      assert.equal(check(untaken, "key").message, "key: the brief seals an answer key, but the record holds no comparison of the result with it, so nothing here shows the result was held to the key");
+    });
+
+    it("fails a record whose evidence leaves the key's outcome out, as the published 0.15 tool rebuilds it", async () => {
+      const f = focus("sealed-exact");
+      const report = await run({ ...f, record: { ...f.record, evidence: resealed(without(f.record, "key")).evidence } });
+      assert.deepEqual(failed(report), ["evidence"]);
+    });
+
+    it("holds a grade whose quotes are on their pages, with its checks' run read before the quote check", async () => {
+      const report = await run(focus("quoted"));
+      assert.deepEqual(failed(report), []);
+      assert.equal(outcomeOf([report]), "match");
+      assert.equal(
+        check(report, "quotes").message,
+        "quotes: BrainChain found 2 of the result's 3 quotes on the pages they cite, and could not read the page of the other 1, which fails nothing. The question shows the graders that check, and the request keeps the status, fetch time and SHA-256 of each page read",
+      );
+      assert.equal(check(report, "checks").message, "checks: the brief's python checks passed on the delivered code, and the question shows the graders that run");
+      assert.match(check(report, "confidence-recomputed").message, /; the brief's checks passed; every quote is on the page it cites, where the page could be read, so accept at 0\.9000$/);
+      assert.match(check(report, "evidence").message, /, the shape and the quote check is /);
+      assert.deepEqual([status(report, "panel"), status(report, "second-grader-receipt"), status(report, "judge-receipt")], ["ok", "ok", "ok"]);
+    });
+
+    it("holds work whose quote is not on its page, or whose claims cannot be read, as rejected at 100%", async () => {
+      const missed = focus("quoted-missed-sourced");
+      const report = await run(missed);
+      assert.deepEqual(failed(report), []);
+      assert.equal(check(report, "quotes").message, "quotes: the result's quote is not on the page it cites, which fails the work, so the answer is reject at 100%, as recorded");
+      assert.deepEqual(lines(report).slice(-7, -3), ["threshold ok", "quotes ok", "sources ok", "evidence ok"]);
+      const accepted = await as(missed, { ...missed.record, answer: "accept", confidence: 0.9 });
+      assert.deepEqual(failed(accepted), ["confidence-recomputed", "quotes"]);
+
+      const unread = await run(focus("quoted-unread-paid"));
+      assert.deepEqual(failed(unread), []);
+      assert.equal(
+        check(unread, "quotes").message,
+        "quotes: BrainChain could not read the result's claims (the result's Python must be plain literal assignments, and reading it stopped at the name gather, which is not a literal at character 68), which fails the work, so the answer is reject at 100%, as recorded",
+      );
+    });
+
+    it("fails a quote check not kept as the brain keeps it", async () => {
+      const f = focus("quoted");
+      const claim = (i, change) => (s) => ({ ...s, quotes: { ...s.quotes, claims: s.quotes.claims.map((c, j) => (j === i ? change(c) : c)) } });
+      const quotes = (change) => (s) => ({ ...s, quotes: change(s.quotes) });
+      const cases = [
+        [claim(0, (c) => ({ ...c, sha256: "ab" })), "claim 1 was looked for on a page read, but keeps no SHA-256 of the page in lowercase hex"],
+        [claim(0, (c) => ({ ...c, sha256: c.sha256.toUpperCase() })), "claim 1 was looked for on a page read, but keeps no SHA-256 of the page in lowercase hex"],
+        [claim(0, (c) => without(c, "sha256")), "claim 1 was looked for on a page read, but keeps no SHA-256 of the page in lowercase hex"],
+        [claim(0, (c) => ({ ...c, status: 404 })), "claim 1 was looked for on a page read, but keeps no final address and 2xx status for it"],
+        [claim(0, (c) => ({ ...c, text: "<p>With BoLD, anyone can propose and challenge an assertion.</p>" })), 'claim 1 holds "text"'],
+        [claim(0, (c) => without(c, "fetchedAt")), "claim 1 has no fetch time as the sandbox writes one"],
+        [claim(0, (c) => without(c, "id")), "claim 1 has no id"],
+        [claim(0, (c) => ({ ...c, found: "maybe" })), "claim 1 is neither found, not found nor unreachable"],
+        [claim(2, (c) => ({ ...c, sha256: "ab".repeat(32) })), "claim 3 says its page could not be read, yet keeps a hash of it"],
+        [claim(2, (c) => without(c, "error")), "claim 3 says its page could not be read, without the reason"],
+        [claim(1, (c) => ({ ...c, fetchedAt: "2026-11-28T10:05:00.000Z" })), "claims 1 and 2 cite the same page, which BrainChain opens once, but keep different readings of it"],
+        [quotes((q) => ({ ...q, outcome: "failed" })), "every quote on a page read was found, yet it fails"],
+        [quotes((q) => ({ ...q, problem: "claims must be a non-empty list" })), "it names a problem reading the claims, which fails the work with no claim checked, yet does not"],
+        [quotes((q) => ({ ...q, claims: [] })), "it checks no claim and names no problem"],
+        [quotes((q) => ({ ...q, pages: 2 })), 'it holds "pages"'],
+        [
+          quotes((q) => ({ ...q, claims: Array.from({ length: 21 }, (_, i) => ({ ...q.claims[2], id: i, source: `https://s${i}.example/` })) })),
+          "the claims cite 21 pages, where BrainChain opens at most 20 and fails the rest unchecked",
+        ],
+      ];
+      for (const [state, fault] of cases) {
+        const report = await run({ ...f, record: recordedAs(f.record, { state }) });
+        assert.deepEqual(failed(report), ["quotes"], fault);
+        assert.equal(check(report, "quotes").message, `quotes: the request's quote check is not one BrainChain keeps: ${fault}`);
+      }
+      const passing = await run({ ...focus("quoted-missed-sourced"), record: recordedAs(focus("quoted-missed-sourced").record, { state: quotes((q) => ({ ...q, outcome: "passed" })) }) });
+      assert.ok(failed(passing).includes("quotes"));
+      assert.equal(check(passing, "quotes").message, "quotes: the request's quote check is not one BrainChain keeps: a quote is not on its page, yet it passes");
+    });
+
+    it("holds the quote check where the brain puts it, on a brief that asks for it", async () => {
+      const f = focus("quoted");
+      const unshown = await run({ ...f, record: recordedAs(f.record, { instructions: (i) => i.replace(` ${QUOTED}`, "") }) });
+      assert.deepEqual(failed(unshown), ["quotes"]);
+      assert.match(check(unshown, "quotes").message, /, but the question does not show the graders that check as BrainChain words it$/);
+      // Each line is held where the brain puts it: the checks' lines before the quote check, the sources line after it.
+      const early = await run({ ...f, record: recordedAs(f.record, { instructions: (i) => i.replace(` ${QUOTED}`, "").replace(` ${EXECUTED}`, ` ${QUOTED} ${EXECUTED}`) }) });
+      assert.deepEqual(failed(early), ["quotes"]);
+      const s = focus("quoted-missed-sourced");
+      const late = await run({ ...s, record: resealed(changed(s.record, { instructions: (i) => `${i.replace(` ${QUOTED}`, "")} ${QUOTED}` })) });
+      // Moved last, the quote line is still where a later line may be missing, but the checks' and sources' lines are not.
+      assert.deepEqual(failed(late), ["checks", "sources"]);
+
+      const paid = focus("quoted-unread-paid");
+      const unasked = await run({ ...paid, record: recordedAs(paid.record, { state: (st) => ({ ...st, task: { brief: st.task.brief.replace("FETCH_SOURCES = True\n", "") } }) }) });
+      assert.deepEqual(failed(unasked), ["quotes"]);
+      assert.equal(check(unasked, "quotes").message, "quotes: the request holds a check of the result's quotes, but the brief's checks do not set FETCH_SOURCES = True, and BrainChain opens the cited pages only for a brief that does");
+
+      const unsaid = await run({ ...f, record: resealed({ ...f.record, quotes: "failed" }) });
+      assert.ok(failed(unsaid).includes("quotes"));
+      assert.match(check(unsaid, "quotes").message, /, but the record's quotes field does not say passed$/);
+
+      const plain = recordedAs(without(f.record, "quotes"), { state: (st) => without(st, "quotes"), instructions: (i) => i.replace(` ${QUOTED}`, "") });
+      const untaken = await run({ ...f, record: plain });
+      assert.deepEqual(failed(untaken), []);
+      assert.equal(check(untaken, "quotes").message, "quotes: the brief's checks set FETCH_SOURCES = True, but the record holds no check of the result's quotes against the pages they cite, so nothing here shows the quotes are on them");
+    });
+
+    it("checks a copy served without the work, which withholds which pages the claims cite and why they could not be read", async () => {
+      const withhold = (record) =>
+        changed(record, {
+          state: (s) => ({
+            ...s,
+            result: MARK,
+            ...(s.execution ? { execution: { ...s.execution, output: MARK, ...(s.execution.error !== undefined ? { error: MARK } : {}) } } : {}),
+            ...(s.sources ? { sources: s.sources.map((p) => ({ ...p, url: MARK, ...(p.title ? { title: MARK } : {}), ...(p.quote ? { quote: MARK } : {}) })) } : {}),
+            quotes: {
+              ...s.quotes,
+              ...(s.quotes.problem !== undefined ? { problem: MARK } : {}),
+              claims: s.quotes.claims.map((c) => ({ ...c, source: MARK, ...(c.finalUrl ? { finalUrl: MARK } : {}), ...(c.error ? { error: MARK } : {}) })),
+            },
+          }),
+        });
+      for (const name of ["quoted-missed-sourced", "quoted-unread-paid"]) {
+        const f = focus(name);
+        const report = await run(f, { serve: withhold(f.record), withheld: true });
+        assert.equal(report.withheld, true, name);
+        assert.deepEqual(failed(report), [], name);
+        assert.equal(status(report, "quotes"), "ok", name);
+        assert.equal(outcomeOf([report]), "withheld", name);
+      }
+      const paid = focus("quoted-unread-paid");
+      assert.match(check(await run(paid, { serve: withhold(paid.record), withheld: true }), "quotes").message, /^quotes: BrainChain could not read the result's claims \(the reason is withheld with the work\)/);
+      // A copy that leaves a claim's page readable is not the service's.
+      const f = focus("quoted-missed-sourced");
+      const leaked = changed(withhold(f.record), { state: (s) => ({ ...s, quotes: stateOf(f.record).quotes }) });
+      const report = await run(f, { serve: leaked, withheld: true });
+      assert.equal(status(report, "withheld"), "fail");
+      assert.equal(status(report, "record-hash"), "fail");
+    });
   });
 });
 
@@ -3107,6 +3354,24 @@ describe("an agent's record", () => {
     // An entry's hash is the hash of the bytes it is served as, and its epoch the brain's epochId.
     assert.equal(entryHash(entries[0]), keccak256(toBytes(canonicalStringify(entries[0]))));
     assert.equal(epochId(AGENT, HOLDER, "worker-1"), entries[0].entry.epoch);
+  });
+
+  it("reads the kind of work each entry names, from the release that writes it, and fails one the brain does not write", async () => {
+    const SITTING = `sitting:0x${"5e".repeat(32)}`;
+    const review = { kind: "security-review", rules: 1 };
+    const entries = await recordOf([{ work: review }, { outcome: "rejected", work: { kind: "extraction", rules: 1 } }, { kind: "exam", ref: SITTING, build: "worker-2" }, { work: review }]);
+    const report = await served(entries, await recordHead(entries.at(-1)));
+    assert.deepEqual(lines(report), [...WHOLE, "record-work ok"]);
+    assert.equal(check(report, "record-work").message, "work: entries 1 to 2 and 4 name the kind of work their tasks' briefs ask for (security-review 2 and extraction 1), read by rules 1");
+
+    const wrong = await recordOf([{ work: { kind: "translation", rules: 1 } }, { work: { kind: "code", rules: 0 } }, { kind: "exam", ref: SITTING, work: review }, { work: { ...review, guessed: true } }, { work: null }]);
+    const faulted = await served(wrong, await recordHead(wrong.at(-1)));
+    assert.deepEqual(failed(faulted), ["record-work"]);
+    assert.equal(status(faulted, "record-signatures"), "ok");
+    assert.equal(
+      check(faulted, "record-work").message,
+      'work: entry 1: it names the kind of work "translation", which is none of security-review, research, extraction, code and other; entry 2: it names rules 0 for its kind of work, where the rules are numbered from 1; entry 3: it names a kind of work, which only a task or an audit names; and 1 more',
+    );
   });
 
   it("fails when an entry is left out, from the middle or from the end", async () => {
