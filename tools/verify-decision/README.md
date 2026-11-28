@@ -8,6 +8,8 @@ It also checks the reputation BrainChain writes for its workers. Each entry in t
 
 It checks what the brain host signs about an agent as well: its numbered record, its licences and its papers, each held to the keys the `DecisionLog` named its brain. The host serves them once BrainChain switches agent records on, and answers 404 until then.
 
+And it checks the orders BrainChain's desks send through 0x on Robinhood Chain: that 0x signed the quote for that exact order, and that the chain settled the order as quoted. See [desk orders](#desk-orders).
+
 ```sh
 npx brainchain-verify mainnet 1 --set v3-5
 npx brainchain-verify mainnet --task 11 --set v3-1
@@ -18,6 +20,7 @@ npx brainchain-verify mainnet --agent 20424
 npx brainchain-verify mainnet --record 20424
 npx brainchain-verify mainnet --licence 20424
 npx brainchain-verify mainnet --papers 20424
+npx brainchain-verify desk-order 0x4829f77f52142de55f083691099fdfb5bf13ca97bbf15e1a7dc3881b74ea869f
 ```
 
 Requires Node.js 22 or later.
@@ -34,6 +37,7 @@ brainchain-verify <mainnet|testnet|chainId> --record <agentId> [--epoch] [--serv
 brainchain-verify <mainnet|testnet|chainId> --licence <agentId> [--service <url>] [--rpc <url>] [--registry-rpc <url>] [--json]
 brainchain-verify <mainnet|testnet|chainId> --papers <agentId> [--service <url>] [--rpc <url>] [--registry-rpc <url>] [--json]
 brainchain-verify <mainnet|testnet|chainId> --item <itemId> [--service <url>] [--rpc <url>] [--json]
+brainchain-verify desk-order <tx> [--quote <file|url>] [--rpc <url>] [--json]
 ```
 
 | Argument | Meaning |
@@ -42,7 +46,7 @@ brainchain-verify <mainnet|testnet|chainId> --item <itemId> [--service <url>] [-
 | `<decisionId>` | The decision's number in its `DecisionLog`, from 1. |
 | `--task <id>` | Check every decision about one task, oldest first. A task id the active set does not hold yet is read from the newest set that holds it, as a decision id is. |
 | `--set <TaskBoard>` | A retired contract set from 3.0.0 on, by its TaskBoard address, by the key a decision page uses (`?set=v3-1`, or an older one the site still opens, such as `v4` for `v3-4`) or by release (`3.1.0`), in any case. Without it, the active set, or for an id the active set does not hold yet, the newest set that does. Each set numbers its tasks and decisions from 1. The `v2` set is not supported: its board named tasks by id alone, which the subject check does not read. |
-| `--rpc <url>` | Another RPC for the same chain. Records and briefs on private addresses are read only when this RPC is on one too. |
+| `--rpc <url>` | Another RPC for the same chain, or for Robinhood Chain with `desk-order`. Records and briefs on private addresses are read only when this RPC is on one too. |
 | `--receipt <file\|url>` | Check the receipt for a paid job, from a JSON file or an http(s) URL, of at most 64 KB. Without a decision id, the tool checks the decision the receipt names, in the contract set its DecisionLog belongs to. See [receipts](#receipts). |
 | `--entry <agentId>:[<writer>:]<index>` | Check one reputation entry BrainChain wrote. See [reputation entries](#reputation-entries). |
 | `--agent <agentId>` | Check every reputation entry BrainChain wrote for one agent, oldest first. |
@@ -51,6 +55,8 @@ brainchain-verify <mainnet|testnet|chainId> --item <itemId> [--service <url>] [-
 | `--licence <agentId>` | Check each licence the brain host lists for an agent. See [licences](#licences). |
 | `--papers <agentId>` | Check an agent's papers. See [papers](#papers). |
 | `--item <itemId>` | Check a retired exam item against the commitment it was known by. See [exam items](#exam-items). |
+| `desk-order <tx>` | Check an order a BrainChain desk sent on Robinhood Chain against the 0x quote it was sent on. See [desk orders](#desk-orders). |
+| `--quote <file\|url>` | With `desk-order`: the order's quote record, from a file or an http(s) URL, in place of the one the desk log names. |
 | `--service <url>` | Another brain host for `--record`, `--licence`, `--papers` and `--item`. Without it, `https://brain.usebrainchain.com` on mainnet and `https://brain.testnet.usebrainchain.com` on testnet. A host on a private address is read only when `--rpc` is on one too. |
 | `--registry-rpc <url>` | Another RPC for Robinhood Chain, where the ERC-8004 registries are. `--entry`, `--agent`, `--licence` and `--papers` read it, and `--record` only with `--epoch`. |
 | `--payment-rpc <url>` | Another RPC for Robinhood Chain, or Robinhood Chain testnet with `testnet`, such as a fork or your own node. A receipt's payment on that chain is read from it, for a decision, `--task`, `--receipt`, `--entry`, `--agent` and `--record`. Without it, the public RPC. Payments on Base and Solana are read from their public RPCs either way. See [receipts](#receipts). |
@@ -505,6 +511,66 @@ npx brainchain-verify mainnet --item <itemId>
 
 A `match` shows that the published item is the one its id committed to. It does not show which sittings drew the item, or that the id was listed before the item was used: the tool does not see when the host first listed it. `--item` hashes a file and reads no chain.
 
+## Desk orders
+
+BrainChain's desks trade tokenized stocks on Robinhood Chain through 0x. Every order goes out from DeskMandateV2, [`0x1CEb9aeeEab74eEf65A3E5DED14b59BecfBCfc16`](https://repo.sourcify.dev/4663/0x1CEb9aeeEab74eEf65A3E5DED14b59BecfBCfc16), the contract that holds the desks' money, on a quote 0x signed for that order. The brain publishes each quote as it arrived from 0x, and `desk-order` holds the order to it:
+
+```sh
+npx brainchain-verify desk-order 0x4829f77f52142de55f083691099fdfb5bf13ca97bbf15e1a7dc3881b74ea869f
+```
+
+The tool reads the transaction from Robinhood Chain's public RPC, and finds the order's quote record in the desk log at `https://brain.usebrainchain.com/desks`, which takes 10 to 25 seconds to answer. The log lists its latest 200 entries, so an order drops out of it within days. The record stays at its address, `https://brain.usebrainchain.com/records/<keccak256>.json`, which the order's entry gives as `quote.uri`. Pass that address, or a saved copy of the record, with `--quote`; do the same where the desk log is not served.
+
+```text
+$ npx brainchain-verify desk-order 0x4829f77f52142de55f083691099fdfb5bf13ca97bbf15e1a7dc3881b74ea869f
+Desk order 0x4829f77f52142de55f083691099fdfb5bf13ca97bbf15e1a7dc3881b74ea869f on Robinhood Chain (DeskMandateV2 0x1CEb9aeeEab74eEf65A3E5DED14b59BecfBCfc16)
+Desk 2 bought 0.007840391599978831 SPY for 5.672886 USDG in block 123730329, 2026-11-26 20:22:26 UTC
+
+  ok    desk 2 bought SPY with 5672886 of USDG on DeskMandateV2 0x1CEb…fc16, sent by 0x97D5…b952 and mined in block 123730329 at 2026-11-26 20:22:26 UTC
+  ok    the desk log names the quote record https://brain.usebrainchain.com/records/0xac8869a3b4bf435451c1e3db7b1b9fae6f34fa8cf6d379a6a716485c32a04582.json, which hashes to the name it is published under
+  ok    the SHA-256 of the body 0x signed, 0x3bf9…12aa, is the digest the order sent and its Order event carries
+  ok    signed with Ed25519 under the tag 0x-swap-api
+  ok    key 0x-signing-key-prod-24092026
+  ok    0x signed at 2026-11-26 20:22:22 UTC, 4 seconds before the order was mined, within 60
+  ok    covers @status, content-type, content-digest, @method;req, @authority;req, @path;req, @query;req
+  ok    the body's sha-256 matches Content-Digest
+  ok    0x signed this answer to GET api.0x.org/swap/allowance-holder/quote with this exact query
+  ok    the intent sells exactly 5672886 for at least 7761987683979043 on chain 4663
+  ok    the query 0x answered asks for this trade and nothing else
+  ok    an exact-in quote selling 0x5fc5…d168 for 0x117c…4C0C
+  ok    the transaction calls AllowanceHolder 0x0000…2734
+  ok    the approval it asks for is to AllowanceHolder
+  ok    AllowanceHolder lets the Settler take 5672886 of 0x5fc5…d168 and no more
+  ok    Settler 0xE885…EFb0 is the registry's previous Settler on chain 4663, as of the order's block
+  ok    the transaction sends no ETH
+  ok    the Settler pays what is bought to 0x1CEb…fc16
+  ok    it buys 0x117c…4C0C
+  ok    the Settler reverts unless at least 7761987683979043 is bought, at or above the 7761987683979043 asked for
+  ok    the order handed AllowanceHolder the quote's transaction data byte for byte, 1636 bytes, and its Order event names the Settler that runs it, 0xE885…EFb0
+  ok    the mandate sent exactly the 5672886 of USDG the quote sells
+  ok    the mandate received 7840391599978831 of SPY, the amount its Order event books, at or above the quote's minimum of 7761987683979043 and the mandate's floor of 7795974976614430; 0x expected 7840391599978831
+
+Verdict: match. 0x signed the quote this order was sent on, and the chain settled the order as quoted.
+Not checked: whether the order was a good trade. The mandate holds each fill to its price feed on chain, and this check holds it to the quote 0x signed.
+```
+
+| Check | What passes |
+| --- | --- |
+| `order` | The transaction called `trade` on DeskMandateV2, went through and emitted the mandate's `Order` event. A transaction that is not a desk order, or one the mandate reverted, has nothing to check: the tool says so and exits 1. |
+| `quote-record` | The record is a 0x answer as the brain keeps it: the AllowanceHolder quote request 0x signed, and the response as it arrived. Read from an address or file named `<hash>.json`, its keccak256 is that hash, and the one the desk log gives. |
+| `quote-digest` | The SHA-256 of the response body is the digest the order passed to `trade` and its `Order` event carries, so this is the quote the order was sent on. |
+| `calldata` | The bytes the order handed AllowanceHolder are the quote's `transaction.data`, byte for byte, and the `Order` event names the Settler they run. |
+| `spent` | The mandate's transfers of the token sold come to exactly the amount the quote sells and the order books. |
+| `received` | The transfers of the token bought into the mandate come to the amount its `Order` event books, at or above the quote's `minBuyAmount` and the floor the mandate set from its price feed. |
+
+Between `quote-digest` and `calldata` come the checks of [0x quotes](#0x-quotes), from `zerox-signed` to `quote-min-out`, held to the order: the mandate as taker, the order's sender as `txOrigin`, the tokens and amount it trades, its `minOut` as the least it takes, and the `slippageBps` the query names. Three read differently here:
+
+- `zerox-fresh` holds 0x's signature to the time the order was mined, not to your clock: 0x signed at most 60 seconds before.
+- `quote-settler` takes the registry's Settlers as of the order's block, from the registry's own transfer events, since public RPCs keep no state that old. An RPC that cannot serve those events makes it an `ERROR`.
+- On a route where 0x leaves the Settler's own terms empty and puts the minimum in the route's last step, `quote-recipient`, `quote-buy-token` and `quote-min-out` skip. The mandate takes such a quote because it measures what it receives, and `received` holds that to the order.
+
+A `match` shows that 0x signed this quote for this order, and that the chain moved what the quote said out of the mandate and into it. It does not show that the order was a good trade: the mandate holds each fill to its price feed, and this check holds it to the quote 0x signed. The desk's reasoning is kept at the hash the order carries as `reasoning`, which this check does not read.
+
 ## What it cannot check
 
 That Jev produced the answer. Jev's answers carry no signature from the service that runs Jev: BrainChain records them, and the contracts bound what a recorded answer can do. A decision that passes every check has the question, answer and probabilities the chain acted on. The [trust model](https://docs.usebrainchain.com/trust-model) explains what the chain relies on and what bounds it.
@@ -530,7 +596,7 @@ Testnet's brain was replaced on 2026-11-20 and its records started fresh, so the
 | Code | Meaning |
 | --- | --- |
 | 0 | Every check that could run passed. Skips do not fail a decision. A `withheld` verdict also exits 0, so read the verdict if you need to tell it from a full match. |
-| 1 | A check failed, a check could not run (an `ERROR` line, such as a record, brief or receipt the host did not serve), or the decision or entry could not be read: an unknown id, a task with no decisions, an entry the registry does not hold, an RPC error, a `--receipt` that cannot be read or is not a receipt. An agent with no record on the brain host, an item the host has not published, an agent with no licence, and stale papers or licences exit 1 too. |
+| 1 | A check failed, a check could not run (an `ERROR` line, such as a record, brief or receipt the host did not serve), or the decision or entry could not be read: an unknown id, a task with no decisions, an entry the registry does not hold, an RPC error, a `--receipt` that cannot be read or is not a receipt. An agent with no record on the brain host, an item the host has not published, an agent with no licence, and stale papers or licences exit 1 too, and so does a `desk-order` transaction that is not a desk order, reverted, or has no quote record the tool can read. |
 | 2 | Bad arguments, or an RPC that serves another chain. |
 
 ## JSON
@@ -583,9 +649,11 @@ With `--record`, `--licence`, `--papers` or `--item`, the object holds `network`
 - `--papers` adds `agentId` and what the papers state: `at`, `signedAt`, `brain`, `epoch`, `record` and each licence's `class` and `state`. These are the papers' own values, and the checks say whether the brain key signed them. `current` is the epoch the identity registry gives the id now, as its `id`, `controller` and `build`, with `bound` for an id bound to an NFT, or `null` when no single account controls it. Stale papers carry `stale: true`, and their `verdict` is `stale`.
 - `--item` adds the item's `id`, its `title` and `template`, and `retired` with the host's `uses`, `passed` and `retiredAt`.
 
+With `desk-order`, the object holds `chain`, `chainId`, `verdict`, `failed`, `errors`, `skipped`, the transaction as `tx`, the `mandate`, the `order`, the `record` read, the `checks` and `notChecked`. `order` is the order as the chain records it: `desk`, `token`, `buy`, `amountIn`, `amountOut`, `minOut`, `floor`, `feedPrice`, `reasoning`, the quote's digest as `quote`, `settler`, `sender`, `block` and `minedAt` in seconds since the epoch, with the token's `symbol` and `decimals` where it gives them. Amounts are strings in the token's smallest units. `record` holds the `uri` read and `listed`, true when the desk log named it.
+
 ## 0x quotes
 
-`brainchain-verify/zerox` checks an answer from 0x's Swap API before anything in it is signed. It is a library, with no command of its own; `brainchain-worker buy-stake` uses it. It needs `node:crypto` and viem 2, which it takes as a peer dependency so that your own viem client fits its types. Its one chain read is 0x's Settler registry.
+`brainchain-verify/zerox` checks an answer from 0x's Swap API before anything in it is signed. It is a library: `brainchain-worker buy-stake` uses it, and [`desk-order`](#desk-orders) runs its checks on a desk's order. It needs `node:crypto` and viem 2, which it takes as a peer dependency so that your own viem client fits its types. Its one chain read is 0x's Settler registry.
 
 The examples buy each answer from 0x's keyless gateway. The gateway speaks x402 version 2 and charges 0.01 USDC on Base for each request, paid from your key with a signed USDC authorization, so the key needs a little USDC on Base and no ETH there. A request is charged even when it is refused, and even when it carries no `Accept-Signature`; an answer without 0x's signature cannot be checked, so always send the header. The same request to `https://api.0x.org/swap/allowance-holder/quote` with your own 0x API key is free and checks the same way; it needs the headers `0x-api-key: <your key>` and `0x-version: v2` beside `Accept-Signature`.
 
@@ -661,6 +729,8 @@ Amounts are bigints in the token's smallest units. A plain number fails `quote-i
 
 `slippageBps` says what the query asked 0x for, so it must be in the query too, with the same value: give it in both or in neither.
 
+`txOrigin` is the account that sends the transaction when the taker is a contract, which 0x asks for then. A BrainChain desk's quote names its mandate contract as the taker and the desk key that sends the order as `txOrigin`. Like `slippageBps`, give it in both the query and the intent, or in neither.
+
 `maxGasCost` is optional and holds the quote's `gas` times its `gasPrice` to a limit. Those two are 0x's estimate, and `report.quote.transaction` carries both: send the transaction with fee fields of your own.
 
 `settlers` is the chain's Settlers, or a function that reads them. `readSettlers(client, chainId)` reads them from 0x's registry and throws when the client is on another chain. When the read throws, as an RPC that does not answer does, the report fails `quote-settler` with its error rather than throwing, so `verifyQuote` throws only for arguments it cannot use: an unknown URL, a body that is not bytes, or missing options.
@@ -676,7 +746,7 @@ The signature checks run in order and stop at the first that fails. The quote's 
 | `zerox-digest` | The body's SHA-256 is the one in `Content-Digest`. |
 | `zerox-signature` | The signature verifies over the rebuilt signature base. When it would verify with the same parameters in another order, the line says so. |
 | `quote-intent` | The intent is one the checks can hold a quote to: exactly one of `sellAmount` and `buyAmount`, the caller's limit for it, bigint amounts, addresses, and a known AllowanceHolder. |
-| `quote-request` | The query 0x answered asks for this trade and nothing else: `chainId`, `sellToken`, `buyToken`, `taker` and one of `sellAmount` and `buyAmount`, each once with the intent's value, plus `recipient` and `slippageBps` only when the intent names them. Any other parameter, such as a fee, a surplus recipient or `gasPrice`, fails, and so does a percent-encoded part, since 0x decodes it. |
+| `quote-request` | The query 0x answered asks for this trade and nothing else: `chainId`, `sellToken`, `buyToken`, `taker` and one of `sellAmount` and `buyAmount`, each once with the intent's value, plus `recipient`, `txOrigin` and `slippageBps` only when the intent names them. Any other parameter, such as a fee, a surplus recipient or `gasPrice`, fails, and so does a percent-encoded part, since 0x decodes it. |
 | `quote-response` | HTTP 200, a route, a transaction, and the mode, tokens and amounts asked for. A refusal names 0x's error. |
 | `quote-target` | The transaction calls AllowanceHolder (`0x0000000000001fF3684f28c67538d4D072C22734` on Ethereum, Base and Robinhood Chain, pinned here; `allowanceHolder` in the intent names it on other chains). |
 | `quote-spender` | `allowanceTarget` is null or AllowanceHolder, and so is the spender in `issues.allowance` when 0x asks for an approval. Never approve the Settler. |

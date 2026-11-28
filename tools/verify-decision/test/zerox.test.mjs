@@ -387,6 +387,42 @@ describe("verifyQuote", () => {
   });
 });
 
+describe("a quote for a contract taker, asked for with txOrigin", () => {
+  // The quote BrainChain's desk 2 bought SPY on, on 2026-11-26, as the brain keeps it: DeskMandateV2 is the taker, and
+  // the desk key that sends the order is txOrigin.
+  const record = JSON.parse(readFileSync(new URL("./fixtures/desks/0xac8869a3b4bf435451c1e3db7b1b9fae6f34fa8cf6d379a6a716485c32a04582.json", import.meta.url), "utf8"));
+  const MANDATE = "0x1CEb9aeeEab74eEf65A3E5DED14b59BecfBCfc16";
+  const DESK_KEY = "0x97D558417c3D61f1074422AD843e1Db1E565b952";
+  const SPY = "0x117cc2133c37B721F49dE2A7a74833232B3B4C0C";
+  const url = `https://${record.request.authority}${record.request.path}${record.request.query}`;
+  const signed = { status: record.status, headers: record.headers, body: new TextEncoder().encode(record.body) };
+  // The registry's Settlers when the order was mined: 0x had moved to a new one, and still quoted the one before.
+  const settlers = { current: "0x32ea82c2B03Cb072afD67Af9041822c9caA922a8", previous: "0xE8852602f84e04e284286d8Db01a41Edd0CCEFb0" };
+  const options = { settlers, now: () => (record.receivedAt + 4) * 1000 };
+  const intent = { chainId: 4663, taker: MANDATE, txOrigin: DESK_KEY, sellToken: USDG, buyToken: SPY, sellAmount: 5_672_886n, minBuyAmount: 7_761_987_683_979_043n, slippageBps: 100 };
+
+  it("passes when the intent names the txOrigin the query carries", async () => {
+    const report = await verifyQuote(signed, url, intent, options);
+    assert.equal(report.ok, true, JSON.stringify(failed(report)));
+    assert.match(report.checks.find((c) => c.name === "quote-settler").message, /registry's previous Settler/);
+    assert.equal(report.decoded.recipient, MANDATE);
+  });
+
+  it("fails a query with a txOrigin the intent does not name, or names otherwise", async () => {
+    const { txOrigin, ...without } = intent;
+    assert.match(failed(await verifyQuote(signed, url, without, options)).message, /txOrigin is not part of this trade/);
+    assert.match(failed(await verifyQuote(signed, url, { ...intent, txOrigin: STRANGER }, options)).message, new RegExp(`txOrigin=${txOrigin} where ${STRANGER} was meant`));
+    assert.match(failed(await verifyQuote(signed, url, { ...intent, txOrigin: "0x97D5" }, options)).message, /the intent's txOrigin is not an address/);
+  });
+
+  it("still holds the signature to the query as sent, so a query without txOrigin fails it", async () => {
+    const { txOrigin, ...without } = intent;
+    const dropped = url.replace(`&txOrigin=${txOrigin}`, "");
+    assert.notEqual(dropped, url);
+    assert.equal(failed(await verifyQuote(signed, dropped, without, options)).name, "zerox-signature");
+  });
+});
+
 describe("readSettlers", () => {
   const client = (answers, chainId = 4663) => ({
     chain: { name: chainId === 4663 ? "Robinhood Chain" : "Base" },
@@ -478,6 +514,13 @@ describe("what a quote may not carry", () => {
     const named = `${EXACT_IN_ETH.url}&recipient=${TAKER}`;
     assert.equal((await verifyQuote(answer(named, EXACT_IN_ETH.json), named, intentFor(EXACT_IN_ETH, { recipient: TAKER }), options)).ok, true);
     assert.match(failed(await verifyQuote(answer(named, EXACT_IN_ETH.json), named, intentFor(EXACT_IN_ETH), options)).message, /recipient is not part of this trade/);
+  });
+
+  it("requires a txOrigin the intent names", async () => {
+    const intent = intentFor(EXACT_IN_ETH, { txOrigin: STRANGER });
+    assert.match(failed(await verifyQuote(answer(EXACT_IN_ETH.url, EXACT_IN_ETH.json), EXACT_IN_ETH.url, intent, options)).message, /txOrigin=\(none\) where 0x4444/);
+    const named = `${EXACT_IN_ETH.url}&txOrigin=${STRANGER}`;
+    assert.equal((await verifyQuote(answer(named, EXACT_IN_ETH.json), named, intent, options)).ok, true);
   });
 
   it("refuses an exact-out quote with no ceiling of the caller's, and one over it", () => {

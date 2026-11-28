@@ -269,6 +269,8 @@ export interface QuoteIntent {
   taker: Address;
   /** Asked for in the query when given. */
   recipient?: Address;
+  /** The account that sends the transaction when the taker is a contract; asked for in the query when given. */
+  txOrigin?: Address;
   /** NATIVE for the chain's own token. */
   sellToken: Address;
   buyToken: Address;
@@ -576,6 +578,7 @@ function queryProblem(query: string, intent: QuoteIntent): string | undefined {
   if (intent.buyAmount !== undefined) want("buyAmount", intent.buyAmount.toString());
   // Without a recipient 0x pays the taker, so the query needs one only for someone else.
   if (intent.recipient !== undefined) want("recipient", intent.recipient, address, !same(intent.recipient, intent.taker));
+  if (intent.txOrigin !== undefined) want("txOrigin", intent.txOrigin, address);
   if (intent.slippageBps !== undefined) want("slippageBps", String(intent.slippageBps));
 
   const wrong: string[] = [];
@@ -623,7 +626,7 @@ function intentProblem(intent: QuoteIntent): string | undefined {
     return "the intent's slippageBps must be a whole number from 0 to 10000";
   }
   if (intent.maxGasCost !== undefined && intent.maxGasCost < 0n) return "the intent's maxGasCost must not be below zero";
-  for (const [name, value] of [["taker", intent.taker], ["recipient", intent.recipient], ["sellToken", intent.sellToken], ["buyToken", intent.buyToken], ["allowanceHolder", intent.allowanceHolder]] as const) {
+  for (const [name, value] of [["taker", intent.taker], ["recipient", intent.recipient], ["txOrigin", intent.txOrigin], ["sellToken", intent.sellToken], ["buyToken", intent.buyToken], ["allowanceHolder", intent.allowanceHolder]] as const) {
     if (value !== undefined && !isAddress(value, { strict: false })) return `the intent's ${name} is not an address`;
   }
   if (same(intent.sellToken, intent.buyToken)) return "the intent sells and buys the same token";

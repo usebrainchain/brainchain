@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
 
-import { createPublicClient, type Hex, type PublicClient } from "viem";
+import { createPublicClient, formatUnits, type Hex, type PublicClient } from "viem";
 
 import { decisionLogAbi, taskBoardAbi } from "./abi.js";
 import { NETWORKS, type ContractSet } from "./deployments.js";
+import { DESK_CHAIN, DESK_MANDATE, DESK_RPC, verifyDeskOrder, type DeskOrderReport } from "./desks.js";
 import {
   balancesFrom,
   clean,
@@ -69,11 +70,13 @@ const usageLine = (m: Mode): string => `  brainchain-verify ${m.shape} ${m.optio
 
 const USAGE = `Usage:
 ${MODES.map(usageLine).join("\n")}
+  brainchain-verify desk-order <tx> [--quote <file|url>] [--rpc <url>] [--json]
 
 Checks a BrainChain decision against the chain: reads it from the DecisionLog,
 fetches the published record, recomputes its hashes and confidence, and applies
 the task's thresholds as the contracts do. Checks what the brain host signs
-about an agent the same way: its record, licences and papers. Needs no keys.
+about an agent the same way: its record, licences and papers, and an order a
+desk sent through 0x against the quote 0x signed for it. Needs no keys.
 
   --task <id>    check every decision about one task
   --receipt <r>  check the receipt for a paid job, from a file or a URL, against
@@ -96,6 +99,12 @@ about an agent the same way: its record, licences and papers. Needs no keys.
                  name
   --item <id>    check a retired exam item against the commitment it was known
                  by while it was in use
+  desk-order <tx>
+                 check an order a BrainChain desk sent on Robinhood Chain
+                 against the 0x quote it was sent on: 0x's signature, the
+                 calldata, where the bought tokens went and the amounts
+  --quote <q>    with desk-order: the order's quote record, from a file or a
+                 URL, for an order the desk log no longer lists
   --service <url>
                  another brain host for --record, --licence, --papers and
                  --item; one on a private address is read only when --rpc is on
@@ -106,8 +115,9 @@ about an agent the same way: its record, licences and papers. Needs no keys.
                  its key on the site (v3-1) or by release (3.1.0), in any case;
                  without it, the active set, or for an id it does not hold yet,
                  the newest set that does
-  --rpc <url>    another RPC for the same chain; records and briefs on private
-                 addresses are read only when this is on one too
+  --rpc <url>    another RPC for the same chain, or for Robinhood Chain with
+                 desk-order; records and briefs on private addresses are read
+                 only when this is on one too
   --registry-rpc <url>
                  another RPC for Robinhood Chain, where the registries are; with
                  --record it is read only with --epoch
@@ -122,6 +132,7 @@ line, on stale papers or licences, or when what was asked for cannot be read,
 2 on bad arguments or an RPC that serves another chain.`;
 
 const TRUST_MODEL = "https://docs.usebrainchain.com/trust-model";
+const DESK_NOT_CHECKED = "whether the order was a good trade. The mandate holds each fill to its price feed on chain, and this check holds it to the quote 0x signed.";
 const NOT_CHECKED =
   "That Jev produced the answer, or that a judge's probabilities are the ones in the response its gateway hashed. BrainChain records Jev's answers and the judges' probabilities, and the contracts bound what a recorded answer can do.";
 // Sets before 3.0.0 named tasks by id alone, which the subject check does not model, so the package carries none.
@@ -196,6 +207,7 @@ async function main(): Promise<void> {
   const papersArg = flag("--papers");
   const itemArg = flag("--item");
   const serviceArg = flag("--service");
+  const quoteArg = flag("--quote");
   const epoch = toggle("--epoch");
   // -1 is a bad id, not an option; the id check below says so.
   const unknown = args.find((arg) => arg.startsWith("-") && !/^-\d/.test(arg));
@@ -205,6 +217,14 @@ async function main(): Promise<void> {
   if (registryRpcArg !== undefined && !web(registryRpcArg)) fail("--registry-rpc needs an http or https URL", 2);
   if (paymentRpcArg !== undefined && !web(paymentRpcArg)) fail("--payment-rpc needs an http or https URL", 2);
   if (serviceArg !== undefined && !web(serviceArg)) fail("--service needs an http or https URL", 2);
+
+  const TAGS = { ok: "ok", fail: "FAIL", skip: "skip", error: "ERROR" } as const;
+  const tally = (checks: Check[], status: Status): number => checks.filter((c) => c.status === status).length;
+  const line = (c: Check): string => `  ${TAGS[c.status].padEnd(5)} ${c.message}`;
+  const short = (value: string): string => `${value.slice(0, 6)}…${value.slice(-4)}`;
+  const utc = (seconds: number): string => `${new Date(seconds * 1000).toISOString().replace("T", " ").slice(0, 19)} UTC`;
+  if (args[0] === "desk-order") await checkDeskOrder();
+  if (quoteArg !== undefined) usage("--quote goes with desk-order");
 
   const [networkArg, idArg, ...extra] = args;
   if (networkArg === undefined) usage("Name a network: mainnet, testnet or a chain id");
@@ -248,14 +268,9 @@ async function main(): Promise<void> {
   const { name: paymentChain, chainId: paymentChainId } = SERVICES[network.chainId]!.identity;
   const payment = paymentRpcArg === undefined ? undefined : { client: createPublicClient({ transport: rpcTransport(paymentChain, paymentRpcArg) }), chainId: paymentChainId };
   const balances = paymentRpcArg === undefined ? undefined : balancesFrom({ ...PAYMENT_RPCS, [`eip155:${paymentChainId}`]: paymentRpcArg });
-  const TAGS = { ok: "ok", fail: "FAIL", skip: "skip", error: "ERROR" } as const;
-  const tally = (checks: Check[], status: Status): number => checks.filter((c) => c.status === status).length;
   // With --task or --agent, one decision or entry the RPC cannot read is an error line of its own, and the rest still run.
   const unread = (what: string, error: unknown): Check => ({ name: "rpc", status: "error", message: `could not check ${what}: ${errorMessage(error)}` });
   const ENTRY_TAGS: Record<EntryOutcome, string> = { match: "match", "no-receipt": "no receipt", withheld: "withheld", mismatch: "MISMATCH", unverified: "UNVERIFIED" };
-  const line = (c: Check): string => `  ${TAGS[c.status].padEnd(5)} ${c.message}`;
-  const short = (value: string): string => `${value.slice(0, 6)}…${value.slice(-4)}`;
-  const utc = (seconds: number): string => `${new Date(seconds * 1000).toISOString().replace("T", " ").slice(0, 19)} UTC`;
   if (reputation) await checkEntries();
   if (hosted) await checkHosted();
 
@@ -675,6 +690,70 @@ async function main(): Promise<void> {
     } catch (error) {
       failWith(error);
     }
+  }
+
+  /** desk-order: a desk's order on Robinhood Chain, held to the signed 0x quote it was sent on. */
+  async function checkDeskOrder(): Promise<never> {
+    const [, hash, ...more] = args;
+    if (hash === undefined) usage("Name the order's transaction: desk-order <tx>");
+    if (more.length > 0) usage("Too many arguments");
+    const others: Record<string, boolean> = {
+      "--task": taskArg !== undefined,
+      "--set": setArg !== undefined,
+      "--receipt": receiptArg !== undefined,
+      "--entry": entryArg !== undefined,
+      "--agent": agentArg !== undefined,
+      "--registry-rpc": registryRpcArg !== undefined,
+      "--payment-rpc": paymentRpcArg !== undefined,
+      "--record": recordArg !== undefined,
+      "--licence": licenceArg !== undefined,
+      "--papers": papersArg !== undefined,
+      "--item": itemArg !== undefined,
+      "--service": serviceArg !== undefined,
+      "--epoch": epoch,
+      "--offline": offline,
+    };
+    const stray = Object.keys(others).find((name) => others[name]);
+    if (stray) usage(`desk-order takes only --quote, --rpc and --json, not ${stray}`);
+    if (!/^0x[0-9a-fA-F]{64}$/.test(hash)) fail("A transaction hash is 0x and 64 hex digits", 2);
+    const chain = createPublicClient({ transport: rpcTransport("Robinhood Chain", rpcArg ?? DESK_RPC) });
+    let r: DeskOrderReport;
+    try {
+      const chainId = await chain.getChainId();
+      if (chainId !== DESK_CHAIN) fail(`The RPC serves chain ${chainId}, not Robinhood Chain (${DESK_CHAIN})`, 2);
+      r = await verifyDeskOrder(chain, hash as Hex, quoteArg === undefined ? {} : { quote: quoteArg });
+    } catch (error) {
+      failWith(error);
+    }
+    const failed = tally(r.checks, "fail");
+    const errors = tally(r.checks, "error");
+    const skipped = tally(r.checks, "skip");
+    const overall = outcomeOf([{ checks: r.checks }]);
+    const status = failed + errors > 0 ? 1 : 0;
+    if (json) {
+      console.log(JSON.stringify({ chain: "Robinhood Chain", chainId: DESK_CHAIN, verdict: overall, failed, errors, skipped, ...r, notChecked: `${DESK_NOT_CHECKED[0]!.toUpperCase()}${DESK_NOT_CHECKED.slice(1)}` }, null, 2));
+      exit(status);
+    }
+    const o = r.order;
+    const name = o.symbol ?? o.token;
+    const units = (amount: string, decimals: number | undefined) => (decimals === undefined ? `${amount} units` : formatUnits(BigInt(amount), decimals));
+    const traded = o.buy
+      ? `bought ${units(o.amountOut, o.decimals)} ${name} for ${formatUnits(BigInt(o.amountIn), 6)} USDG`
+      : `sold ${units(o.amountIn, o.decimals)} ${name} for ${formatUnits(BigInt(o.amountOut), 6)} USDG`;
+    console.log(`Desk order ${r.tx} on Robinhood Chain (DeskMandateV2 ${DESK_MANDATE})`);
+    console.log(`Desk ${o.desk} ${traded} in block ${o.block}, ${utc(o.minedAt)}\n`);
+    for (const c of r.checks) console.log(line(c));
+    const verdict =
+      overall === "mismatch"
+        ? `MISMATCH. ${failed} check${failed === 1 ? "" : "s"} failed; see the FAIL lines.`
+        : overall === "unverified"
+          ? "UNVERIFIED. Some checks could not run; the ERROR lines say what could not be read."
+          : skipped > 0
+            ? "match. Every check that could run passed; the skip lines say what could not be checked."
+            : "match. 0x signed the quote this order was sent on, and the chain settled the order as quoted.";
+    console.log(`\nVerdict: ${verdict}`);
+    console.log(`Not checked: ${DESK_NOT_CHECKED}`);
+    exit(status);
   }
 
   /** The other sets whose boards hold a task with this id, for a task the board of `on` decided nothing on. */

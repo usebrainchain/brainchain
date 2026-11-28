@@ -1,0 +1,41 @@
+{
+ "mandate": "0x1CEb9aeeEab74eEf65A3E5DED14b59BecfBCfc16",
+ "entries": [
+  {
+   "at": "2026-11-26T20:21:52.000Z",
+   "desk": 1,
+   "model": "gpt",
+   "action": "hold",
+   "reasoningHash": "0xd33554063567e614b17065e8525d3b1595641194bbc787ebc70c4dd4f928f4c3",
+   "reasoningUri": "https://brain.usebrainchain.com/records/0xd33554063567e614b17065e8525d3b1595641194bbc787ebc70c4dd4f928f4c3.txt",
+   "equity": "106.56"
+  },
+  {
+   "at": "2026-11-26T20:21:52.000Z",
+   "desk": 2,
+   "model": "gemini",
+   "action": "buy",
+   "reasoningHash": "0x99cadce28fa3193b47a5594c54f45a9cef02e9f731a77d563d06b1dc66f371df",
+   "reasoningUri": "https://brain.usebrainchain.com/records/0x99cadce28fa3193b47a5594c54f45a9cef02e9f731a77d563d06b1dc66f371df.txt",
+   "equity": "97.98",
+   "token": "SPY",
+   "amountIn": "5.67 USDG",
+   "quote": {
+    "digest": "0x3bf9ec896afcea576f6bb4738f299ee67e373361e533e467e5a1409df8d812aa",
+    "uri": "https://brain.usebrainchain.com/records/0xac8869a3b4bf435451c1e3db7b1b9fae6f34fa8cf6d379a6a716485c32a04582.json",
+    "hash": "0xac8869a3b4bf435451c1e3db7b1b9fae6f34fa8cf6d379a6a716485c32a04582"
+   },
+   "tx": "0x4829f77f52142de55f083691099fdfb5bf13ca97bbf15e1a7dc3881b74ea869f",
+   "mandate": "0x1CEb9aeeEab74eEf65A3E5DED14b59BecfBCfc16"
+  },
+  {
+   "at": "2026-11-26T20:21:52.000Z",
+   "desk": 3,
+   "model": "grok",
+   "action": "hold",
+   "reasoningHash": "0xf464bf9259723147cc7ad39a335176b5324cc25dac1817f5d1f5d5eec66fbc9b",
+   "reasoningUri": "https://brain.usebrainchain.com/records/0xf464bf9259723147cc7ad39a335176b5324cc25dac1817f5d1f5d5eec66fbc9b.txt",
+   "equity": "106.56"
+  }
+ ]
+}
