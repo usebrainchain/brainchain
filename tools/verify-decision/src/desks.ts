@@ -98,8 +98,12 @@ const utc = (seconds: number): string => `${new Date(seconds * 1000).toISOString
 
 /** Throws when `hash` is no desk order that went through, or its quote record cannot be read; anything else is a check. */
 export async function verifyDeskOrder(client: PublicClient, hash: Hex, options: DeskOrderOptions = {}): Promise<DeskOrderReport> {
-  const [tx, receipt] = await Promise.all([client.getTransaction({ hash }), client.getTransactionReceipt({ hash })]).catch((error: unknown) => {
-    if (error instanceof TransactionNotFoundError || error instanceof TransactionReceiptNotFoundError) throw new Error(`Robinhood Chain has no transaction ${hash}, or the RPC does not find it yet`);
+  const tx = await client.getTransaction({ hash }).catch((error: unknown) => {
+    if (error instanceof TransactionNotFoundError) throw new Error(`Robinhood Chain has no transaction ${hash}`);
+    throw error;
+  });
+  const receipt = await client.getTransactionReceipt({ hash }).catch((error: unknown) => {
+    if (error instanceof TransactionReceiptNotFoundError) throw new Error(`Transaction ${hash} is not mined yet`);
     throw error;
   });
   if (!same(tx.to, DESK_MANDATE)) throw new Error(`Transaction ${hash} is not a desk order: it was sent to ${tx.to ?? "no contract"}, not DeskMandateV2 ${DESK_MANDATE}`);
@@ -110,7 +114,7 @@ export async function verifyDeskOrder(client: PublicClient, hash: Hex, options: 
     throw new Error(`Transaction ${hash} calls DeskMandateV2, but not to place an order`);
   }
   if (receipt.status !== "success") throw new Error(`Desk order ${hash} reverted: the mandate refused it, and nothing was traded`);
-  const event = receipt.logs.flatMap((log) => {
+  const events = receipt.logs.flatMap((log) => {
     if (!same(log.address, DESK_MANDATE)) return [];
     try {
       const decoded = decodeEventLog({ abi: mandateAbi, data: log.data, topics: log.topics });
@@ -118,9 +122,11 @@ export async function verifyDeskOrder(client: PublicClient, hash: Hex, options: 
     } catch {
       return [];
     }
-  })[0];
-  if (!event) throw new Error(`Desk order ${hash} went through without an Order event from DeskMandateV2`);
+  });
+  const [event, ...more] = events;
+  if (!event || more.length) throw new Error(`Desk order ${hash} went through with ${events.length} Order events from DeskMandateV2, not one`);
   const [desk, token, buy, amountIn, minOut, reasoning, digest, swap] = call.args;
+  if (event.desk !== desk || !same(event.token, token) || event.buy !== buy) throw new Error(`Desk order ${hash}: its Order event names another desk, token or side than the call`);
   const [block, symbol, decimals] = await Promise.all([
     client.getBlock({ blockNumber: receipt.blockNumber }),
     // Only for display, so a token that does not answer is shown by its address.
