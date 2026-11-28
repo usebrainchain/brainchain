@@ -46,7 +46,7 @@ async function node(chain = CHAIN, { chainId = chain.chainId, logs } = {}) {
         eth_call: () => (params[0].data === "0x95d89b41" ? chain.symbol : params[0].data === "0x313ce567" ? chain.decimals : new Error("execution reverted")),
         eth_getLogs: () => (logs ? logs(params[0]) : chain.settlerLogs.filter((l) => BigInt(l.blockNumber) >= BigInt(params[0].fromBlock) && BigInt(l.blockNumber) <= BigInt(params[0].toBlock))),
       };
-      const result = answers[method] ? answers[method]() : new Error(`no ${method} here`);
+      const result = Object.hasOwn(answers, method) ? answers[method]() : new Error(`no ${method} here`);
       const reply = result instanceof Error ? { error: { code: -32000, message: result.message } } : { result };
       response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id, ...reply }));
     });
